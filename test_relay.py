@@ -254,7 +254,8 @@ def patched(config, monkeypatch):
 def test_check_passes(patched):
     asyncio.run(relay.check())
 
-    assert patched.posted and patched.posted[0].endswith("(relay test)")
+    assert patched.posted
+    assert patched.posted[0].endswith("(relay test)")
     assert FakeClient.instances[0].disconnected is True
 
 
