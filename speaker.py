@@ -77,9 +77,20 @@ class _QuietHandler(SimpleHTTPRequestHandler):
         log.debug("tts http: " + format, *args)
 
 
+def ensure_dir() -> None:
+    """Create the audio directory and hold it at 0700.
+
+    mkdir's `mode` applies only when it creates the directory, so a directory
+    that already exists — pre-created in the image, or left from an earlier
+    run — would keep whatever permissions it had. chmod every time instead.
+    """
+    TTS_DIR.mkdir(parents=True, exist_ok=True)
+    TTS_DIR.chmod(0o700)
+
+
 def serve_forever() -> ThreadingHTTPServer:
     """Start the audio file server the speaker will fetch from."""
-    TTS_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    ensure_dir()
     handler = partial(_QuietHandler, directory=str(TTS_DIR))
     httpd = ThreadingHTTPServer(("0.0.0.0", TTS_PORT), handler)  # noqa: S104
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -92,7 +103,7 @@ def write_speech(text: str, name: str) -> Path:
     """Render text to an mp3 in the served directory and return its path."""
     from gtts import gTTS
 
-    TTS_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    ensure_dir()
     path = TTS_DIR / name
     gTTS(text=text, lang="en").save(str(path))
     return path
