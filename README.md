@@ -77,14 +77,51 @@ notices with `NOTIFY_LIFECYCLE=0`, rename them with `RELAY_NAME`.
 
 ```bash
 cp com.lexx.relay.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.lexx.relay.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lexx.relay.plist
 ```
 
-Logs land in `relay.log`. Stop with
-`launchctl unload ~/Library/LaunchAgents/com.lexx.relay.plist`.
+Check it came up, then watch the log:
+
+```bash
+launchctl print gui/$(id -u)/com.lexx.relay | grep -E 'state|pid|last exit'
+tail -f relay.log
+```
+
+Stop with `launchctl bootout gui/$(id -u)/com.lexx.relay`, restart after a code
+change with `launchctl kickstart -k gui/$(id -u)/com.lexx.relay`. (`load` and
+`unload` still work but are the deprecated spelling.)
 
 Run `relay.py --check` interactively at least once first — launchd cannot type
 the login code for you.
+
+This is a LaunchAgent, so it starts at **login**, not at boot: a Mac sitting at
+the login window is a Mac with no relay. If it has to run headless from power-on,
+the same plist belongs in `/Library/LaunchDaemons` with a `UserName` key and
+absolute paths, installed as root.
+
+### When it does not come up
+
+`KeepAlive` is on, so a relay that cannot start is restarted forever and the
+only evidence is `relay.log` growing. Two failures look identical from the
+outside and are worth checking first:
+
+- `EOFError: EOF when reading a line` from `client.start()` — Telethon is asking
+  for a phone number because the session it opened is not an authorized one.
+  `SESSION_NAME` and the working directory decide which file that is; the login
+  lives in whichever `.session` file you actually completed `--check` against.
+  A session file exists as soon as anything connects, so its presence proves
+  nothing — `sqlite3 <file> 'select count(*) from entities;'` returning 0 is a
+  good sign it never logged in.
+- `commands.Refused: {'ok': False, 'error_code': 404, ...}` on `getUpdates`
+  while alerts still relay fine — the bot token reached `relay.py` but not
+  `commands.py`. Both that module and `speaker` call `load_dotenv()` themselves
+  for exactly this reason, because `relay.py` imports them before it loads the
+  file; a 404 here means that call went missing.
+
+The desktop and Docker runs share one login by pointing at the same file —
+`SESSION_NAME=session/lexx_relay` on the host, which is the `session/` volume
+Docker mounts at `/app/session`. Two copies of one session drift apart and one
+of them ends up unauthorized.
 
 ## Speaking alerts on a Google Nest
 

@@ -23,7 +23,13 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from uuid import NAMESPACE_DNS, UUID, uuid5
 
+from dotenv import load_dotenv
+
 log = logging.getLogger("relay.speaker")
+
+# Imported by relay.py ahead of its own load_dotenv(), so read the file here
+# as well — without it CAST_HOST/TTS_HOST are empty and speaking stays off.
+load_dotenv()
 
 CAST_HOST = os.getenv("CAST_HOST", "")
 CAST_PORT = int(os.getenv("CAST_PORT", "8009"))
