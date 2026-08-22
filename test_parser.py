@@ -1,4 +1,4 @@
-from parser import parse_alert, base_symbol
+from parser import base_symbol, parse_alert
 
 SAMPLE = """🔔 #OPUSDT OPUSDT, Пересечение 0.10282
 -  exchange:  #BybitFutures

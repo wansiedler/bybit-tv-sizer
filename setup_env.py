@@ -46,8 +46,14 @@ def main() -> None:
     values.setdefault("SESSION_NAME", "lexx_relay")
 
     with open(ENV_PATH, "w", encoding="utf-8") as handle:
-        for key in ["TG_API_ID", "TG_API_HASH", "SOURCE_CHAT", "BOT_TOKEN",
-                    "TARGET_CHAT_ID", "SESSION_NAME"]:
+        for key in [
+            "TG_API_ID",
+            "TG_API_HASH",
+            "SOURCE_CHAT",
+            "BOT_TOKEN",
+            "TARGET_CHAT_ID",
+            "SESSION_NAME",
+        ]:
             handle.write(f"{key}={values.get(key, '')}\n")
 
     os.chmod(ENV_PATH, stat.S_IRUSR | stat.S_IWUSR)

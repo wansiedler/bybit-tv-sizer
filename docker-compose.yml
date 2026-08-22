@@ -4,6 +4,8 @@ services:
     image: lexx-relay
     container_name: lexx-relay
     restart: unless-stopped
+    # SIGTERM -> relay posts its shutdown notice before exiting.
+    stop_grace_period: 30s
     env_file: .env
     environment:
       SESSION_NAME: /app/session/lexx_relay

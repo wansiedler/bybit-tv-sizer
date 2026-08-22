@@ -15,9 +15,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     sys.exit("Missing BOT_TOKEN in .env")
 
-response = httpx.get(
-    f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates", timeout=15
-).json()
+response = httpx.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates", timeout=15).json()
 
 if not response.get("ok"):
     sys.exit(f"Telegram API error: {response}")

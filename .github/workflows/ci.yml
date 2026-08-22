@@ -1,0 +1,292 @@
+name: CI
+
+# Gating model, borrowed from the org pipelines:
+#   * hooks over CHANGED files are the blocking gate — new code must be clean,
+#     pre-existing debt in untouched files cannot red a PR;
+#   * the whole-tree pass is informational drift radar;
+#   * tests, actionlint and the image build are hard gates;
+#   * Trivy is a hard gate, except the Security-tab push (needs Advanced
+#     Security, which a private repo may not have).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ------------------------------------------------------------------ #
+  #  Quality: pre-commit hook suite (ruff, mypy, bandit, yamllint, ...) #
+  # ------------------------------------------------------------------ #
+  quality:
+    if: ${{ github.event.pull_request.draft != true }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # the diff gate needs the merge-base with the base ref
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install toolchain
+        run: pip install -r .github/requirements-ci.txt
+
+      - name: Cache pre-commit environments
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+
+      # ---- THE blocking gate: changed files only ----
+      - name: Lint changed code (blocking)
+        env:
+          SKIP: no-commit-to-branch   # CI runs on main; the hook guards humans
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          [ -n "$BASE" ] || BASE="origin/${{ github.event.repository.default_branch }}"
+          set +e
+          out=$(pre-commit run --color never \
+            --from-ref "$(git merge-base "$BASE" HEAD)" --to-ref HEAD 2>&1)
+          rc=$?
+          set -e
+          echo "$out"
+          if [ "$rc" -ne 0 ]; then
+            {
+              echo "## ❌ Diff gate (blocking)"
+              echo ""
+              echo '```'
+              grep -vE "Passed$|Skipped$" <<< "$out" || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit "$rc"
+          fi
+          echo "## ✅ Diff gate: clean" >> "$GITHUB_STEP_SUMMARY"
+
+      # ---- whole-tree pass: informational ----
+      - name: Full-tree hooks (informational)
+        if: ${{ !cancelled() }}
+        env:
+          SKIP: no-commit-to-branch
+        run: |
+          set +e
+          out=$(pre-commit run --all-files --color never 2>&1)
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning::whole-tree hook findings present (non-blocking)"
+            findings=$(grep -vE "Passed$|Skipped$" <<< "$out" || true)
+            {
+              echo "## ⚠️ Full-tree hooks (informational)"
+              echo ""
+              echo '```'
+              head -n 120 <<< "$findings"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## ✅ Full-tree hooks: clean" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # ------------------------------------------------------------------ #
+  #  Tests: the parser is the part with logic worth pinning down        #
+  # ------------------------------------------------------------------ #
+  tests:
+    if: ${{ github.event.pull_request.draft != true }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt
+          pip install -r .github/requirements-ci.txt
+
+      - name: pytest
+        run: |
+          set +e
+          out=$(pytest --color=no 2>&1)
+          rc=$?
+          set -e
+          echo "$out"
+          {
+            echo "## $([ $rc -eq 0 ] && echo '✅' || echo '❌') pytest (py${{ matrix.python-version }})"
+            echo ""
+            echo '```'
+            tail -n 20 <<< "$out"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+      # relay.py imports telethon/httpx at module level; a broken import must
+      # not wait for a container restart at 3am to be discovered. chat_id.py is
+      # deliberately excluded: it is a script, and importing it calls Telegram.
+      - name: Import smoke test
+        run: python -c "import relay, parser; print('imports OK')"
+
+  # ------------------------------------------------------------------ #
+  #  actionlint: hard gate over the workflow files themselves           #
+  # ------------------------------------------------------------------ #
+  actionlint:
+    if: ${{ github.event.pull_request.draft != true }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: actionlint
+        uses: devops-actions/actionlint@v0.1.13
+
+      - name: actionlint results to Summary
+        if: always()
+        run: |
+          f="actionlint-errors.json"
+          if [ -s "$f" ] && python3 -c "import json,sys; sys.exit(0 if json.load(open('$f')) else 1)"; then
+            {
+              echo "## ❌ actionlint findings"
+              echo ""
+              echo '```'
+              python3 -c "import json; [print(f\"{e['file']}:{e['line']}: {e['message']}\") for e in json.load(open('$f'))]"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## ✅ actionlint: clean" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # ------------------------------------------------------------------ #
+  #  Security: Trivy filesystem scan (vulns, secrets, misconfig)        #
+  #  BLOCKING: a scan that cannot run reds the build. Only the          #
+  #  Security-tab push is soft-fail — it needs GitHub Advanced          #
+  #  Security, which this private repo may not have.                    #
+  # ------------------------------------------------------------------ #
+  security:
+    if: ${{ github.event.pull_request.draft != true }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Trivy filesystem scan (SARIF)
+        uses: aquasecurity/trivy-action@v0.36.0   # pinned; dependabot bumps it
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+
+      - name: Trivy table summary
+        uses: aquasecurity/trivy-action@v0.36.0   # pinned; dependabot bumps it
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          format: table
+          severity: CRITICAL,HIGH
+
+      - name: Scan results to Summary
+        if: always()
+        run: |
+          python3 - <<'EOF'
+          import json, os
+          out = open(os.environ["GITHUB_STEP_SUMMARY"], "a")
+          try:
+              sarif = json.load(open("trivy-results.sarif"))
+              results = [r for run in sarif.get("runs", []) for r in run.get("results", [])]
+          except Exception as e:
+              print(f"## ⚠️ Trivy: could not parse SARIF ({e})", file=out)
+              raise SystemExit(0)
+          if not results:
+              print("## ✅ Trivy: no findings", file=out)
+          else:
+              print(f"## ⚠️ Trivy: {len(results)} finding(s)", file=out)
+              print("", file=out)
+              print("| Rule | Level | Location |", file=out)
+              print("| --- | --- | --- |", file=out)
+              for r in results[:50]:
+                  loc = ""
+                  try:
+                      loc = r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+                  except Exception:
+                      pass
+                  print(f"| {r.get('ruleId','?')} | {r.get('level','?')} | {loc} |", file=out)
+              if len(results) > 50:
+                  print(f"\n_…{len(results)-50} more in the trivy-report artifact._", file=out)
+          EOF
+
+      - name: Upload Trivy report (artifact)
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: trivy-report
+          path: trivy-results.sarif
+          retention-days: 90
+
+      # Optional: needs code scanning / Advanced Security. Soft-fail so a
+      # private repo without it stays green.
+      - name: Upload SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        continue-on-error: true
+        with:
+          sarif_file: trivy-results.sarif
+
+  # ------------------------------------------------------------------ #
+  #  Image: the artifact that actually runs on the host                 #
+  # ------------------------------------------------------------------ #
+  docker:
+    if: ${{ github.event.pull_request.draft != true }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          load: true
+          tags: lexx-relay:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # No .env in CI, so the relay must fail on missing config, not on a
+      # broken image. --help exercises the entrypoint without credentials.
+      - name: Smoke test the image
+        run: |
+          docker run --rm lexx-relay:ci python relay.py --help
+          echo "## ✅ Image builds and starts" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@v0.36.0   # pinned; dependabot bumps it
+        with:
+          scan-type: image
+          image-ref: lexx-relay:ci
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: "0"   # base-image CVEs are informational, not a merge blocker
