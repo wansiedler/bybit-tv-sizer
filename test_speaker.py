@@ -6,6 +6,7 @@ started on a real ephemeral port and fetched over loopback.
 """
 
 import asyncio
+import stat
 import sys
 import types
 import urllib.request
@@ -62,6 +63,22 @@ def test_spoken_reads_the_trend_out(compact, expected):
 )
 def test_spoken_refuses_anything_else(compact):
     assert speaker.spoken(compact) is None
+
+
+def test_ensure_dir_tightens_a_directory_that_already_exists(wired):
+    """mkdir's mode is ignored for an existing directory; chmod is not."""
+    wired.mkdir(parents=True)
+    wired.chmod(0o755)
+
+    speaker.ensure_dir()
+
+    assert stat.S_IMODE(wired.stat().st_mode) == 0o700
+
+
+def test_ensure_dir_creates_it_private(wired):
+    speaker.ensure_dir()
+
+    assert stat.S_IMODE(wired.stat().st_mode) == 0o700
 
 
 # --------------------------------------------------------------------------- #
