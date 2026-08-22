@@ -1,3 +1,9 @@
+# Declared ranges, not the installed set. Everything that actually runs — in
+# the image and in CI — is installed from requirements.lock, which pins exact
+# versions with hashes. Regenerate it after editing this file:
+#
+#     uv pip compile requirements.txt --generate-hashes -o requirements.lock
+#
 telethon>=1.44.0
 httpx>=0.28.1
 python-dotenv>=1.2.3

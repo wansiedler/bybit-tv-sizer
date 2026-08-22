@@ -62,8 +62,12 @@ class Stats:
             self.spoken += 1
 
 
+class Refused(Exception):
+    """Telegram answered, but said no. Backing off is the only sane response."""
+
+
 async def fetch_updates(http: httpx.AsyncClient, offset: int | None) -> list[dict]:
-    """One long poll. Returns the updates, or an empty list on any refusal."""
+    """One long poll. Raises Refused when Telegram rejects the request."""
     params: dict[str, object] = {"timeout": POLL_TIMEOUT}
     if offset is not None:
         params["offset"] = offset
@@ -74,8 +78,9 @@ async def fetch_updates(http: httpx.AsyncClient, offset: int | None) -> list[dic
     )
     payload = response.json()
     if not payload.get("ok"):
-        log.warning("getUpdates refused: %s", payload)
-        return []
+        # Returning an empty list here would send us straight back for more,
+        # hammering the API for as long as the token stays invalid.
+        raise Refused(str(payload))
     updates: list[dict] = payload.get("result", [])
     return updates
 
@@ -141,7 +146,7 @@ async def poll(http: httpx.AsyncClient, stats: Stats, send, speak, speaking: boo
     while True:
         try:
             updates = await fetch_updates(http, offset)
-        except (httpx.HTTPError, ValueError):
+        except (httpx.HTTPError, ValueError, Refused):
             log.exception("getUpdates failed")
             await asyncio.sleep(5)
             continue
