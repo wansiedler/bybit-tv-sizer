@@ -1,0 +1,406 @@
+"""Tests for the relay itself: config, delivery, lifecycle and shutdown.
+
+Nothing here touches the network or Telegram. `TelegramClient` and
+`httpx.AsyncClient` are replaced with fakes, and the signal handlers the relay
+installs are captured through a recording event loop so the shutdown path can
+be driven deterministically instead of by actually killing the test process.
+"""
+
+import asyncio
+import signal
+from types import SimpleNamespace
+
+import httpx
+import pytest
+
+import relay
+
+
+# --------------------------------------------------------------------------- #
+#  Fakes                                                                       #
+# --------------------------------------------------------------------------- #
+class FakeResponse:
+    def __init__(self, status_code=200, payload=None, text=""):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {}
+        self.text = text
+
+    def json(self):
+        return self._payload
+
+
+class FakeHTTP:
+    """Stands in for httpx.AsyncClient: records posts, replays canned answers."""
+
+    def __init__(self, post_response=None, post_error=None, get_response=None):
+        self._post_response = post_response or FakeResponse()
+        self._post_error = post_error
+        self._get_response = get_response or FakeResponse(
+            payload={"ok": True, "result": {"username": "bot"}}
+        )
+        self.posted: list[str] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url, json=None, timeout=None):
+        if self._post_error is not None:
+            raise self._post_error
+        self.posted.append(json["text"])
+        return self._post_response
+
+    async def get(self, url, timeout=None):
+        return self._get_response
+
+
+class FakeClient:
+    """Stands in for telethon's TelegramClient."""
+
+    instances: list["FakeClient"] = []
+
+    def __init__(self, session, api_id, api_hash):
+        self.session = session
+        self.api_id = api_id
+        self.api_hash = api_hash
+        self.handler = None
+        self.disconnected = False
+        self.entity_error = None
+        self.on_run = None
+        FakeClient.instances.append(self)
+
+    def on(self, event):
+        def register(fn):
+            self.handler = fn
+            return fn
+
+        return register
+
+    async def start(self):
+        return self
+
+    async def get_me(self):
+        return SimpleNamespace(username="tester", id=42)
+
+    async def get_entity(self, name):
+        if self.entity_error is not None:
+            raise self.entity_error
+        return SimpleNamespace(id=99)
+
+    async def run_until_disconnected(self):
+        if self.on_run is not None:
+            await self.on_run(self)
+
+    async def disconnect(self):
+        self.disconnected = True
+
+
+class RecordingLoop:
+    """Wraps the real loop so the relay's signal handlers can be called by hand."""
+
+    def __init__(self, real, sink):
+        self._real = real
+        self._sink = sink
+
+    def add_signal_handler(self, sig, callback, *args):
+        self._sink[sig] = (callback, args)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+@pytest.fixture
+def config(monkeypatch):
+    """A complete, valid configuration."""
+    monkeypatch.setattr(relay, "API_ID", "12345")
+    monkeypatch.setattr(relay, "API_HASH", "cafe")
+    monkeypatch.setattr(relay, "BOT_TOKEN", "token")
+    monkeypatch.setattr(relay, "TARGET_CHAT_ID", "777")
+    monkeypatch.setattr(relay, "NOTIFY_LIFECYCLE", True)
+
+
+@pytest.fixture(autouse=True)
+def _reset_clients():
+    FakeClient.instances.clear()
+    yield
+    FakeClient.instances.clear()
+
+
+# --------------------------------------------------------------------------- #
+#  require_config                                                              #
+# --------------------------------------------------------------------------- #
+def test_require_config_returns_credentials(config):
+    assert relay.require_config() == (12345, "cafe")
+
+
+def test_require_config_lists_every_missing_name(monkeypatch):
+    monkeypatch.setattr(relay, "API_ID", None)
+    monkeypatch.setattr(relay, "API_HASH", "")
+    monkeypatch.setattr(relay, "BOT_TOKEN", "token")
+    monkeypatch.setattr(relay, "TARGET_CHAT_ID", None)
+
+    with pytest.raises(SystemExit) as exit_info:
+        relay.require_config()
+
+    message = str(exit_info.value)
+    assert "TG_API_ID" in message
+    assert "TG_API_HASH" in message
+    assert "TARGET_CHAT_ID" in message
+    assert "BOT_TOKEN" not in message
+
+
+def test_require_config_rejects_non_numeric_api_id(config, monkeypatch):
+    monkeypatch.setattr(relay, "API_ID", "not-a-number")
+
+    with pytest.raises(SystemExit) as exit_info:
+        relay.require_config()
+
+    assert "must be numeric" in str(exit_info.value)
+
+
+# --------------------------------------------------------------------------- #
+#  send_via_bot                                                                #
+# --------------------------------------------------------------------------- #
+def test_send_via_bot_accepted(config):
+    http = FakeHTTP()
+
+    assert asyncio.run(relay.send_via_bot(http, "OP 📈 1.0")) is True
+    assert http.posted == ["OP 📈 1.0"]
+
+
+def test_send_via_bot_rejected_by_telegram(config):
+    http = FakeHTTP(post_response=FakeResponse(status_code=400, text="bad chat"))
+
+    assert asyncio.run(relay.send_via_bot(http, "OP 📈 1.0")) is False
+
+
+def test_send_via_bot_survives_transport_error(config):
+    http = FakeHTTP(post_error=httpx.ConnectError("no route"))
+
+    assert asyncio.run(relay.send_via_bot(http, "OP 📈 1.0")) is False
+
+
+# --------------------------------------------------------------------------- #
+#  human                                                                       #
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [
+        (9, "9s"),
+        (65, "1m5s"),
+        (3 * 3600 + 12 * 60, "3h12m"),
+        (2 * 86400 + 5 * 3600, "2d5h"),
+    ],
+)
+def test_human_uptime(seconds, expected):
+    assert relay.human(seconds) == expected
+
+
+# --------------------------------------------------------------------------- #
+#  notify                                                                      #
+# --------------------------------------------------------------------------- #
+def test_notify_posts_when_enabled(config):
+    http = FakeHTTP()
+
+    asyncio.run(relay.notify(http, "🟢 up"))
+
+    assert http.posted == ["🟢 up"]
+
+
+def test_notify_silent_when_disabled(config, monkeypatch):
+    monkeypatch.setattr(relay, "NOTIFY_LIFECYCLE", False)
+    http = FakeHTTP()
+
+    asyncio.run(relay.notify(http, "🟢 up"))
+
+    assert http.posted == []
+
+
+def test_notify_swallows_failures(config, monkeypatch):
+    async def explode(http, text):
+        raise RuntimeError("telegram is down")
+
+    monkeypatch.setattr(relay, "send_via_bot", explode)
+
+    asyncio.run(relay.notify(FakeHTTP(), "🔴 down"))  # must not raise
+
+
+# --------------------------------------------------------------------------- #
+#  check                                                                       #
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def patched(config, monkeypatch):
+    """Wire the fakes in and hand back the HTTP double the code will use."""
+    http = FakeHTTP()
+    monkeypatch.setattr(relay, "TelegramClient", FakeClient)
+    monkeypatch.setattr(relay.httpx, "AsyncClient", lambda *a, **kw: http)
+    return http
+
+
+def test_check_passes(patched):
+    asyncio.run(relay.check())
+
+    assert patched.posted and patched.posted[0].endswith("(relay test)")
+    assert FakeClient.instances[0].disconnected is True
+
+
+def test_check_exits_when_source_unresolvable(patched, monkeypatch):
+    def make_client(session, api_id, api_hash):
+        client = FakeClient(session, api_id, api_hash)
+        client.entity_error = ValueError("no such user")
+        return client
+
+    monkeypatch.setattr(relay, "TelegramClient", make_client)
+
+    with pytest.raises(SystemExit) as exit_info:
+        asyncio.run(relay.check())
+
+    assert exit_info.value.code == 1
+    assert FakeClient.instances[0].disconnected is True
+
+
+def test_check_exits_when_bot_token_rejected(config, monkeypatch):
+    http = FakeHTTP(get_response=FakeResponse(payload={"ok": False}))
+    monkeypatch.setattr(relay, "TelegramClient", FakeClient)
+    monkeypatch.setattr(relay.httpx, "AsyncClient", lambda *a, **kw: http)
+
+    with pytest.raises(SystemExit) as exit_info:
+        asyncio.run(relay.check())
+
+    assert exit_info.value.code == 1
+
+
+def test_check_exits_when_test_line_not_delivered(config, monkeypatch):
+    http = FakeHTTP(post_response=FakeResponse(status_code=403, text="blocked"))
+    monkeypatch.setattr(relay, "TelegramClient", FakeClient)
+    monkeypatch.setattr(relay.httpx, "AsyncClient", lambda *a, **kw: http)
+
+    with pytest.raises(SystemExit) as exit_info:
+        asyncio.run(relay.check())
+
+    assert exit_info.value.code == 1
+
+
+# --------------------------------------------------------------------------- #
+#  run                                                                         #
+# --------------------------------------------------------------------------- #
+def _run_relay(monkeypatch, on_run, http=None):
+    """Drive run() with a fake client, returning (http double, signal handlers)."""
+    http = http or FakeHTTP()
+    handlers: dict = {}
+
+    def make_client(session, api_id, api_hash):
+        client = FakeClient(session, api_id, api_hash)
+        client.on_run = on_run
+        return client
+
+    real_get_loop = asyncio.get_running_loop
+
+    def recording_loop():
+        return RecordingLoop(real_get_loop(), handlers)
+
+    monkeypatch.setattr(relay, "TelegramClient", make_client)
+    monkeypatch.setattr(relay.httpx, "AsyncClient", lambda *a, **kw: http)
+    monkeypatch.setattr(relay.asyncio, "get_running_loop", recording_loop)
+
+    asyncio.run(relay.run())
+    return http, handlers
+
+
+def test_run_reports_up_and_down(config, monkeypatch):
+    async def disconnect_immediately(client):
+        return None
+
+    http, handlers = _run_relay(monkeypatch, disconnect_immediately)
+
+    assert signal.SIGTERM in handlers
+    assert signal.SIGINT in handlers
+    assert http.posted[0].startswith("🟢")
+    # Nothing signalled the relay, so the reason is the dropped connection.
+    assert "connection lost" in http.posted[-1]
+    assert FakeClient.instances[0].disconnected is True
+
+
+def test_run_shuts_down_on_sigterm(config, monkeypatch):
+    async def signal_then_hang(client):
+        callback, args = _handlers[signal.SIGTERM]
+        callback(*args)
+        callback(*args)  # second delivery must not overwrite the reason
+        await asyncio.sleep(3600)
+
+    _handlers: dict = {}
+
+    def make_client(session, api_id, api_hash):
+        client = FakeClient(session, api_id, api_hash)
+        client.on_run = signal_then_hang
+        return client
+
+    http = FakeHTTP()
+    real_get_loop = asyncio.get_running_loop
+    monkeypatch.setattr(relay, "TelegramClient", make_client)
+    monkeypatch.setattr(relay.httpx, "AsyncClient", lambda *a, **kw: http)
+    monkeypatch.setattr(
+        relay.asyncio,
+        "get_running_loop",
+        lambda: RecordingLoop(real_get_loop(), _handlers),
+    )
+
+    asyncio.run(relay.run())
+
+    assert "SIGTERM" in http.posted[-1]
+    assert http.posted[-1].startswith("🔴")
+
+
+def test_run_relays_alerts_and_skips_noise(config, monkeypatch):
+    async def feed_messages(client):
+        await client.handler(SimpleNamespace(raw_text="Бот запущен"))
+        await client.handler(
+            SimpleNamespace(
+                raw_text=(
+                    "🔔 #OPUSDT OPUSDT, Пересечение 0.10282\n"
+                    "-  exchange:  #BybitFutures\n"
+                    "-  trend: 📈\n"
+                    "-  price: 0.10277"
+                )
+            )
+        )
+
+    http, _ = _run_relay(monkeypatch, feed_messages)
+
+    # startup notice, the one relayed alert, shutdown notice — the noise line
+    # never reaches Telegram.
+    assert http.posted[1] == "OP 📈 0.10277"
+    assert len(http.posted) == 3
+
+
+# --------------------------------------------------------------------------- #
+#  main                                                                        #
+# --------------------------------------------------------------------------- #
+def test_main_runs_the_relay(monkeypatch):
+    called = []
+
+    async def fake_run():
+        called.append("run")
+
+    monkeypatch.setattr(relay.sys, "argv", ["relay.py"])
+    monkeypatch.setattr(relay, "run", fake_run)
+
+    relay.main()
+
+    assert called == ["run"]
+
+
+def test_main_check_flag_runs_the_check(monkeypatch):
+    called = []
+
+    async def fake_check():
+        called.append("check")
+
+    monkeypatch.setattr(relay.sys, "argv", ["relay.py", "--check"])
+    monkeypatch.setattr(relay, "check", fake_check)
+
+    relay.main()
+
+    assert called == ["check"]

@@ -89,9 +89,12 @@ With coverage, the way CI runs it:
 .venv/bin/pytest --cov --cov-report=term-missing
 ```
 
-Coverage sits at ~15%: `parser.py` is fully covered, `relay.py` is not covered
-at all. `fail_under` in `pyproject.toml` is a floor against regression, not a
-target — raise it as tests land.
+Every shipped file is at 100%, statements and branches both, and
+`fail_under = 100` in `pyproject.toml` keeps it there — a new line without a
+test reds the build. Telegram and the network are never touched: `TelegramClient`
+and `httpx.AsyncClient` are replaced with fakes, and the shutdown path is driven
+by calling the relay's own signal handlers through a recording event loop rather
+than by signalling the test process.
 
 ## Development
 

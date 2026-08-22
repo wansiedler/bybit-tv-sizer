@@ -22,20 +22,19 @@ addopts = "-q"
 
 [tool.coverage.run]
 source = ["."]
-# chat_id.py and setup_env.py are one-shot setup scripts run by a human once;
-# measuring them only drags the number down without saying anything useful.
+# Branch coverage too: "every line ran" is a weaker claim than "every
+# decision went both ways", and the suite meets the stronger one.
+branch = true
 omit = [
     "test_*.py",
-    "chat_id.py",
-    "setup_env.py",
     ".venv/*",
     "session/*",
 ]
 
 [tool.coverage.report]
-# Floor, not a target: it stops coverage sliding backwards. Raise it as
-# tests land; relay.py is the untested half today.
-fail_under = 14
+# The suite covers every line of every shipped file. Anything less is a
+# regression, so the floor is the ceiling.
+fail_under = 100
 show_missing = true
 skip_covered = false
 exclude_lines = [
