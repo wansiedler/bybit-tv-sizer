@@ -123,10 +123,10 @@ jobs:
           pip install -r requirements.txt
           pip install -r .github/requirements-ci.txt
 
-      - name: pytest
+      - name: pytest with coverage
         run: |
           set +e
-          out=$(pytest --color=no 2>&1)
+          out=$(pytest --cov --cov-report=term-missing --cov-report=xml --color=no 2>&1)
           rc=$?
           set -e
           echo "$out"
@@ -134,10 +134,52 @@ jobs:
             echo "## $([ $rc -eq 0 ] && echo '✅' || echo '❌') pytest (py${{ matrix.python-version }})"
             echo ""
             echo '```'
-            tail -n 20 <<< "$out"
+            tail -n 25 <<< "$out"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
+
+      # Per-file coverage as a table, so the number is visible without opening
+      # the step log or downloading the artifact.
+      - name: Coverage table to Summary
+        if: ${{ !cancelled() }}
+        run: |
+          python3 - <<'EOF'
+          import os, xml.etree.ElementTree as ET
+          out = open(os.environ["GITHUB_STEP_SUMMARY"], "a")
+          py = os.environ["PY_VERSION"]
+          try:
+              root = ET.parse("coverage.xml").getroot()
+          except Exception as exc:
+              print(f"### ⚠️ Coverage (py{py}): no report ({exc})", file=out)
+              raise SystemExit(0)
+          total = float(root.get("line-rate", 0)) * 100
+          print(f"### Coverage (py{py}): **{total:.0f}%**", file=out)
+          print("", file=out)
+          print("| File | Statements | Missed | Covered |", file=out)
+          print("| --- | ---: | ---: | ---: |", file=out)
+          for cls in sorted(root.iter("class"), key=lambda c: c.get("filename")):
+              found = cls.find("lines")
+              lines = list(found) if found is not None else []
+              stmts = len(lines)
+              missed = sum(1 for line in lines if line.get("hits") == "0")
+              rate = float(cls.get("line-rate", 0)) * 100
+              mark = "✅" if rate == 100 else ("⚠️" if rate else "❌")
+              print(
+                  f"| `{cls.get('filename')}` | {stmts} | {missed} | {mark} {rate:.0f}% |",
+                  file=out,
+              )
+          EOF
+        env:
+          PY_VERSION: ${{ matrix.python-version }}
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage-py${{ matrix.python-version }}
+          path: coverage.xml
+          retention-days: 30
 
       # relay.py imports telethon/httpx at module level; a broken import must
       # not wait for a container restart at 3am to be discovered. chat_id.py is

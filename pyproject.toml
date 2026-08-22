@@ -19,3 +19,26 @@ disallow_incomplete_defs = false
 testpaths = ["."]
 python_files = ["test_*.py"]
 addopts = "-q"
+
+[tool.coverage.run]
+source = ["."]
+# chat_id.py and setup_env.py are one-shot setup scripts run by a human once;
+# measuring them only drags the number down without saying anything useful.
+omit = [
+    "test_*.py",
+    "chat_id.py",
+    "setup_env.py",
+    ".venv/*",
+    "session/*",
+]
+
+[tool.coverage.report]
+# Floor, not a target: it stops coverage sliding backwards. Raise it as
+# tests land; relay.py is the untested half today.
+fail_under = 14
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+]
