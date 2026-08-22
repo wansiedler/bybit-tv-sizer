@@ -175,7 +175,7 @@ def test_cast_url_hands_the_speaker_a_url(wired, stub_cast):
     assert stub_cast["host"] == "192.0.2.10"
     assert stub_cast["port"] == 8009
     assert str(stub_cast["uuid"])  # a device identity was supplied
-    assert stub_cast["played"] == [("http://192.0.2.20:8422/alert-1.mp3", "audio/mp3")]
+    assert stub_cast["played"] == [("http://192.0.2.20:8422/alert-1.mp3", "audio/mpeg")]
     assert stub_cast["disconnected"] == 1
 
 

@@ -21,7 +21,7 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 5
 
-  # python:3.13-slim base image.
+  # python:3.14-slim base image.
   - package-ecosystem: "docker"
     directory: "/"
     schedule:

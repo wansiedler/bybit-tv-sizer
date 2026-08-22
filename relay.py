@@ -266,13 +266,16 @@ async def run() -> None:
             )
             listening = asyncio.create_task(client.run_until_disconnected())
             stopping = asyncio.create_task(shutdown.event.wait())
-            _, pending = await asyncio.wait(
+            done, pending = await asyncio.wait(
                 {listening, stopping}, return_when=asyncio.FIRST_COMPLETED
             )
             pending.add(answering)
             for task in pending:
                 task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
+            # `done` is gathered too: if run_until_disconnected raised, its
+            # exception has to be retrieved here, or asyncio complains about it
+            # at garbage-collection time long after the fact.
+            await asyncio.gather(*pending, *done, return_exceptions=True)
 
             uptime = human(time.time() - started)
             await notify(http, f"🔴 {RELAY_NAME} down — {shutdown.reason}, uptime {uptime}")
