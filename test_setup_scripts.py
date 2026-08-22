@@ -136,7 +136,7 @@ def test_main_writes_every_answer(setup_env, tmp_path, monkeypatch, capsys):
     assert written["BOT_TOKEN"] == "token"
     assert written["TARGET_CHAT_ID"] == "777"
     assert written["SOURCE_CHAT"] == "custom_source"
-    assert written["SESSION_NAME"] == "lexx_relay"
+    assert written["SESSION_NAME"] == "session/lexx_relay"
 
     mode = stat.S_IMODE(os.stat(tmp_path / ".env").st_mode)
     assert mode == stat.S_IRUSR | stat.S_IWUSR

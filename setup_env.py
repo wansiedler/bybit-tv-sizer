@@ -43,7 +43,9 @@ def main() -> None:
             values[key] = entered
 
     values.setdefault("SOURCE_CHAT", "source_bot")
-    values.setdefault("SESSION_NAME", "lexx_relay")
+    # Inside session/, the directory Docker mounts at /app/session, so a
+    # desktop run and a container run share one Telethon login.
+    values.setdefault("SESSION_NAME", "session/lexx_relay")
 
     with open(ENV_PATH, "w", encoding="utf-8") as handle:
         for key in [
