@@ -51,7 +51,7 @@ bot for delivery.
    ```
 
 4. First run asks for your phone, the login code, and 2FA password if set. The
-   login stays local in `lexx_relay.session`:
+   login stays local in `session/lexx_relay.session`:
 
    ```bash
    .venv/bin/python relay.py --check
