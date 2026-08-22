@@ -88,6 +88,17 @@ async def send_via_bot(http: httpx.AsyncClient, text: str) -> bool:
         log.error("sendMessage %s: %s", response.status_code, response.text)
         return False
 
+    # A 200 is not acceptance: Telegram reports refusals in the body, and
+    # treating those as delivered loses the message silently.
+    try:
+        payload = response.json()
+    except ValueError:
+        log.error("sendMessage returned no JSON: %s", response.text[:200])
+        return False
+    if not payload.get("ok"):
+        log.error("sendMessage refused: %s", payload)
+        return False
+
     log.info("sent: %s", text)
     return True
 
@@ -219,48 +230,57 @@ async def run() -> None:
 
     shutdown = _Shutdown()
     shutdown.install()
+    audio = None
+    uptime = "0s"
 
-    async with httpx.AsyncClient() as http:
-        stats = commands.Stats()
-        _register_listeners(client, http, stats)
+    # Everything below runs under try/finally: an exception on the way up —
+    # a rejected login, a speaker port already taken — must still close the
+    # client and the audio server rather than leak both.
+    try:
+        async with httpx.AsyncClient() as http:
+            stats = commands.Stats()
+            _register_listeners(client, http, stats)
 
-        await client.start()
-        me = await client.get_me()
-        who = me.username or me.id
-        log.info("listening to %s as @%s", SOURCE, who)
-        if WATCH_USERS:
-            log.info("watching users: %s", ", ".join(f"@{u}" for u in WATCH_USERS))
+            await client.start()
+            me = await client.get_me()
+            who = me.username or me.id
+            log.info("listening to %s as @%s", SOURCE, who)
+            if WATCH_USERS:
+                log.info("watching users: %s", ", ".join(f"@{u}" for u in WATCH_USERS))
 
-        # The speaker fetches its audio from us, so the file server has to be
-        # up before the first alert can arrive.
-        audio = speaker.serve_forever() if speaker.enabled() else None
+            # The speaker fetches its audio from us, so the file server has to be
+            # up before the first alert can arrive.
+            audio = speaker.serve_forever() if speaker.enabled() else None
 
-        started = time.time()
-        await notify(http, f"🟢 {RELAY_NAME} up — listening {SOURCE} as @{who}")
+            started = time.time()
+            await notify(http, f"🟢 {RELAY_NAME} up — listening {SOURCE} as @{who}")
 
-        answering = asyncio.create_task(
-            commands.poll(
-                http,
-                stats,
-                lambda text: send_via_bot(http, text),
-                speaker.announce,
-                speaker.enabled(),
+            answering = asyncio.create_task(
+                commands.poll(
+                    http,
+                    stats,
+                    lambda text: send_via_bot(http, text),
+                    speaker.announce,
+                    speaker.enabled(),
+                )
             )
-        )
-        listening = asyncio.create_task(client.run_until_disconnected())
-        stopping = asyncio.create_task(shutdown.event.wait())
-        _, pending = await asyncio.wait({listening, stopping}, return_when=asyncio.FIRST_COMPLETED)
-        pending.add(answering)
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
+            listening = asyncio.create_task(client.run_until_disconnected())
+            stopping = asyncio.create_task(shutdown.event.wait())
+            _, pending = await asyncio.wait(
+                {listening, stopping}, return_when=asyncio.FIRST_COMPLETED
+            )
+            pending.add(answering)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
 
-        uptime = human(time.time() - started)
-        await notify(http, f"🔴 {RELAY_NAME} down — {shutdown.reason}, uptime {uptime}")
+            uptime = human(time.time() - started)
+            await notify(http, f"🔴 {RELAY_NAME} down — {shutdown.reason}, uptime {uptime}")
 
-    if audio is not None:
-        audio.shutdown()
-    await client.disconnect()
+    finally:
+        if audio is not None:
+            audio.shutdown()
+        await client.disconnect()
     log.info("stopped cleanly after %s", uptime)
 
 

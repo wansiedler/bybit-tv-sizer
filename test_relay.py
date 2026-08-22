@@ -23,7 +23,8 @@ import relay
 class FakeResponse:
     def __init__(self, status_code=200, payload=None, text=""):
         self.status_code = status_code
-        self._payload = payload if payload is not None else {}
+        # Telegram answers {"ok": true} on success; the relay checks it.
+        self._payload = payload if payload is not None else {"ok": True}
         self.text = text
 
     def json(self):
@@ -184,6 +185,23 @@ def test_send_via_bot_accepted(config):
 
 def test_send_via_bot_rejected_by_telegram(config):
     http = FakeHTTP(post_response=FakeResponse(status_code=400, text="bad chat"))
+
+    assert asyncio.run(relay.send_via_bot(as_client(http), "OP 📈 1.0")) is False
+
+
+def test_send_via_bot_rejects_a_200_that_says_no(config):
+    # Telegram reports refusals in the body; a 200 alone is not delivery.
+    http = FakeHTTP(post_response=FakeResponse(payload={"ok": False, "description": "blocked"}))
+
+    assert asyncio.run(relay.send_via_bot(as_client(http), "OP 📈 1.0")) is False
+
+
+def test_send_via_bot_rejects_a_body_that_is_not_json(config):
+    class NotJSON(FakeResponse):
+        def json(self):
+            raise ValueError("no json here")
+
+    http = FakeHTTP(post_response=NotJSON(text="<html>gateway</html>"))
 
     assert asyncio.run(relay.send_via_bot(as_client(http), "OP 📈 1.0")) is False
 

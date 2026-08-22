@@ -212,13 +212,21 @@ def test_fetch_updates_omits_a_missing_offset(owner):
     assert "offset" not in http.params[0]
 
 
-def test_fetch_updates_on_refusal(owner, caplog):
+def test_fetch_updates_raises_on_refusal(owner):
+    # An empty list would send poll() straight back for more, hammering the API.
     http = FakeHTTP({"ok": False, "description": "Unauthorized"})
+    polling = commands.fetch_updates(http, None)
 
-    with caplog.at_level("WARNING", logger="relay.commands"):
-        assert asyncio.run(commands.fetch_updates(http, None)) == []
+    with pytest.raises(commands.Refused):
+        asyncio.run(polling)
 
-    assert "getUpdates refused" in caplog.text
+
+def test_poll_backs_off_when_telegram_refuses(owner, monkeypatch):
+    rec = Recorder()
+
+    _run_poll(monkeypatch, [commands.Refused("Unauthorized"), [_update("/ping", update_id=1)]], rec)
+
+    assert rec.sent == ["pong"]
 
 
 # --------------------------------------------------------------------------- #

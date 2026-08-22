@@ -141,7 +141,7 @@ The CI gates run locally through the same hook suite:
 
 ```bash
 uv venv .venv --python 3.13
-uv pip install --python .venv/bin/python -r requirements.txt -r .github/requirements-ci.txt
+uv pip install --python .venv/bin/python -r requirements.lock -r .github/requirements-ci.lock
 .venv/bin/pre-commit install --install-hooks
 .venv/bin/pre-commit run --all-files
 ```
