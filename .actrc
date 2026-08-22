@@ -1,0 +1,14 @@
+# Local `act` defaults (read automatically from the repo root).
+# NOTE: act only reads lines starting with "-"; inline comments after a flag
+# are parsed as arguments, so keep flags on their own bare lines.
+--reuse
+--action-offline-mode
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
+# act mounts DOCKER_HOST's socket into every job container; a colima socket is
+# a macOS unix socket and cannot cross virtiofs, so the run dies in "Set up
+# job". "-" disables the mount. Only the `docker` job needs a daemon inside,
+# and that one is left to real CI.
+--container-daemon-socket -
+# Stay on the native arch: a linux/amd64 image on Apple Silicon carries an
+# amd64 node, which act's post-steps cannot exec (nektos/act#107).
+--env GIT_TERMINAL_PROMPT=0

@@ -100,18 +100,16 @@ CI adds pytest on 3.12/3.13, actionlint, a Trivy filesystem and image scan, and
 an image build with a smoke test.
 
 The workflow itself can be run locally with [act](https://nektosact.com);
-defaults live in `.actrc`. On a colima host act first needs a socket at the
-default path — it mounts whatever `DOCKER_HOST` points at into every job
-container, and a macOS unix socket cannot cross virtiofs. One-time, and lost on
-reboot:
+the settings that make it work on a colima host live in `.actrc`. Point act at
+the daemon and run a job:
 
 ```bash
-sudo ln -sf "$HOME/.colima/default/docker.sock" /var/run/docker.sock
-```
-
-```bash
+export DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"
 act -j tests
 ```
+
+The `docker` job is the one to leave to real CI — it needs a daemon inside the
+job container, which is exactly the mount `.actrc` disables.
 
 ## Tuning
 
