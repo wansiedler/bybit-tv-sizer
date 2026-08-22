@@ -241,6 +241,7 @@ jobs:
     permissions:
       contents: read
       security-events: write
+      actions: read   # codeql-action reads the run it belongs to
     steps:
       - uses: actions/checkout@v7
 
@@ -301,11 +302,14 @@ jobs:
           path: trivy-results.sarif
           retention-days: 90
 
-      # Optional: needs code scanning / Advanced Security. Soft-fail so a
-      # private repo without it stays green.
+      # The Security tab needs code scanning, which on a private repo means
+      # GitHub Advanced Security. Without it the upload cannot succeed and
+      # prints an error annotation on every single run, so it is opt-in:
+      #   gh variable set ENABLE_CODE_SCANNING --body true
+      # The trivy-report artifact above carries the same SARIF either way.
       - name: Upload SARIF to GitHub Security
         uses: github/codeql-action/upload-sarif@v4
-        if: ${{ always() && !env.ACT }}
+        if: ${{ always() && !env.ACT && vars.ENABLE_CODE_SCANNING == 'true' }}
         continue-on-error: true
         with:
           sarif_file: trivy-results.sarif
