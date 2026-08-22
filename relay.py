@@ -60,13 +60,12 @@ def require_config() -> tuple[int, str]:
     ]
     if missing:
         sys.exit(f"Missing in .env: {', '.join(missing)}")
-    # The list above already covers this; the explicit test is what narrows
-    # str | None to str for the type checker.
-    if not API_ID or not API_HASH:
-        sys.exit("Missing in .env: TG_API_ID, TG_API_HASH")
-    if not API_ID.isdigit():
-        sys.exit(f"TG_API_ID must be numeric, got {API_ID!r}")
-    return int(API_ID), API_HASH
+    # `or ""` is what narrows str | None to str; the list above has already
+    # ruled the empty case out, so no unreachable branch is left behind.
+    api_id, api_hash = API_ID or "", API_HASH or ""
+    if not api_id.isdigit():
+        sys.exit(f"TG_API_ID must be numeric, got {api_id!r}")
+    return int(api_id), api_hash
 
 
 async def send_via_bot(http: httpx.AsyncClient, text: str) -> bool:
