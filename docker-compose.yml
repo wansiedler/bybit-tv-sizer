@@ -1,0 +1,15 @@
+services:
+  relay:
+    build: .
+    image: lexx-relay
+    container_name: lexx-relay
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SESSION_NAME: /app/session/lexx_relay
+    volumes:
+      - ./session:/app/session
+    # First run needs a terminal for the Telegram login code:
+    #   docker compose run --rm relay python relay.py --check
+    stdin_open: true
+    tty: true
