@@ -157,54 +157,72 @@ async def check() -> None:
     log.info("check passed")
 
 
+class _Shutdown:
+    """SIGTERM/SIGINT wired to an event, remembering which signal arrived."""
+
+    def __init__(self) -> None:
+        self.event = asyncio.Event()
+        self.reason = "connection lost"
+
+    def install(self) -> None:
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, self._request, sig.name)
+
+    def _request(self, signame: str) -> None:
+        if self.event.is_set():
+            return
+        self.reason = signame
+        log.info("%s received, shutting down", signame)
+        self.event.set()
+
+
+async def _relay_watched(http: httpx.AsyncClient, stats: commands.Stats, event) -> None:
+    """Forward one watched user's message verbatim, with who and where."""
+    text = event.raw_text
+    if not text:
+        return
+    sender = await event.get_sender()
+    who = getattr(sender, "username", None) or getattr(sender, "first_name", None) or "?"
+    chat = await event.get_chat()
+    where = getattr(chat, "title", None) or getattr(chat, "username", None) or "?"
+    # 4096 is Telegram's hard cap on sendMessage; stay under it.
+    await send_via_bot(http, f"👤 @{who} · {where}:\n{text}"[:4000])
+    stats.watched += 1
+
+
+def _register_listeners(client, http: httpx.AsyncClient, stats: commands.Stats) -> None:
+    """Attach the alert relay, and the watched-user relay when configured."""
+
+    @client.on(events.NewMessage(chats=SOURCE))
+    async def handler(event):
+        compact = parse_alert(event.raw_text)
+        if compact is None:
+            stats.skipped += 1
+            log.debug("skipped: %s", event.raw_text[:80].replace("\n", " "))
+            return
+        await send_via_bot(http, compact)
+        spoke = await speaker.announce(compact, stats.relayed + 1)
+        stats.record(compact, spoke)
+
+    if not WATCH_USERS:
+        return
+
+    @client.on(events.NewMessage(from_users=WATCH_USERS))
+    async def watched(event):
+        await _relay_watched(http, stats, event)
+
+
 async def run() -> None:
     api_id, api_hash = require_config()
     client = TelegramClient(SESSION, api_id, api_hash)
 
-    stop = asyncio.Event()
-    stop_reason = "connection lost"
-
-    def request_stop(signame: str) -> None:
-        nonlocal stop_reason
-        if not stop.is_set():
-            stop_reason = signame
-            log.info("%s received, shutting down", signame)
-            stop.set()
-
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, request_stop, sig.name)
+    shutdown = _Shutdown()
+    shutdown.install()
 
     async with httpx.AsyncClient() as http:
         stats = commands.Stats()
-
-        @client.on(events.NewMessage(chats=SOURCE))
-        async def handler(event):
-            compact = parse_alert(event.raw_text)
-            if compact is None:
-                stats.skipped += 1
-                log.debug("skipped: %s", event.raw_text[:80].replace("\n", " "))
-                return
-            await send_via_bot(http, compact)
-            spoke = await speaker.announce(compact, stats.relayed + 1)
-            stats.record(compact, spoke)
-
-        if WATCH_USERS:
-
-            @client.on(events.NewMessage(from_users=WATCH_USERS))
-            async def watched(event):
-                text = event.raw_text
-                if not text:
-                    return
-                sender = await event.get_sender()
-                who = (
-                    getattr(sender, "username", None) or getattr(sender, "first_name", None) or "?"
-                )
-                chat = await event.get_chat()
-                where = getattr(chat, "title", None) or getattr(chat, "username", None) or "?"
-                # 4096 is Telegram's hard cap on sendMessage; stay under it.
-                await send_via_bot(http, f"👤 @{who} · {where}:\n{text}"[:4000])
-                stats.watched += 1
+        _register_listeners(client, http, stats)
 
         await client.start()
         me = await client.get_me()
@@ -230,7 +248,7 @@ async def run() -> None:
             )
         )
         listening = asyncio.create_task(client.run_until_disconnected())
-        stopping = asyncio.create_task(stop.wait())
+        stopping = asyncio.create_task(shutdown.event.wait())
         _, pending = await asyncio.wait({listening, stopping}, return_when=asyncio.FIRST_COMPLETED)
         pending.add(answering)
         for task in pending:
@@ -238,7 +256,7 @@ async def run() -> None:
         await asyncio.gather(*pending, return_exceptions=True)
 
         uptime = human(time.time() - started)
-        await notify(http, f"🔴 {RELAY_NAME} down — {stop_reason}, uptime {uptime}")
+        await notify(http, f"🔴 {RELAY_NAME} down — {shutdown.reason}, uptime {uptime}")
 
     if audio is not None:
         audio.shutdown()

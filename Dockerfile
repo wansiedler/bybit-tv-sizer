@@ -14,11 +14,10 @@ COPY requirements.lock .
 # dependency) publishes no wheel at all. Its sdist is still hash-pinned.
 # pip carries vendored copies of msgpack and setuptools that Trivy reports as
 # HIGH (they live in pip/_vendor/vendor.txt, not in anything we import). The
-# relay never installs anything at runtime, so pip leaves with them; setuptools
-# is upgraded first because that one is a real installed package.
-RUN pip install --no-cache-dir --upgrade --only-binary :all: setuptools \
-    && pip install --no-cache-dir --require-hashes --only-binary :all: --no-binary pyaes \
-         -r requirements.lock \
+# relay never installs anything at runtime, so pip leaves with them — and
+# setuptools is never installed at all, so there is nothing left to flag.
+RUN pip install --no-cache-dir --require-hashes --only-binary :all: --no-binary pyaes \
+        -r requirements.lock \
     && pip uninstall -y pip
 
 COPY parser.py relay.py speaker.py commands.py chat_id.py setup_env.py ./
