@@ -9,6 +9,7 @@ be driven deterministically instead of by actually killing the test process.
 import asyncio
 import signal
 from types import SimpleNamespace
+from typing import cast
 
 import httpx
 import pytest
@@ -97,6 +98,11 @@ class FakeClient:
         self.disconnected = True
 
 
+def as_client(fake: FakeHTTP) -> httpx.AsyncClient:
+    """The fake implements only what the relay calls; tell mypy that is enough."""
+    return cast(httpx.AsyncClient, fake)
+
+
 class RecordingLoop:
     """Wraps the real loop so the relay's signal handlers can be called by hand."""
 
@@ -166,20 +172,20 @@ def test_require_config_rejects_non_numeric_api_id(config, monkeypatch):
 def test_send_via_bot_accepted(config):
     http = FakeHTTP()
 
-    assert asyncio.run(relay.send_via_bot(http, "OP 📈 1.0")) is True
+    assert asyncio.run(relay.send_via_bot(as_client(http), "OP 📈 1.0")) is True
     assert http.posted == ["OP 📈 1.0"]
 
 
 def test_send_via_bot_rejected_by_telegram(config):
     http = FakeHTTP(post_response=FakeResponse(status_code=400, text="bad chat"))
 
-    assert asyncio.run(relay.send_via_bot(http, "OP 📈 1.0")) is False
+    assert asyncio.run(relay.send_via_bot(as_client(http), "OP 📈 1.0")) is False
 
 
 def test_send_via_bot_survives_transport_error(config):
     http = FakeHTTP(post_error=httpx.ConnectError("no route"))
 
-    assert asyncio.run(relay.send_via_bot(http, "OP 📈 1.0")) is False
+    assert asyncio.run(relay.send_via_bot(as_client(http), "OP 📈 1.0")) is False
 
 
 # --------------------------------------------------------------------------- #
@@ -204,7 +210,7 @@ def test_human_uptime(seconds, expected):
 def test_notify_posts_when_enabled(config):
     http = FakeHTTP()
 
-    asyncio.run(relay.notify(http, "🟢 up"))
+    asyncio.run(relay.notify(as_client(http), "🟢 up"))
 
     assert http.posted == ["🟢 up"]
 
@@ -213,7 +219,7 @@ def test_notify_silent_when_disabled(config, monkeypatch):
     monkeypatch.setattr(relay, "NOTIFY_LIFECYCLE", False)
     http = FakeHTTP()
 
-    asyncio.run(relay.notify(http, "🟢 up"))
+    asyncio.run(relay.notify(as_client(http), "🟢 up"))
 
     assert http.posted == []
 
@@ -224,7 +230,7 @@ def test_notify_swallows_failures(config, monkeypatch):
 
     monkeypatch.setattr(relay, "send_via_bot", explode)
 
-    asyncio.run(relay.notify(FakeHTTP(), "🔴 down"))  # must not raise
+    asyncio.run(relay.notify(as_client(FakeHTTP()), "🔴 down"))  # must not raise
 
 
 # --------------------------------------------------------------------------- #

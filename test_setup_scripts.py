@@ -17,6 +17,15 @@ import pytest
 REPO = Path(__file__).parent
 
 
+def _load_script(name: str, path: Path):
+    """Execute a script file into a throwaway module and hand it back."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 # --------------------------------------------------------------------------- #
 #  chat_id.py                                                                  #
 # --------------------------------------------------------------------------- #
@@ -34,10 +43,7 @@ def _exec_chat_id(monkeypatch, payload, token="token"):
     else:
         monkeypatch.setenv("BOT_TOKEN", token)
 
-    spec = importlib.util.spec_from_file_location("chat_id_under_test", REPO / "chat_id.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return _load_script("chat_id_under_test", REPO / "chat_id.py")
 
 
 def test_chat_id_exits_without_token(monkeypatch):
@@ -97,10 +103,7 @@ def test_chat_id_lists_every_kind_of_chat(monkeypatch, capsys):
 def setup_env(tmp_path, monkeypatch):
     """Import setup_env with its .env pointed at a temporary directory."""
     monkeypatch.chdir(tmp_path)
-    spec = importlib.util.spec_from_file_location("setup_env_under_test", REPO / "setup_env.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return _load_script("setup_env_under_test", REPO / "setup_env.py")
 
 
 def test_load_existing_without_file(setup_env):
@@ -158,7 +161,7 @@ def test_main_keeps_existing_values_on_blank_input(setup_env, tmp_path, monkeypa
     )
     assert written["TG_API_ID"] == "999"
     assert written["TG_API_HASH"] == "old-hash"
-    assert written["SOURCE_CHAT"] == "source_bot"   # default filled in
+    assert written["SOURCE_CHAT"] == "source_bot"  # default filled in
     assert written["BOT_TOKEN"] == ""
 
     assert any("[999]" in p for p in prompts)
