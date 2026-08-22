@@ -17,6 +17,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,6 +35,13 @@ TTS_HOST = os.getenv("TTS_HOST", "")
 TTS_PORT = int(os.getenv("TTS_PORT", "8422"))
 TTS_DIR = Path(os.getenv("TTS_DIR", "/tmp/lexx-tts"))
 SPEAK_ALERTS = os.getenv("SPEAK_ALERTS", "1").lower() not in ("0", "false", "no", "")
+# A speaker already running an app (YouTube Music, radio) hands our URL to that
+# app, which ignores it — the alert is silently swallowed. Quitting first is the
+# only way to be heard, at the cost of stopping whatever was playing. Set
+# SPEAK_INTERRUPT=0 to stay quiet instead of interrupting.
+SPEAK_INTERRUPT = os.getenv("SPEAK_INTERRUPT", "1").lower() not in ("0", "false", "no", "")
+# Google's default media receiver: the app that plays a plain URL.
+MEDIA_RECEIVER = "CC1AD845"
 
 # 📈 and 📉 carry the whole meaning of the line and are unpronounceable.
 TREND_WORDS = {"📈": "up", "📉": "down"}
@@ -101,9 +109,18 @@ def cast_url(url: str) -> None:
     )
     try:
         cast.wait(timeout=10)
+        if cast.app_id not in (None, MEDIA_RECEIVER):
+            if not SPEAK_INTERRUPT:
+                log.info("speaker busy with %s, staying quiet", cast.status.display_name)
+                return
+            log.info("interrupting %s", cast.status.display_name)
+            cast.quit_app()
+            deadline = time.monotonic() + 10
+            while cast.app_id not in (None, MEDIA_RECEIVER) and time.monotonic() < deadline:
+                time.sleep(0.5)
         controller = cast.media_controller
         controller.play_media(url, "audio/mp3")
-        controller.block_until_active(timeout=10)
+        controller.block_until_active(timeout=15)
     finally:
         cast.disconnect()
 

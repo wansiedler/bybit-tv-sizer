@@ -19,6 +19,7 @@ import httpx
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
 
+import commands
 import speaker
 from parser import parse_alert
 
@@ -171,18 +172,18 @@ async def run() -> None:
         loop.add_signal_handler(sig, request_stop, sig.name)
 
     async with httpx.AsyncClient() as http:
-        relayed = 0
+        stats = commands.Stats()
 
         @client.on(events.NewMessage(chats=SOURCE))
         async def handler(event):
-            nonlocal relayed
             compact = parse_alert(event.raw_text)
             if compact is None:
+                stats.skipped += 1
                 log.debug("skipped: %s", event.raw_text[:80].replace("\n", " "))
                 return
             await send_via_bot(http, compact)
-            relayed += 1
-            await speaker.announce(compact, relayed)
+            spoke = await speaker.announce(compact, stats.relayed + 1)
+            stats.record(compact, spoke)
 
         await client.start()
         me = await client.get_me()
@@ -196,9 +197,19 @@ async def run() -> None:
         started = time.time()
         await notify(http, f"🟢 {RELAY_NAME} up — listening {SOURCE} as @{who}")
 
+        answering = asyncio.create_task(
+            commands.poll(
+                http,
+                stats,
+                lambda text: send_via_bot(http, text),
+                speaker.announce,
+                speaker.enabled(),
+            )
+        )
         listening = asyncio.create_task(client.run_until_disconnected())
         stopping = asyncio.create_task(stop.wait())
         _, pending = await asyncio.wait({listening, stopping}, return_when=asyncio.FIRST_COMPLETED)
+        pending.add(answering)
         for task in pending:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
