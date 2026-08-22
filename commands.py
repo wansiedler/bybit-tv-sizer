@@ -21,8 +21,8 @@ from dotenv import load_dotenv
 log = logging.getLogger("relay.commands")
 
 # relay.py imports this module before it calls load_dotenv(), so the file has
-# to be read here too — otherwise every value below is None and the bot API
-# is polled as /botNone/getUpdates.
+# to be read here too — otherwise BOT_TOKEN and TARGET_CHAT_ID are None and
+# the bot API is polled as /botNone/getUpdates.
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
