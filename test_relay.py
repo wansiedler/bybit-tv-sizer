@@ -66,15 +66,20 @@ class FakeClient:
         self.session = session
         self.api_id = api_id
         self.api_hash = api_hash
-        self.handler = None
+        self.handlers: list = []
         self.disconnected = False
         self.entity_error = None
         self.on_run = None
         FakeClient.instances.append(self)
 
+    @property
+    def handler(self):
+        """The first registered handler — the alert relay."""
+        return self.handlers[0]
+
     def on(self, event):
         def register(fn):
-            self.handler = fn
+            self.handlers.append(fn)
             return fn
 
         return register
@@ -125,6 +130,7 @@ def config(monkeypatch):
     monkeypatch.setattr(relay, "BOT_TOKEN", "token")
     monkeypatch.setattr(relay, "TARGET_CHAT_ID", "777")
     monkeypatch.setattr(relay, "NOTIFY_LIFECYCLE", True)
+    monkeypatch.setattr(relay, "WATCH_USERS", ["some_trader"])
 
 
 @pytest.fixture(autouse=True)
@@ -260,8 +266,10 @@ def test_check_exits_when_source_unresolvable(patched, monkeypatch):
 
     monkeypatch.setattr(relay, "TelegramClient", make_client)
 
+    checking = relay.check()  # built here so only asyncio.run can raise below
+
     with pytest.raises(SystemExit) as exit_info:
-        asyncio.run(relay.check())
+        asyncio.run(checking)
 
     assert exit_info.value.code == 1
     assert FakeClient.instances[0].disconnected is True
@@ -272,8 +280,10 @@ def test_check_exits_when_bot_token_rejected(config, monkeypatch):
     monkeypatch.setattr(relay, "TelegramClient", FakeClient)
     monkeypatch.setattr(relay.httpx, "AsyncClient", lambda *a, **kw: http)
 
+    checking = relay.check()  # built here so only asyncio.run can raise below
+
     with pytest.raises(SystemExit) as exit_info:
-        asyncio.run(relay.check())
+        asyncio.run(checking)
 
     assert exit_info.value.code == 1
 
@@ -283,8 +293,10 @@ def test_check_exits_when_test_line_not_delivered(config, monkeypatch):
     monkeypatch.setattr(relay, "TelegramClient", FakeClient)
     monkeypatch.setattr(relay.httpx, "AsyncClient", lambda *a, **kw: http)
 
+    checking = relay.check()  # built here so only asyncio.run can raise below
+
     with pytest.raises(SystemExit) as exit_info:
-        asyncio.run(relay.check())
+        asyncio.run(checking)
 
     assert exit_info.value.code == 1
 
@@ -379,6 +391,83 @@ def test_run_relays_alerts_and_skips_noise(config, monkeypatch):
     # never reaches Telegram.
     assert http.posted[1] == "OP 📈 0.10277"
     assert len(http.posted) == 3
+
+
+class FakeWatchedEvent:
+    """A message from a watched user, as the watched-user handler sees it."""
+
+    def __init__(self, raw_text, sender=None, chat=None):
+        self.raw_text = raw_text
+        self._sender = sender if sender is not None else SimpleNamespace(username="some_trader")
+        self._chat = chat if chat is not None else SimpleNamespace(title="Trading Club")
+
+    async def get_sender(self):
+        return self._sender
+
+    async def get_chat(self):
+        return self._chat
+
+
+def test_run_relays_watched_user_messages(config, monkeypatch):
+    async def feed(client):
+        await client.handlers[1](FakeWatchedEvent("сетку ставим на OP"))
+
+    http, _ = _run_relay(monkeypatch, feed)
+
+    assert http.posted[1] == "👤 @some_trader · Trading Club:\nсетку ставим на OP"
+
+
+def test_watched_handler_skips_messages_without_text(config, monkeypatch):
+    async def feed(client):
+        await client.handlers[1](FakeWatchedEvent(""))
+
+    http, _ = _run_relay(monkeypatch, feed)
+
+    # Only the lifecycle notices — a sticker or photo has nothing to relay.
+    assert len(http.posted) == 2
+
+
+def test_watched_handler_falls_back_when_names_are_missing(config, monkeypatch):
+    async def feed(client):
+        await client.handlers[1](
+            FakeWatchedEvent(
+                "no names here",
+                sender=SimpleNamespace(username=None, first_name="Alexey"),
+                chat=SimpleNamespace(username=None),
+            )
+        )
+        await client.handlers[1](
+            FakeWatchedEvent(
+                "nobody at all",
+                sender=SimpleNamespace(username=None, first_name=None),
+                chat=SimpleNamespace(username="lexx_club"),
+            )
+        )
+
+    http, _ = _run_relay(monkeypatch, feed)
+
+    assert http.posted[1] == "👤 @Alexey · ?:\nno names here"
+    assert http.posted[2] == "👤 @? · lexx_club:\nnobody at all"
+
+
+def test_watched_handler_truncates_to_telegram_limit(config, monkeypatch):
+    async def feed(client):
+        await client.handlers[1](FakeWatchedEvent("x" * 5000))
+
+    http, _ = _run_relay(monkeypatch, feed)
+
+    assert len(http.posted[1]) == 4000
+
+
+def test_run_without_watch_users_registers_only_the_alert_handler(config, monkeypatch):
+    monkeypatch.setattr(relay, "WATCH_USERS", [])
+
+    async def nothing(client):
+        return None
+
+    _run_relay(monkeypatch, nothing)
+
+    assert len(FakeClient.instances[0].handlers) == 1
 
 
 def test_run_stops_the_audio_server_it_started(config, monkeypatch):

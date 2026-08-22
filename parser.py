@@ -16,7 +16,7 @@ QUOTES = ("USDT", "BUSD", "USDC", "FDUSD", "TUSD", "BTC", "ETH")
 
 _SYMBOL_RE = re.compile(r"#([A-Z0-9]{2,20})\b")
 _TREND_RE = re.compile(r"trend\s*:\s*(\S+)", re.IGNORECASE)
-_PRICE_RE = re.compile(r"price\s*:\s*([0-9]+(?:[.,][0-9]+)?)", re.IGNORECASE)
+_PRICE_RE = re.compile(r"price\s*:\s*(\d+(?:[.,]\d+)?)", re.IGNORECASE)
 
 
 def base_symbol(pair: str) -> str:

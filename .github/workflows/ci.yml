@@ -33,20 +33,21 @@ jobs:
     if: ${{ github.event.pull_request.draft != true }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
         with:
           fetch-depth: 0   # the diff gate needs the merge-base with the base ref
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97   # v7
         with:
           python-version: "3.13"
           cache: pip
 
       - name: Install toolchain
-        run: pip install -r .github/requirements-ci.txt
+        run: |
+          pip install --require-hashes --only-binary :all: -r .github/requirements-ci.lock
 
       - name: Cache pre-commit environments
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9   # v6
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
@@ -122,17 +123,18 @@ jobs:
       matrix:
         python-version: ["3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97   # v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
       - name: Install deps
         run: |
-          pip install -r requirements.txt
-          pip install -r .github/requirements-ci.txt
+          # pyaes (telethon dep) publishes no wheel; its sdist stays hash-pinned.
+          pip install --require-hashes --only-binary :all: --no-binary pyaes -r requirements.lock
+          pip install --require-hashes --only-binary :all: -r .github/requirements-ci.lock
 
       - name: pytest with coverage
         run: |
@@ -185,7 +187,7 @@ jobs:
           PY_VERSION: ${{ matrix.python-version }}
 
       - name: Upload coverage report
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7
         # act cannot mint an ACTIONS_RUNTIME_TOKEN, so uploads always fail there.
         if: ${{ !cancelled() && !env.ACT }}
         with:
@@ -206,12 +208,12 @@ jobs:
     if: ${{ github.event.pull_request.draft != true }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
 
       - name: actionlint
         # The action shells out to docker, which act's job containers lack.
         if: ${{ !env.ACT }}
-        uses: devops-actions/actionlint@v0.1.13
+        uses: devops-actions/actionlint@ec02b36684b2f574f1d219ad0a43b082e46bf3e4   # v0.1.13
 
       - name: actionlint results to Summary
         if: ${{ always() && !env.ACT }}
@@ -243,10 +245,10 @@ jobs:
       security-events: write
       actions: read   # codeql-action reads the run it belongs to
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
 
       - name: Trivy filesystem scan (SARIF)
-        uses: aquasecurity/trivy-action@v0.36.0   # pinned; dependabot bumps it
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25   # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -256,7 +258,7 @@ jobs:
           severity: CRITICAL,HIGH,MEDIUM
 
       - name: Trivy table summary
-        uses: aquasecurity/trivy-action@v0.36.0   # pinned; dependabot bumps it
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25   # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -295,7 +297,7 @@ jobs:
           EOF
 
       - name: Upload Trivy report (artifact)
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7
         if: ${{ always() && !env.ACT }}
         with:
           name: trivy-report
@@ -308,7 +310,7 @@ jobs:
       #   gh variable set ENABLE_CODE_SCANNING --body true
       # The trivy-report artifact above carries the same SARIF either way.
       - name: Upload SARIF to GitHub Security
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28   # v4
         if: ${{ always() && !env.ACT && vars.ENABLE_CODE_SCANNING == 'true' }}
         continue-on-error: true
         with:
@@ -321,14 +323,14 @@ jobs:
     if: ${{ github.event.pull_request.draft != true }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e   # v4
         if: ${{ !env.ACT }}
 
       - name: Build image
         if: ${{ !env.ACT }}
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a   # v7
         with:
           context: .
           push: false
@@ -347,7 +349,7 @@ jobs:
 
       - name: Trivy image scan
         if: ${{ !env.ACT }}
-        uses: aquasecurity/trivy-action@v0.36.0   # pinned; dependabot bumps it
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25   # v0.36.0
         with:
           scan-type: image
           image-ref: lexx-relay:ci

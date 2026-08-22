@@ -29,6 +29,8 @@ API_ID = os.getenv("TG_API_ID")
 API_HASH = os.getenv("TG_API_HASH")
 SOURCE = os.getenv("SOURCE_CHAT", "source_bot")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+# People whose messages are relayed verbatim, wherever they post.
+WATCH_USERS = commands.parse_watch_users(os.getenv("WATCH_USERS", "some_trader"))
 TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID")
 SESSION = os.getenv("SESSION_NAME", "lexx_relay")
 RELAY_NAME = os.getenv("RELAY_NAME", "lexx-relay")
@@ -78,8 +80,8 @@ async def send_via_bot(http: httpx.AsyncClient, text: str) -> bool:
             json={"chat_id": TARGET_CHAT_ID, "text": text},
             timeout=15,
         )
-    except httpx.HTTPError as exc:
-        log.error("sendMessage failed: %s", exc)
+    except httpx.HTTPError:
+        log.exception("sendMessage failed")
         return False
 
     if response.status_code != 200:
@@ -110,8 +112,9 @@ async def notify(http: httpx.AsyncClient, text: str) -> None:
         return
     try:
         await send_via_bot(http, text)
-    except Exception as exc:  # noqa: BLE001 - shutdown path, log and move on
-        log.error("lifecycle notice failed: %s", exc)
+    # Deliberately broad: the shutdown path must not raise on its way out.
+    except Exception:  # noqa: BLE001
+        log.exception("lifecycle notice failed")
 
 
 async def check() -> None:
@@ -123,13 +126,14 @@ async def check() -> None:
     me = await client.get_me()
     log.info("account: @%s (%s)", me.username or "-", me.id)
 
-    try:
-        source = await client.get_entity(SOURCE)
-        log.info("source resolved: %s (%s)", SOURCE, source.id)
-    except (ValueError, TypeError) as exc:
-        log.error("cannot resolve SOURCE_CHAT=%r: %s", SOURCE, exc)
-        await client.disconnect()
-        sys.exit(1)
+    for name in (SOURCE, *WATCH_USERS):
+        try:
+            entity = await client.get_entity(name)
+            log.info("resolved: %s (%s)", name, entity.id)
+        except (ValueError, TypeError):
+            log.exception("cannot resolve %r", name)
+            await client.disconnect()
+            sys.exit(1)
 
     async with httpx.AsyncClient() as http:
         bot = (await http.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=15)).json()
@@ -185,10 +189,29 @@ async def run() -> None:
             spoke = await speaker.announce(compact, stats.relayed + 1)
             stats.record(compact, spoke)
 
+        if WATCH_USERS:
+
+            @client.on(events.NewMessage(from_users=WATCH_USERS))
+            async def watched(event):
+                text = event.raw_text
+                if not text:
+                    return
+                sender = await event.get_sender()
+                who = (
+                    getattr(sender, "username", None) or getattr(sender, "first_name", None) or "?"
+                )
+                chat = await event.get_chat()
+                where = getattr(chat, "title", None) or getattr(chat, "username", None) or "?"
+                # 4096 is Telegram's hard cap on sendMessage; stay under it.
+                await send_via_bot(http, f"👤 @{who} · {where}:\n{text}"[:4000])
+                stats.watched += 1
+
         await client.start()
         me = await client.get_me()
         who = me.username or me.id
         log.info("listening to %s as @%s", SOURCE, who)
+        if WATCH_USERS:
+            log.info("watching users: %s", ", ".join(f"@{u}" for u in WATCH_USERS))
 
         # The speaker fetches its audio from us, so the file server has to be
         # up before the first alert can arrive.

@@ -33,7 +33,9 @@ CAST_PORT = int(os.getenv("CAST_PORT", "8009"))
 CAST_UUID = os.getenv("CAST_UUID", "")
 TTS_HOST = os.getenv("TTS_HOST", "")
 TTS_PORT = int(os.getenv("TTS_PORT", "8422"))
-TTS_DIR = Path(os.getenv("TTS_DIR", "/tmp/lexx-tts"))
+# Not /tmp: a predictable path in a world-writable directory is a
+# swap-the-file-under-us invitation. The directory is created 0700.
+TTS_DIR = Path(os.getenv("TTS_DIR") or Path.home() / ".cache/lexx-relay/tts")
 SPEAK_ALERTS = os.getenv("SPEAK_ALERTS", "1").lower() not in ("0", "false", "no", "")
 # A speaker already running an app (YouTube Music, radio) hands our URL to that
 # app, which ignores it — the alert is silently swallowed. Quitting first is the
@@ -77,7 +79,7 @@ class _QuietHandler(SimpleHTTPRequestHandler):
 
 def serve_forever() -> ThreadingHTTPServer:
     """Start the audio file server the speaker will fetch from."""
-    TTS_DIR.mkdir(parents=True, exist_ok=True)
+    TTS_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     handler = partial(_QuietHandler, directory=str(TTS_DIR))
     httpd = ThreadingHTTPServer(("0.0.0.0", TTS_PORT), handler)  # noqa: S104
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
@@ -90,7 +92,7 @@ def write_speech(text: str, name: str) -> Path:
     """Render text to an mp3 in the served directory and return its path."""
     from gtts import gTTS
 
-    TTS_DIR.mkdir(parents=True, exist_ok=True)
+    TTS_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = TTS_DIR / name
     gTTS(text=text, lang="en").save(str(path))
     return path
@@ -137,8 +139,9 @@ async def announce(compact: str, counter: int) -> bool:
     try:
         await asyncio.to_thread(write_speech, text, name)
         await asyncio.to_thread(cast_url, f"http://{TTS_HOST}:{TTS_PORT}/{name}")
-    except Exception as exc:  # noqa: BLE001 - speaking is best-effort
-        log.error("could not speak %r: %s", text, exc)
+    # Deliberately broad: speaking is best-effort and must never propagate.
+    except Exception:  # noqa: BLE001
+        log.exception("could not speak %r", text)
         return False
     log.info("spoke: %s", text)
     return True

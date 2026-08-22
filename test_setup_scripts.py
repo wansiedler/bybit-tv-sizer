@@ -20,7 +20,8 @@ REPO = Path(__file__).parent
 def _load_script(name: str, path: Path):
     """Execute a script file into a throwaway module and hand it back."""
     spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

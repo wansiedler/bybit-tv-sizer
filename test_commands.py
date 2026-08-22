@@ -60,20 +60,37 @@ def test_uptime_formats(seconds, expected):
 def test_status_text_reports_the_state(owner, monkeypatch):
     stats = commands.Stats(relayed=3, skipped=4, spoken=2, last_line="OP 📈 1.0")
     monkeypatch.setattr(commands.time, "time", lambda: stats.started + 90)
+    monkeypatch.setattr(commands, "WATCH_USERS", ["some_trader", "second"])
 
     text = commands.status_text(stats, speaking=True)
 
     assert "up 1m30s" in text
-    assert "relayed: 3 · skipped: 4 · spoken: 2" in text
+    assert "source: source_bot" in text
+    assert "watching: @some_trader, @second (all chats)" in text
+    assert "relayed: 3 · watched: 0 · skipped: 4 · spoken: 2" in text
     assert "speaker: on" in text
     assert "last: OP 📈 1.0" in text
 
 
-def test_status_text_without_a_speaker_or_alerts(owner):
+def test_status_text_without_a_speaker_or_alerts(owner, monkeypatch):
+    monkeypatch.setattr(commands, "WATCH_USERS", [])
+
     text = commands.status_text(commands.Stats(), speaking=False)
 
+    assert "watching: — (all chats)" in text
     assert "speaker: off" in text
     assert "last: —" in text
+
+
+# --------------------------------------------------------------------------- #
+#  parse_watch_users                                                           #
+# --------------------------------------------------------------------------- #
+def test_parse_watch_users_strips_prefixes_and_blanks():
+    assert commands.parse_watch_users("some_trader, @second ,, ") == ["some_trader", "second"]
+
+
+def test_parse_watch_users_empty_means_nobody():
+    assert commands.parse_watch_users("") == []
 
 
 # --------------------------------------------------------------------------- #
@@ -229,9 +246,11 @@ def _run_poll(monkeypatch, batches, rec, stats=None):
 
     monkeypatch.setattr(commands.asyncio, "sleep", no_sleep)
 
+    counters = stats or commands.Stats()
+
     async def go():
         with pytest.raises(asyncio.CancelledError):
-            await commands.poll(None, stats or commands.Stats(), rec.send, rec.speak, True)
+            await commands.poll(None, counters, rec.send, rec.speak, True)
 
     asyncio.run(go())
     return calls
