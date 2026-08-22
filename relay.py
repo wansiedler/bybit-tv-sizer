@@ -11,7 +11,9 @@ import argparse
 import asyncio
 import logging
 import os
+import signal
 import sys
+import time
 
 import httpx
 from dotenv import load_dotenv
@@ -27,15 +29,25 @@ SOURCE = os.getenv("SOURCE_CHAT", "lexx_dra_bot")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID")
 SESSION = os.getenv("SESSION_NAME", "lexx_relay")
+RELAY_NAME = os.getenv("RELAY_NAME", "lexx-relay")
+NOTIFY_LIFECYCLE = os.getenv("NOTIFY_LIFECYCLE", "1").lower() not in (
+    "0",
+    "false",
+    "no",
+    "",
+)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
 )
 log = logging.getLogger("relay")
+# httpx logs the full request URL at INFO, which would print BOT_TOKEN.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
-def require_config() -> None:
+def require_config() -> tuple[int, str]:
+    """Fail fast on missing config, and hand back the Telegram app credentials."""
     missing = [
         name
         for name, value in (
@@ -48,6 +60,13 @@ def require_config() -> None:
     ]
     if missing:
         sys.exit(f"Missing in .env: {', '.join(missing)}")
+    # The list above already covers this; the explicit test is what narrows
+    # str | None to str for the type checker.
+    if not API_ID or not API_HASH:
+        sys.exit("Missing in .env: TG_API_ID, TG_API_HASH")
+    if not API_ID.isdigit():
+        sys.exit(f"TG_API_ID must be numeric, got {API_ID!r}")
+    return int(API_ID), API_HASH
 
 
 async def send_via_bot(http: httpx.AsyncClient, text: str) -> bool:
@@ -70,10 +89,34 @@ async def send_via_bot(http: httpx.AsyncClient, text: str) -> bool:
     return True
 
 
+def human(seconds: float) -> str:
+    """Uptime as something readable in a phone notification."""
+    minutes, secs = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    if days:
+        return f"{days}d{hours}h"
+    if hours:
+        return f"{hours}h{minutes}m"
+    if minutes:
+        return f"{minutes}m{secs}s"
+    return f"{secs}s"
+
+
+async def notify(http: httpx.AsyncClient, text: str) -> None:
+    """Lifecycle ping. A missed notice must never take the relay down."""
+    if not NOTIFY_LIFECYCLE:
+        return
+    try:
+        await send_via_bot(http, text)
+    except Exception as exc:  # noqa: BLE001 - shutdown path, log and move on
+        log.error("lifecycle notice failed: %s", exc)
+
+
 async def check() -> None:
     """Validate every moving part before leaving the relay unattended."""
-    require_config()
-    client = TelegramClient(SESSION, int(API_ID), API_HASH)
+    api_id, api_hash = require_config()
+    client = TelegramClient(SESSION, api_id, api_hash)
     await client.start()
 
     me = await client.get_me()
@@ -88,11 +131,7 @@ async def check() -> None:
         sys.exit(1)
 
     async with httpx.AsyncClient() as http:
-        bot = (
-            await http.get(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=15
-            )
-        ).json()
+        bot = (await http.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=15)).json()
         if not bot.get("ok"):
             log.error("bot token rejected: %s", bot)
             await client.disconnect()
@@ -114,8 +153,22 @@ async def check() -> None:
 
 
 async def run() -> None:
-    require_config()
-    client = TelegramClient(SESSION, int(API_ID), API_HASH)
+    api_id, api_hash = require_config()
+    client = TelegramClient(SESSION, api_id, api_hash)
+
+    stop = asyncio.Event()
+    stop_reason = "connection lost"
+
+    def request_stop(signame: str) -> None:
+        nonlocal stop_reason
+        if not stop.is_set():
+            stop_reason = signame
+            log.info("%s received, shutting down", signame)
+            stop.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, request_stop, sig.name)
 
     async with httpx.AsyncClient() as http:
 
@@ -129,8 +182,24 @@ async def run() -> None:
 
         await client.start()
         me = await client.get_me()
-        log.info("listening to %s as @%s", SOURCE, me.username or me.id)
-        await client.run_until_disconnected()
+        who = me.username or me.id
+        log.info("listening to %s as @%s", SOURCE, who)
+
+        started = time.time()
+        await notify(http, f"🟢 {RELAY_NAME} up — listening {SOURCE} as @{who}")
+
+        listening = asyncio.create_task(client.run_until_disconnected())
+        stopping = asyncio.create_task(stop.wait())
+        _, pending = await asyncio.wait({listening, stopping}, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+        uptime = human(time.time() - started)
+        await notify(http, f"🔴 {RELAY_NAME} down — {stop_reason}, uptime {uptime}")
+
+    await client.disconnect()
+    log.info("stopped cleanly after %s", uptime)
 
 
 def main() -> None:

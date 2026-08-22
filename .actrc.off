@@ -1,0 +1,16 @@
+# Local `act` defaults (read automatically from the repo root).
+# NOTE: act only reads lines starting with "-"; inline comments after a flag
+# are parsed as arguments, so keep flags on their own bare lines.
+--reuse
+--pull=false
+--action-offline-mode
+# Medium image (~500MB). The global ~/Library/Application Support/act/actrc may
+# pin a larger one; whichever is read last wins.
+-P ubuntu-latest=catthehacker/ubuntu:act-latest
+--env GIT_TERMINAL_PROMPT=0
+# Add --container-architecture linux/amd64 if an action ships no arm64 build.
+#
+# On a colima host act needs a socket at the default path: it mounts whatever
+# DOCKER_HOST points at into every job container, and a macOS unix socket
+# cannot cross virtiofs. One-time, lost on reboot:
+#   sudo ln -sf "$HOME/.colima/default/docker.sock" /var/run/docker.sock
