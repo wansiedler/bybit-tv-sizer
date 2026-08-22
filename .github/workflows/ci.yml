@@ -86,6 +86,7 @@ jobs:
           out=$(pre-commit run --all-files --color never 2>&1)
           rc=$?
           set -e
+          echo "$out"
           if [ "$rc" -ne 0 ]; then
             echo "::warning::whole-tree hook findings present (non-blocking)"
             findings=$(grep -vE "Passed$|Skipped$" <<< "$out" || true)

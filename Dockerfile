@@ -4,8 +4,17 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
+# Root is the only user in this image, so pip's venv advice does not apply.
+ENV PIP_ROOT_USER_ACTION=ignore
+
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# pip carries vendored copies of msgpack and setuptools that Trivy reports as
+# HIGH (they live in pip/_vendor/vendor.txt, not in anything we import). The
+# relay never installs anything at runtime, so pip leaves with them; setuptools
+# is upgraded first because that one is a real installed package.
+RUN pip install --no-cache-dir --upgrade setuptools \
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip uninstall -y pip
 
 COPY parser.py relay.py chat_id.py setup_env.py test_parser.py ./
 
