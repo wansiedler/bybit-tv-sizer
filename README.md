@@ -15,6 +15,15 @@ becomes
 OP 📈 0.10277
 ```
 
+It also watches chosen people (`WATCH_USERS`, default `@aLexjjcrypt`) and
+re-posts everything they write — in any chat your account can see — through the
+same bot, prefixed with who wrote it and where:
+
+```text
+👤 @aLexjjcrypt · LEXX Trading CLUB:
+сетку ставим на OP
+```
+
 ## Why a user account is involved
 
 A Telegram bot never receives messages sent by another bot — not in private

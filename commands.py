@@ -24,6 +24,15 @@ TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID")
 SOURCE = os.getenv("SOURCE_CHAT", "lexx_dra_bot")
 POLL_TIMEOUT = int(os.getenv("POLL_TIMEOUT", "25"))
 
+
+def parse_watch_users(raw: str) -> list[str]:
+    """Comma-separated usernames, with @-prefixes and stray spaces forgiven."""
+    return [name.strip().lstrip("@") for name in raw.split(",") if name.strip()]
+
+
+# People whose messages are relayed verbatim, wherever they post.
+WATCH_USERS = parse_watch_users(os.getenv("WATCH_USERS", "aLexjjcrypt"))
+
 SAMPLE_ALERT = "OP 📈 0.10277"
 
 HELP = (
@@ -41,6 +50,7 @@ class Stats:
 
     started: float = field(default_factory=time.time)
     relayed: int = 0
+    watched: int = 0
     skipped: int = 0
     spoken: int = 0
     last_line: str = ""
@@ -98,10 +108,13 @@ def uptime(seconds: float) -> str:
 
 
 def status_text(stats: Stats, speaking: bool) -> str:
+    watching = ", ".join(f"@{name}" for name in WATCH_USERS) or "—"
     return (
         f"🟢 up {uptime(time.time() - stats.started)}\n"
         f"source: {SOURCE}\n"
-        f"relayed: {stats.relayed} · skipped: {stats.skipped} · spoken: {stats.spoken}\n"
+        f"watching: {watching} (all chats)\n"
+        f"relayed: {stats.relayed} · watched: {stats.watched} · "
+        f"skipped: {stats.skipped} · spoken: {stats.spoken}\n"
         f"speaker: {'on' if speaking else 'off'}\n"
         f"last: {stats.last_line or '—'}"
     )
@@ -128,8 +141,8 @@ async def poll(http: httpx.AsyncClient, stats: Stats, send, speak, speaking: boo
     while True:
         try:
             updates = await fetch_updates(http, offset)
-        except (httpx.HTTPError, ValueError) as exc:
-            log.warning("getUpdates failed: %s", exc)
+        except (httpx.HTTPError, ValueError):
+            log.exception("getUpdates failed")
             await asyncio.sleep(5)
             continue
         for update in updates:
@@ -140,5 +153,6 @@ async def poll(http: httpx.AsyncClient, stats: Stats, send, speak, speaking: boo
             log.info("command: /%s", command)
             try:
                 await dispatch(command, stats, send, speak, speaking)
-            except Exception as exc:  # noqa: BLE001 - one bad command is not fatal
-                log.error("/%s failed: %s", command, exc)
+            # Deliberately broad: one bad command must not end the loop.
+            except Exception:  # noqa: BLE001
+                log.exception("/%s failed", command)
