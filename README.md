@@ -83,6 +83,16 @@ the login code for you.
 .venv/bin/pytest
 ```
 
+With coverage, the way CI runs it:
+
+```bash
+.venv/bin/pytest --cov --cov-report=term-missing
+```
+
+Coverage sits at ~15%: `parser.py` is fully covered, `relay.py` is not covered
+at all. `fail_under` in `pyproject.toml` is a floor against regression, not a
+target — raise it as tests land.
+
 ## Development
 
 The CI gates run locally through the same hook suite:
