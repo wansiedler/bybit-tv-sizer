@@ -381,6 +381,42 @@ def test_run_relays_alerts_and_skips_noise(config, monkeypatch):
     assert len(http.posted) == 3
 
 
+def test_run_stops_the_audio_server_it_started(config, monkeypatch):
+    """With a speaker configured, the file server must come down with the relay."""
+    stopped = []
+
+    class FakeAudio:
+        def shutdown(self):
+            stopped.append(True)
+
+    spoken: list[str] = []
+
+    async def fake_announce(compact, counter):
+        spoken.append(compact)
+        return True
+
+    monkeypatch.setattr(relay.speaker, "enabled", lambda: True)
+    monkeypatch.setattr(relay.speaker, "serve_forever", FakeAudio)
+    monkeypatch.setattr(relay.speaker, "announce", fake_announce)
+
+    async def one_alert(client):
+        await client.handler(
+            SimpleNamespace(
+                raw_text=(
+                    "🔔 #OPUSDT OPUSDT, Пересечение 0.10282\n"
+                    "-  exchange:  #BybitFutures\n"
+                    "-  trend: 📈\n"
+                    "-  price: 0.10277"
+                )
+            )
+        )
+
+    _run_relay(monkeypatch, one_alert)
+
+    assert stopped == [True]
+    assert spoken == ["OP 📈 0.10277"]
+
+
 # --------------------------------------------------------------------------- #
 #  main                                                                        #
 # --------------------------------------------------------------------------- #

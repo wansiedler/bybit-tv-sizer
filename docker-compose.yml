@@ -9,6 +9,10 @@ services:
     env_file: .env
     environment:
       SESSION_NAME: /app/session/lexx_relay
+    # The Nest fetches the spoken alert from here, so this has to be reachable
+    # on the LAN — not just on localhost.
+    ports:
+      - "${TTS_PORT:-8422}:${TTS_PORT:-8422}"
     volumes:
       - ./session:/app/session
     # First run needs a terminal for the Telegram login code:

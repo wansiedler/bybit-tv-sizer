@@ -77,6 +77,36 @@ Logs land in `relay.log`. Stop with
 Run `relay.py --check` interactively at least once first — launchd cannot type
 the login code for you.
 
+## Speaking alerts on a Google Nest
+
+Relayed lines can be read out loud: `OP 📈 0.10277` becomes *"OP up, 0.10277"*.
+
+A Cast device is never sent audio — it is handed a URL and fetches the file
+itself. So the relay serves the generated speech over HTTP on the LAN and tells
+the speaker where to look. That is why `TTS_HOST` must be this machine's LAN
+address and never `localhost`: the URL is resolved by the speaker.
+
+Find the speaker, then put both addresses in `.env`:
+
+```bash
+dns-sd -B _googlecast._tcp local
+```
+
+```bash
+ipconfig getifaddr en0
+```
+
+- `CAST_HOST` — the speaker's address
+- `TTS_HOST` — this machine, as the speaker sees it
+- `TTS_PORT` — published to the LAN in `docker-compose.yml` (default 8422)
+- `SPEAK_ALERTS=0` — mute it without removing the config
+- `CAST_UUID` — optional; without it a stable id is derived from the address
+
+Speaking is best-effort: a speaker that is asleep, busy or unreachable is
+logged and skipped, and the Telegram side is unaffected. If casting starts
+failing with a refused connection while the rest of the LAN is reachable, the
+speaker itself is wedged — power-cycle it.
+
 ## Tests
 
 ```bash

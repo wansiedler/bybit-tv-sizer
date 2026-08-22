@@ -19,6 +19,7 @@ import httpx
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
 
+import speaker
 from parser import parse_alert
 
 load_dotenv()
@@ -170,19 +171,27 @@ async def run() -> None:
         loop.add_signal_handler(sig, request_stop, sig.name)
 
     async with httpx.AsyncClient() as http:
+        relayed = 0
 
         @client.on(events.NewMessage(chats=SOURCE))
         async def handler(event):
+            nonlocal relayed
             compact = parse_alert(event.raw_text)
             if compact is None:
                 log.debug("skipped: %s", event.raw_text[:80].replace("\n", " "))
                 return
             await send_via_bot(http, compact)
+            relayed += 1
+            await speaker.announce(compact, relayed)
 
         await client.start()
         me = await client.get_me()
         who = me.username or me.id
         log.info("listening to %s as @%s", SOURCE, who)
+
+        # The speaker fetches its audio from us, so the file server has to be
+        # up before the first alert can arrive.
+        audio = speaker.serve_forever() if speaker.enabled() else None
 
         started = time.time()
         await notify(http, f"🟢 {RELAY_NAME} up — listening {SOURCE} as @{who}")
@@ -197,6 +206,8 @@ async def run() -> None:
         uptime = human(time.time() - started)
         await notify(http, f"🔴 {RELAY_NAME} down — {stop_reason}, uptime {uptime}")
 
+    if audio is not None:
+        audio.shutdown()
     await client.disconnect()
     log.info("stopped cleanly after %s", uptime)
 
