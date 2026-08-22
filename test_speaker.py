@@ -114,7 +114,13 @@ def stub_gtts(monkeypatch):
 @pytest.fixture
 def stub_cast(monkeypatch):
     """Install a fake `pychromecast` and record the media it was handed."""
-    calls: dict[str, Any] = {"played": [], "disconnected": 0, "fail": None}
+    calls: dict[str, Any] = {
+        "played": [],
+        "disconnected": 0,
+        "fail": None,
+        "app_id": None,
+        "quit": 0,
+    }
 
     class FakeController:
         def play_media(self, url, mime):
@@ -123,10 +129,23 @@ def stub_cast(monkeypatch):
         def block_until_active(self, timeout=None):
             pass
 
+    class FakeStatus:
+        display_name = "YouTube Music"
+
     class FakeChromecast:
         def __init__(self, host_tuple):
             calls["host"], calls["port"], calls["uuid"] = host_tuple[:3]
             self.media_controller = FakeController()
+            self.status = FakeStatus()
+
+        @property
+        def app_id(self):
+            return calls["app_id"]
+
+        def quit_app(self):
+            calls["quit"] += 1
+            if not calls.get("sticky"):
+                calls["app_id"] = None
 
         def wait(self, timeout=None):
             if calls["fail"] is not None:
@@ -167,6 +186,55 @@ def test_cast_url_always_disconnects(wired, stub_cast):
         speaker.cast_url("http://192.0.2.20:8422/alert-1.mp3")
 
     assert stub_cast["disconnected"] == 1
+
+
+def test_cast_url_interrupts_another_app(wired, stub_cast, caplog):
+    # A speaker running YouTube Music hands our URL to that app, which drops it.
+    stub_cast["app_id"] = "2DB7CC49"
+
+    with caplog.at_level("INFO", logger="relay.speaker"):
+        speaker.cast_url("http://192.0.2.20:8422/alert-1.mp3")
+
+    assert stub_cast["quit"] == 1
+    assert stub_cast["played"]
+    assert "interrupting YouTube Music" in caplog.text
+
+
+def test_cast_url_leaves_the_media_receiver_alone(wired, stub_cast):
+    stub_cast["app_id"] = speaker.MEDIA_RECEIVER
+
+    speaker.cast_url("http://192.0.2.20:8422/alert-1.mp3")
+
+    assert stub_cast["quit"] == 0
+    assert stub_cast["played"]
+
+
+def test_cast_url_can_stay_quiet_instead(wired, monkeypatch, stub_cast, caplog):
+    monkeypatch.setattr(speaker, "SPEAK_INTERRUPT", False)
+    stub_cast["app_id"] = "2DB7CC49"
+
+    with caplog.at_level("INFO", logger="relay.speaker"):
+        speaker.cast_url("http://192.0.2.20:8422/alert-1.mp3")
+
+    assert stub_cast["quit"] == 0
+    assert stub_cast["played"] == []
+    assert "staying quiet" in caplog.text
+    assert stub_cast["disconnected"] == 1
+
+
+def test_cast_url_gives_up_waiting_for_a_stuck_app(wired, monkeypatch, stub_cast):
+    """quit_app accepted but the app lingers: play anyway rather than hang."""
+    stub_cast["app_id"] = "2DB7CC49"
+    stub_cast["sticky"] = True  # quit_app leaves app_id alone
+    slept: list[float] = []
+    clock = iter([0.0, 1.0, 2.0, 100.0])
+    monkeypatch.setattr(speaker.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(speaker.time, "sleep", slept.append)
+
+    speaker.cast_url("http://192.0.2.20:8422/alert-1.mp3")
+
+    assert slept  # it waited
+    assert stub_cast["played"]  # and cast regardless
 
 
 # --------------------------------------------------------------------------- #

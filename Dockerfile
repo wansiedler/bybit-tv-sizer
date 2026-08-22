@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir --upgrade setuptools \
     && pip install --no-cache-dir -r requirements.txt \
     && pip uninstall -y pip
 
-COPY parser.py relay.py speaker.py chat_id.py setup_env.py test_parser.py ./
+COPY parser.py relay.py speaker.py commands.py chat_id.py setup_env.py ./
 
 # The Telethon session lives here so the login survives container restarts.
 VOLUME ["/app/session"]
