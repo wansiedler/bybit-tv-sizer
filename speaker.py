@@ -121,7 +121,9 @@ def cast_url(url: str) -> None:
             while cast.app_id not in (None, MEDIA_RECEIVER) and time.monotonic() < deadline:
                 time.sleep(0.5)
         controller = cast.media_controller
-        controller.play_media(url, "audio/mp3")
+        # audio/mpeg is the registered MP3 type; audio/mp3 is not, and some
+        # Cast receivers refuse it.
+        controller.play_media(url, "audio/mpeg")
         controller.block_until_active(timeout=15)
     finally:
         cast.disconnect()

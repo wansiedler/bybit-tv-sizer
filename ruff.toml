@@ -1,5 +1,6 @@
 # Single tool in place of flake8 + black + isort.
-# Runtime is python:3.13-slim (Dockerfile); CI also runs 3.12.
+# The image runs python:3.14-slim; CI tests 3.12 through 3.14. The target
+# stays at the oldest supported version so nothing newer sneaks in.
 target-version = "py312"
 line-length = 100
 
