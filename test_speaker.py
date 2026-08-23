@@ -49,7 +49,9 @@ def test_enabled_false_when_anything_missing(wired, monkeypatch, attr, value):
 @pytest.mark.parametrize(
     ("compact", "expected"),
     [
-        ("OP 📈 0.10277", "OP up, 0.10277"),
+        ("LTC 📉 84.31", "Litecoin down, 84.31"),
+        ("OP 📈 0.10277", "Optimism up, 0.10277"),
+        # A ticker the table does not know is spoken as-is.
         ("BOME 📉 0.00409", "BOME down, 0.00409"),
     ],
 )
@@ -259,7 +261,7 @@ def test_cast_url_gives_up_waiting_for_a_stuck_app(wired, monkeypatch, stub_cast
 # --------------------------------------------------------------------------- #
 def test_announce_speaks(wired, stub_gtts, stub_cast):
     assert asyncio.run(speaker.announce("OP 📈 0.10277", 1)) is True
-    assert stub_gtts == [("OP up, 0.10277", "en")]
+    assert stub_gtts == [("Optimism up, 0.10277", "en")]
     assert stub_cast["played"][0][0] == "http://192.0.2.20:8422/alert-1.mp3"
 
 
