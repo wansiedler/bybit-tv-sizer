@@ -51,12 +51,16 @@ SPEAK_ALERTS = os.getenv("SPEAK_ALERTS", "1").lower() not in ("0", "false", "no"
 # only way to be heard, at the cost of stopping whatever was playing. Set
 # SPEAK_INTERRUPT=0 to stay quiet instead of interrupting.
 SPEAK_INTERRUPT = os.getenv("SPEAK_INTERRUPT", "1").lower() not in ("0", "false", "no", "")
+# After interrupting, put the previous media back where it left off. Only
+# works for plain URL media (Google's sleep-sounds loops are); app-private
+# streams cannot be brought back. Set SPEAK_RESUME=0 to leave the speaker
+# silent after an alert instead.
+SPEAK_RESUME = os.getenv("SPEAK_RESUME", "1").lower() not in ("0", "false", "no", "")
 # Google's default media receiver: the app that plays a plain URL.
 MEDIA_RECEIVER = "CC1AD845"
 
 # 📈 and 📉 carry the whole meaning of the line and are unpronounceable.
 TREND_WORDS = {"📈": "up", "📉": "down"}
-
 
 
 def enabled() -> bool:
@@ -134,8 +138,58 @@ def write_speech(text: str, name: str) -> Path:
     return path
 
 
+def _resumable(cast) -> tuple[str, str, float] | None:
+    """What the speaker is playing now, if it can be brought back afterwards.
+
+    Only plain URL media can be re-cast; an app-private stream shows no
+    content_id and returns None. Our own TTS clips are never worth resuming.
+    """
+    if not SPEAK_RESUME or cast.app_id is None:
+        return None
+    controller = cast.media_controller
+    got = threading.Event()
+    try:
+        controller.update_status(callback_function=lambda *_: got.set())
+        got.wait(timeout=3)
+    # Deliberately broad: an app without the media namespace refuses the
+    # request, and a snapshot is never worth failing the alert over.
+    except Exception:  # noqa: BLE001
+        log.debug("no media status from %s", cast.app_id)
+        return None
+    status = controller.status
+    content = status.content_id or ""
+    if status.player_state != "PLAYING" or not content.startswith(("http://", "https://")):
+        return None
+    if content.startswith(f"http://{TTS_HOST}:{TTS_PORT}/"):
+        return None
+    return content, status.content_type or "audio/mpeg", status.current_time or 0.0
+
+
+def _wait_for(controller, states: tuple[str, ...], timeout: float) -> None:
+    """Poll until the player reaches one of `states`, or give up quietly."""
+    deadline = time.monotonic() + timeout
+    while controller.status.player_state not in states and time.monotonic() < deadline:
+        time.sleep(0.5)
+
+
+def _resume(controller, media: tuple[str, str, float]) -> None:
+    """Put the interrupted media back, from where it left off."""
+    content, content_type, position = media
+    # Let the alert finish first: reach PLAYING, then drain to IDLE. The caps
+    # only matter when the receiver stops reporting; a clip is a few seconds.
+    _wait_for(controller, ("PLAYING",), timeout=10)
+    _wait_for(controller, ("IDLE", "UNKNOWN"), timeout=30)
+    log.info("resuming interrupted media at %.0fs", position)
+    controller.play_media(content, content_type, current_time=position, stream_type="BUFFERED")
+    controller.block_until_active(timeout=15)
+
+
 def cast_url(url: str) -> None:
     """Point the speaker at a URL and wait for it to accept the media.
+
+    Whatever was playing is remembered and re-cast afterwards when it was
+    plain URL media (a sleep-sounds loop, a radio stream URL); app-private
+    sessions cannot be brought back.
 
     Blocking: pychromecast is a synchronous library. Call it off the loop.
     """
@@ -147,10 +201,14 @@ def cast_url(url: str) -> None:
     )
     try:
         cast.wait(timeout=10)
-        if cast.app_id not in (None, MEDIA_RECEIVER):
+        resume = _resumable(cast)
+        # Busy means a foreign app, or our receiver playing someone's media —
+        # after a resume the sleep loop lives in the media receiver too.
+        if cast.app_id not in (None, MEDIA_RECEIVER) or resume is not None:
             if not SPEAK_INTERRUPT:
                 log.info("speaker busy with %s, staying quiet", cast.status.display_name)
                 return
+        if cast.app_id not in (None, MEDIA_RECEIVER):
             log.info("interrupting %s", cast.status.display_name)
             cast.quit_app()
             deadline = time.monotonic() + 10
@@ -161,6 +219,13 @@ def cast_url(url: str) -> None:
         # Cast receivers refuse it.
         controller.play_media(url, "audio/mpeg")
         controller.block_until_active(timeout=15)
+        if resume is not None:
+            try:
+                _resume(controller, resume)
+            # Deliberately broad: the alert was spoken; a failed resume must
+            # not turn that success into a logged outage.
+            except Exception:  # noqa: BLE001
+                log.exception("could not resume %s", resume[0])
     finally:
         cast.disconnect()
 
