@@ -4,20 +4,23 @@
 <dict>
     <key>Label</key>
     <string>com.lexx.relay</string>
+    <!-- Container mode: wait for colima's docker daemon (its own LaunchAgent,
+         com.abiosoft.colima, starts it), then bring the relay container up.
+         The container itself has restart: unless-stopped, so no KeepAlive:
+         this job only needs to fire once per login. -->
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/me/lexx-relay/.venv/bin/python</string>
-        <string>/Users/me/lexx-relay/relay.py</string>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>for i in $(seq 1 60); do /usr/local/bin/docker info >/dev/null 2>&amp;1 &amp;&amp; break; sleep 5; done; exec /usr/local/bin/docker compose up -d</string>
     </array>
     <key>WorkingDirectory</key>
     <string>/Users/me/lexx-relay</string>
     <key>RunAtLoad</key>
     <true/>
-    <key>KeepAlive</key>
-    <true/>
     <key>StandardOutPath</key>
-    <string>/Users/me/lexx-relay/relay.log</string>
+    <string>/Users/me/Library/Logs/lexx-relay-launchd.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/me/lexx-relay/relay.log</string>
+    <string>/Users/me/Library/Logs/lexx-relay-launchd.log</string>
 </dict>
 </plist>
