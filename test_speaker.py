@@ -153,15 +153,48 @@ def stub_cast(monkeypatch):
     """Install a fake `pychromecast` and record the media it was handed."""
     calls: dict[str, Any] = {
         "played": [],
+        "resumed": [],
         "disconnected": 0,
         "fail": None,
         "app_id": None,
         "quit": 0,
+        # What the fake media session reports. `states` is consumed one
+        # player_state read at a time, holding on the last entry, so a test
+        # can walk the player through PLAYING -> IDLE without real waiting.
+        "media": {"content_id": None, "content_type": None, "current_time": 0.0},
+        "states": ["UNKNOWN"],
     }
 
+    class FakeMediaStatus:
+        @property
+        def content_id(self):
+            return calls["media"]["content_id"]
+
+        @property
+        def content_type(self):
+            return calls["media"]["content_type"]
+
+        @property
+        def current_time(self):
+            return calls["media"]["current_time"]
+
+        @property
+        def player_state(self):
+            states = calls["states"]
+            return states.pop(0) if len(states) > 1 else states[0]
+
     class FakeController:
-        def play_media(self, url, mime):
-            calls["played"].append((url, mime))
+        status = FakeMediaStatus()
+
+        def play_media(self, url, mime, current_time=None, stream_type="LIVE"):
+            if current_time is None:
+                calls["played"].append((url, mime))
+            else:
+                calls["resumed"].append((url, mime, current_time, stream_type))
+
+        def update_status(self, callback_function=None):
+            if callback_function is not None:
+                callback_function(True, None)
 
         def block_until_active(self, timeout=None):
             pass
@@ -272,6 +305,85 @@ def test_cast_url_gives_up_waiting_for_a_stuck_app(wired, monkeypatch, stub_cast
 
     assert slept  # it waited
     assert stub_cast["played"]  # and cast regardless
+
+
+# --------------------------------------------------------------------------- #
+#  resuming what the alert interrupted                                         #
+# --------------------------------------------------------------------------- #
+MELODY = "https://storage.googleapis.com/relaxation-sounds/country_night_3600.mp3"
+
+
+def playing(stub_cast, app_id, content_id=MELODY):
+    """Put the fake speaker mid-melody: PLAYING now, IDLE once the alert ends."""
+    stub_cast["app_id"] = app_id
+    stub_cast["media"] = {
+        "content_id": content_id,
+        "content_type": "audio/mp3",
+        "current_time": 14.2,
+    }
+    # One read in the snapshot, one in the wait-for-PLAYING, then the alert
+    # clip has finished.
+    stub_cast["states"] = ["PLAYING", "PLAYING", "IDLE"]
+
+
+def test_cast_url_resumes_the_interrupted_media(wired, stub_cast, caplog):
+    playing(stub_cast, app_id="9731D581")
+
+    with caplog.at_level("INFO", logger="relay.speaker"):
+        speaker.cast_url("http://192.0.2.20:8422/alert-1.mp3")
+
+    assert stub_cast["quit"] == 1
+    assert stub_cast["played"] == [("http://192.0.2.20:8422/alert-1.mp3", "audio/mpeg")]
+    assert stub_cast["resumed"] == [(MELODY, "audio/mp3", 14.2, "BUFFERED")]
+    assert "resuming interrupted media at 14s" in caplog.text
+
+
+def test_cast_url_never_resumes_its_own_tts(wired, stub_cast):
+    playing(
+        stub_cast,
+        app_id=speaker.MEDIA_RECEIVER,
+        content_id="http://192.0.2.20:8422/alert-3.mp3",
+    )
+
+    speaker.cast_url("http://192.0.2.20:8422/alert-4.mp3")
+
+    assert stub_cast["resumed"] == []
+
+
+def test_cast_url_resume_can_be_disabled(wired, monkeypatch, stub_cast):
+    monkeypatch.setattr(speaker, "SPEAK_RESUME", False)
+    playing(stub_cast, app_id="9731D581")
+
+    speaker.cast_url("http://192.0.2.20:8422/alert-1.mp3")
+
+    assert stub_cast["played"]
+    assert stub_cast["resumed"] == []
+
+
+def test_cast_url_stays_quiet_when_the_receiver_plays_foreign_media(
+    wired, monkeypatch, stub_cast, caplog
+):
+    # After one resume the melody lives in our own media receiver; with
+    # interrupting off, that still counts as busy.
+    monkeypatch.setattr(speaker, "SPEAK_INTERRUPT", False)
+    playing(stub_cast, app_id=speaker.MEDIA_RECEIVER)
+
+    with caplog.at_level("INFO", logger="relay.speaker"):
+        speaker.cast_url("http://192.0.2.20:8422/alert-1.mp3")
+
+    assert stub_cast["played"] == []
+    assert "staying quiet" in caplog.text
+
+
+def test_cast_url_does_not_resume_app_private_streams(wired, stub_cast):
+    # YouTube Music reports no content_id a plain receiver could replay.
+    playing(stub_cast, app_id="2DB7CC49", content_id=None)
+
+    speaker.cast_url("http://192.0.2.20:8422/alert-1.mp3")
+
+    assert stub_cast["quit"] == 1
+    assert stub_cast["played"]
+    assert stub_cast["resumed"] == []
 
 
 # --------------------------------------------------------------------------- #
