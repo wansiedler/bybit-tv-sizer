@@ -25,6 +25,8 @@ from uuid import NAMESPACE_DNS, UUID, uuid5
 
 from dotenv import load_dotenv
 
+from coin_names import COIN_NAMES
+
 log = logging.getLogger("relay.speaker")
 
 # Imported by relay.py ahead of its own load_dotenv(), so read the file here
@@ -54,66 +56,6 @@ MEDIA_RECEIVER = "CC1AD845"
 # 📈 and 📉 carry the whole meaning of the line and are unpronounceable.
 TREND_WORDS = {"📈": "up", "📉": "down"}
 
-# Tickers are hostile to TTS ("LTC" comes out as a letter salad), so speak the
-# coin's name instead. An unlisted ticker falls back to the ticker itself.
-COIN_NAMES = {
-    "BTC": "Bitcoin",
-    "ETH": "Ethereum",
-    "LTC": "Litecoin",
-    "BCH": "Bitcoin Cash",
-    "ETC": "Ethereum Classic",
-    "SOL": "Solana",
-    "XRP": "Ripple",
-    "DOGE": "Dogecoin",
-    "SHIB": "Shiba Inu",
-    "PEPE": "Pepe",
-    "BONK": "Bonk",
-    "WIF": "Dogwifhat",
-    "ADA": "Cardano",
-    "BNB": "Binance Coin",
-    "DOT": "Polkadot",
-    "AVAX": "Avalanche",
-    "LINK": "Chainlink",
-    "MATIC": "Polygon",
-    "POL": "Polygon",
-    "TRX": "Tron",
-    "TON": "Toncoin",
-    "ATOM": "Cosmos",
-    "UNI": "Uniswap",
-    "XLM": "Stellar",
-    "XMR": "Monero",
-    "NEAR": "Near Protocol",
-    "APT": "Aptos",
-    "ARB": "Arbitrum",
-    "OP": "Optimism",
-    "SUI": "Sui",
-    "SEI": "Sei",
-    "TIA": "Celestia",
-    "INJ": "Injective",
-    "FIL": "Filecoin",
-    "ICP": "Internet Computer",
-    "HBAR": "Hedera",
-    "AAVE": "Aave",
-    "FTM": "Fantom",
-    "ALGO": "Algorand",
-    "VET": "VeChain",
-    "RUNE": "Thorchain",
-    "GRT": "The Graph",
-    "LDO": "Lido",
-    "CRV": "Curve",
-    "IMX": "Immutable",
-    "RNDR": "Render",
-    "KAS": "Kaspa",
-    "JUP": "Jupiter",
-    "ENA": "Ethena",
-    "ONDO": "Ondo",
-    "WLD": "Worldcoin",
-    "GALA": "Gala",
-    "SAND": "The Sandbox",
-    "MANA": "Decentraland",
-    "EOS": "EOS",
-    "DYDX": "dY dX",
-}
 
 
 def enabled() -> bool:
