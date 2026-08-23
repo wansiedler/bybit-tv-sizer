@@ -14,6 +14,7 @@ import os
 import signal
 import sys
 import time
+from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
@@ -32,7 +33,10 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 # People whose messages are relayed verbatim, wherever they post.
 WATCH_USERS = commands.parse_watch_users(os.getenv("WATCH_USERS", "some_trader"))
 TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID")
-SESSION = os.getenv("SESSION_NAME", "lexx_relay")
+# `or` rather than a getenv default: a SESSION_NAME left blank in .env is an
+# empty string, not a missing key, and an empty session path is nobody's
+# intent.
+SESSION = os.getenv("SESSION_NAME") or "session/lexx_relay"
 RELAY_NAME = os.getenv("RELAY_NAME", "lexx-relay")
 NOTIFY_LIFECYCLE = os.getenv("NOTIFY_LIFECYCLE", "1").lower() not in (
     "0",
@@ -128,10 +132,22 @@ async def notify(http: httpx.AsyncClient, text: str) -> None:
         log.exception("lifecycle notice failed")
 
 
+def _client(api_id: int, api_hash: str) -> TelegramClient:
+    """A Telethon client whose session directory is guaranteed to exist.
+
+    Telethon opens the store with sqlite3, which does not create the directory
+    above it, and `session/` is gitignored — so on a fresh clone the first run
+    would die on "unable to open database file" instead of asking for a login
+    code.
+    """
+    Path(SESSION).parent.mkdir(parents=True, exist_ok=True)
+    return TelegramClient(SESSION, api_id, api_hash)
+
+
 async def check() -> None:
     """Validate every moving part before leaving the relay unattended."""
     api_id, api_hash = require_config()
-    client = TelegramClient(SESSION, api_id, api_hash)
+    client = _client(api_id, api_hash)
     await client.start()
 
     me = await client.get_me()
@@ -226,7 +242,7 @@ def _register_listeners(client, http: httpx.AsyncClient, stats: commands.Stats) 
 
 async def run() -> None:
     api_id, api_hash = require_config()
-    client = TelegramClient(SESSION, api_id, api_hash)
+    client = _client(api_id, api_hash)
 
     shutdown = _Shutdown()
     shutdown.install()
