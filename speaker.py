@@ -15,6 +15,7 @@ the URL is resolved by the speaker, not by us.
 
 import asyncio
 import logging
+import math
 import os
 import threading
 import time
@@ -63,10 +64,25 @@ def enabled() -> bool:
     return bool(SPEAK_ALERTS and CAST_HOST and TTS_HOST)
 
 
+def rounded(price: str) -> str:
+    """The price to three significant digits, for the ear.
+
+    The exact figure stays in the Telegram line; read aloud, "2383.66" is
+    seven syllables of noise where "2380" carries the same news. Significant
+    digits rather than fixed decimals, so cheap coins do not round to zero.
+    """
+    value = float(price)
+    if value == 0:
+        return "0"
+    digits = 2 - math.floor(math.log10(abs(value)))
+    text = f"{round(value, digits):.{max(digits, 0)}f}"
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
 def spoken(compact: str) -> str | None:
     """Turn a relayed line into something a speaker can pronounce.
 
-    "LTC 📉 84.31" -> "Litecoin down, 84.31". Anything not in that shape
+    "LTC 📉 84.31" -> "Litecoin down, 84.3". Anything not in that shape
     returns None rather than guessing.
     """
     parts = compact.split()
@@ -76,7 +92,7 @@ def spoken(compact: str) -> str | None:
     word = TREND_WORDS.get(trend)
     if word is None:
         return None
-    return f"{COIN_NAMES.get(symbol, symbol)} {word}, {price}"
+    return f"{COIN_NAMES.get(symbol, symbol)} {word}, {rounded(price)}"
 
 
 class _QuietHandler(SimpleHTTPRequestHandler):

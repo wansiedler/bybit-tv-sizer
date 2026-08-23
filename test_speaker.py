@@ -49,8 +49,8 @@ def test_enabled_false_when_anything_missing(wired, monkeypatch, attr, value):
 @pytest.mark.parametrize(
     ("compact", "expected"),
     [
-        ("LTC 📉 84.31", "Litecoin down, 84.31"),
-        ("OP 📈 0.10277", "Optimism up, 0.10277"),
+        ("LTC 📉 84.31", "Litecoin down, 84.3"),
+        ("OP 📈 0.10277", "Optimism up, 0.103"),
         # Multiplier tickers speak the plain coin name.
         ("1000PEPE 📈 0.0102", "Pepe up, 0.0102"),
         # A ticker the table does not know is spoken as-is.
@@ -67,6 +67,22 @@ def test_spoken_reads_the_trend_out(compact, expected):
 )
 def test_spoken_refuses_anything_else(compact):
     assert speaker.spoken(compact) is None
+
+
+@pytest.mark.parametrize(
+    ("price", "expected"),
+    [
+        ("2383.66", "2380"),  # big prices lose noise digits...
+        ("12345", "12300"),
+        ("84.31", "84.3"),
+        ("0.10277", "0.103"),  # ...cheap coins keep their magnitude
+        ("0.0040938", "0.00409"),
+        ("7", "7"),  # already short: unchanged, no trailing zeros
+        ("0", "0"),  # log10 has no answer here; special-cased
+    ],
+)
+def test_rounded_keeps_three_significant_digits(price, expected):
+    assert speaker.rounded(price) == expected
 
 
 def test_ensure_dir_tightens_a_directory_that_already_exists(wired):
@@ -263,7 +279,7 @@ def test_cast_url_gives_up_waiting_for_a_stuck_app(wired, monkeypatch, stub_cast
 # --------------------------------------------------------------------------- #
 def test_announce_speaks(wired, stub_gtts, stub_cast):
     assert asyncio.run(speaker.announce("OP 📈 0.10277", 1)) is True
-    assert stub_gtts == [("Optimism up, 0.10277", "en")]
+    assert stub_gtts == [("Optimism up, 0.103", "en")]
     assert stub_cast["played"][0][0] == "http://192.0.2.20:8422/alert-1.mp3"
 
 
