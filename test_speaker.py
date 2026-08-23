@@ -51,8 +51,10 @@ def test_enabled_false_when_anything_missing(wired, monkeypatch, attr, value):
     [
         ("LTC 📉 84.31", "Litecoin down, 84.31"),
         ("OP 📈 0.10277", "Optimism up, 0.10277"),
+        # Multiplier tickers speak the plain coin name.
+        ("1000PEPE 📈 0.0102", "Pepe up, 0.0102"),
         # A ticker the table does not know is spoken as-is.
-        ("BOME 📉 0.00409", "BOME down, 0.00409"),
+        ("XYZZY 📉 0.00409", "XYZZY down, 0.00409"),
     ],
 )
 def test_spoken_reads_the_trend_out(compact, expected):
