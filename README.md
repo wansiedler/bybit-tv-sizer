@@ -80,19 +80,35 @@ cp com.lexx.relay.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lexx.relay.plist
 ```
 
-Check it came up, then watch the log:
+The agent waits for the Docker daemon (colima's own LaunchAgent brings that
+up), then runs `docker compose up -d` and exits. Crash recovery is the
+container's job — `restart: unless-stopped` in `docker-compose.yml` — so the
+agent has no `KeepAlive`; it only guarantees the compose project comes up
+after login.
+
+Never run `relay.py` directly while the container is up: the two instances
+fight over the bot's `getUpdates` (a stream of 409s), and whichever grabs
+port 8422 first leaves the other's speaker casts silent — the Nest plays its
+start chime and then nothing, because the audio fetch hits a dead port.
+
+Check it came up, then watch the logs:
 
 ```bash
 launchctl print gui/$(id -u)/com.lexx.relay | grep -E 'state|pid|last exit'
-tail -f relay.log
+tail -f ~/Library/Logs/lexx-relay-launchd.log
+docker logs -f lexx-relay
 ```
 
-Stop with `launchctl bootout gui/$(id -u)/com.lexx.relay`, restart after a code
-change with `launchctl kickstart -k gui/$(id -u)/com.lexx.relay`. (`load` and
-`unload` still work but are the deprecated spelling.)
+Stop the relay with `docker compose down` (the agent will bring it back next
+login); retire the agent with `launchctl bootout gui/$(id -u)/com.lexx.relay`
+followed by removing the plist from `~/Library/LaunchAgents`.
 
-Run `relay.py --check` interactively at least once first — launchd cannot type
-the login code for you.
+Complete the Telegram login interactively at least once first — launchd
+cannot type the code for you:
+
+```bash
+docker compose run --rm relay python relay.py --check
+```
 
 This is a LaunchAgent, so it starts at **login**, not at boot: a Mac sitting at
 the login window is a Mac with no relay. If it has to run headless from power-on,
@@ -101,9 +117,9 @@ absolute paths, installed as root.
 
 ### When it does not come up
 
-`KeepAlive` is on, so a relay that cannot start is restarted forever and the
-only evidence is `relay.log` growing. Two failures look identical from the
-outside and are worth checking first:
+`restart: unless-stopped` means a relay that cannot start is restarted
+forever and the only evidence is `docker logs lexx-relay` growing. Two
+failures look identical from the outside and are worth checking first:
 
 - `EOFError: EOF when reading a line` from `client.start()` — Telethon is asking
   for a phone number because the session it opened is not an authorized one.
