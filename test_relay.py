@@ -258,6 +258,29 @@ def test_notify_swallows_failures(config, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+#  _client                                                                     #
+# --------------------------------------------------------------------------- #
+def test_client_creates_the_session_directory(monkeypatch, tmp_path):
+    """sqlite3 will not make the directory, and session/ is not in the repo."""
+    store = tmp_path / "session" / "lexx_relay"
+    monkeypatch.setattr(relay, "SESSION", str(store))
+    monkeypatch.setattr(relay, "TelegramClient", FakeClient)
+
+    relay._client(1, "hash")
+
+    assert store.parent.is_dir()
+
+
+def test_client_accepts_a_session_beside_the_script(monkeypatch, tmp_path):
+    """A bare name has "." for a parent, which already exists."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(relay, "SESSION", "lexx_relay")
+    monkeypatch.setattr(relay, "TelegramClient", FakeClient)
+
+    assert isinstance(relay._client(1, "hash"), FakeClient)
+
+
+# --------------------------------------------------------------------------- #
 #  check                                                                       #
 # --------------------------------------------------------------------------- #
 @pytest.fixture
