@@ -44,8 +44,9 @@ repos:
     rev: v2.4.3
     hooks:
       - id: codespell
-        # Russian sample alerts live in the parser tests.
-        exclude: ^(test_parser\.py|README\.md)$
+        # Russian sample alerts live in the parser tests; coin_names.py is
+        # ticker data where symbols like AKE/ALLO look like typos.
+        exclude: ^(test_parser\.py|README\.md|coin_names\.py)$
 
   - repo: https://github.com/Yelp/detect-secrets
     rev: v1.5.0
