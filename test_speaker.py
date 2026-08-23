@@ -156,6 +156,8 @@ def stub_cast(monkeypatch):
         "resumed": [],
         "disconnected": 0,
         "fail": None,
+        "status_fail": None,
+        "resume_fail": None,
         "app_id": None,
         "quit": 0,
         # What the fake media session reports. `states` is consumed one
@@ -189,10 +191,14 @@ def stub_cast(monkeypatch):
         def play_media(self, url, mime, current_time=None, stream_type="LIVE"):
             if current_time is None:
                 calls["played"].append((url, mime))
+            elif calls["resume_fail"] is not None:
+                raise calls["resume_fail"]
             else:
                 calls["resumed"].append((url, mime, current_time, stream_type))
 
         def update_status(self, callback_function=None):
+            if calls["status_fail"] is not None:
+                raise calls["status_fail"]
             if callback_function is not None:
                 callback_function(True, None)
 
@@ -373,6 +379,47 @@ def test_cast_url_stays_quiet_when_the_receiver_plays_foreign_media(
 
     assert stub_cast["played"] == []
     assert "staying quiet" in caplog.text
+
+
+def test_cast_url_snapshots_nothing_from_an_app_without_media(wired, stub_cast, caplog):
+    # Some apps refuse the media-status request outright; the alert must
+    # still be spoken, with nothing to resume afterwards.
+    stub_cast["app_id"] = "2DB7CC49"
+    stub_cast["status_fail"] = RuntimeError("namespace not available")
+
+    with caplog.at_level("DEBUG", logger="relay.speaker"):
+        speaker.cast_url("http://192.0.2.20:8422/alert-1.mp3")
+
+    assert stub_cast["played"]
+    assert stub_cast["resumed"] == []
+    assert "no media status" in caplog.text
+
+
+def test_resume_waits_for_the_alert_clip_to_start(wired, monkeypatch, stub_cast):
+    # The receiver takes a moment before the clip reaches PLAYING.
+    playing(stub_cast, app_id="9731D581")
+    stub_cast["states"] = ["PLAYING", "BUFFERING", "PLAYING", "IDLE"]
+    slept: list[float] = []
+    monkeypatch.setattr(speaker.time, "sleep", slept.append)
+
+    speaker.cast_url("http://192.0.2.20:8422/alert-1.mp3")
+
+    assert slept  # it polled instead of resuming over the clip
+    assert stub_cast["resumed"] == [(MELODY, "audio/mp3", 14.2, "BUFFERED")]
+
+
+def test_cast_url_survives_a_failed_resume(wired, stub_cast, caplog):
+    # The alert was spoken; a resume the receiver rejects is logged, not raised.
+    playing(stub_cast, app_id="9731D581")
+    stub_cast["resume_fail"] = RuntimeError("receiver rejected the media")
+
+    with caplog.at_level("ERROR", logger="relay.speaker"):
+        speaker.cast_url("http://192.0.2.20:8422/alert-1.mp3")
+
+    assert stub_cast["played"]
+    assert stub_cast["resumed"] == []
+    assert "could not resume" in caplog.text
+    assert stub_cast["disconnected"] == 1
 
 
 def test_cast_url_does_not_resume_app_private_streams(wired, stub_cast):
