@@ -10,6 +10,7 @@ import stat
 import sys
 import types
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,9 @@ import speaker
 def wired(monkeypatch, tmp_path):
     """Both endpoints configured, audio written into a temp directory."""
     monkeypatch.setattr(speaker, "SPEAK_ALERTS", True)
+    # The developer's own .env may carry SPEAK_HOURS; tests must not go mute
+    # depending on the wall clock they run at.
+    monkeypatch.setattr(speaker, "SPEAK_WINDOW", None)
     monkeypatch.setattr(speaker, "CAST_HOST", "192.0.2.10")
     monkeypatch.setattr(speaker, "TTS_HOST", "192.0.2.20")
     monkeypatch.setattr(speaker, "TTS_PORT", 8422)
@@ -44,6 +48,51 @@ def test_enabled_false_when_anything_missing(wired, monkeypatch, attr, value):
     monkeypatch.setattr(speaker, attr, value)
 
     assert speaker.enabled() is False
+
+
+# --------------------------------------------------------------------------- #
+#  speaking hours                                                              #
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("23-8", (23, 8)),
+        ("9-17", (9, 17)),
+        ("0-23", (0, 23)),
+        ("", None),  # unset: around the clock
+        ("   ", None),
+    ],
+)
+def test_parse_window_reads_start_and_end(raw, expected):
+    assert speaker.parse_window(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["8", "8-", "-8", "24-8", "23-99", "8-8", "night", "8:30-9"])
+def test_parse_window_refuses_nonsense_without_muting(raw, caplog):
+    # A typo in SPEAK_HOURS must not silence every alert.
+    with caplog.at_level("WARNING", logger="relay.speaker"):
+        assert speaker.parse_window(raw) is None
+
+    assert "SPEAK_HOURS" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("window", "hour", "expected"),
+    [
+        ((23, 8), 23, True),  # wraps midnight
+        ((23, 8), 2, True),
+        ((23, 8), 8, False),  # end is exclusive
+        ((23, 8), 12, False),
+        ((9, 17), 9, True),  # same-day window
+        ((9, 17), 17, False),
+        ((9, 17), 3, False),
+        (None, 12, True),  # no window: always
+    ],
+)
+def test_within_window(monkeypatch, window, hour, expected):
+    monkeypatch.setattr(speaker, "SPEAK_WINDOW", window)
+
+    assert speaker.within_window(datetime(2026, 8, 26, hour, 30)) is expected
 
 
 @pytest.mark.parametrize(
@@ -454,6 +503,21 @@ def test_announce_silent_when_disabled(wired, monkeypatch, stub_gtts, stub_cast)
 
     assert asyncio.run(speaker.announce("OP 📈 0.10277", 1)) is False
     assert stub_gtts == []
+
+
+def test_announce_silent_outside_speaking_hours(wired, monkeypatch, stub_gtts, stub_cast):
+    monkeypatch.setattr(speaker, "SPEAK_WINDOW", (23, 8))
+    monkeypatch.setattr(speaker, "within_window", lambda now=None: False)
+
+    assert asyncio.run(speaker.announce("OP 📈 0.10277", 1)) is False
+    assert stub_gtts == []
+
+
+def test_announce_speaks_inside_speaking_hours(wired, monkeypatch, stub_gtts, stub_cast):
+    monkeypatch.setattr(speaker, "SPEAK_WINDOW", (23, 8))
+    monkeypatch.setattr(speaker, "within_window", lambda now=None: True)
+
+    assert asyncio.run(speaker.announce("OP 📈 0.10277", 1)) is True
 
 
 def test_announce_skips_unspeakable_lines(wired, stub_gtts, stub_cast):
