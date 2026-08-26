@@ -11,6 +11,7 @@ the URL is resolved by the speaker, not by us.
     TTS_HOST=192.168.1.178      # this machine, as the speaker sees it
     TTS_PORT=8422               # published to the LAN in docker-compose.yml
     SPEAK_ALERTS=1              # 0 to keep the speaker quiet
+    SPEAK_HOURS=23-8            # speak only from 23:00 to 8:00; empty = always
 """
 
 import asyncio
@@ -19,6 +20,7 @@ import math
 import os
 import threading
 import time
+from datetime import datetime
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -56,6 +58,33 @@ SPEAK_INTERRUPT = os.getenv("SPEAK_INTERRUPT", "1").lower() not in ("0", "false"
 # streams cannot be brought back. Set SPEAK_RESUME=0 to leave the speaker
 # silent after an alert instead.
 SPEAK_RESUME = os.getenv("SPEAK_RESUME", "1").lower() not in ("0", "false", "no", "")
+
+
+def parse_window(raw: str) -> tuple[int, int] | None:
+    """"23-8" -> (23, 8): speak from 23:00 up to, not including, 8:00.
+
+    Local time, wrapping past midnight when the start is the later hour.
+    Empty means around the clock; anything unparseable is refused loudly
+    rather than silently muting every alert.
+    """
+    if not raw.strip():
+        return None
+    start_text, sep, end_text = raw.partition("-")
+    try:
+        if not sep:
+            raise ValueError(raw)
+        start, end = int(start_text), int(end_text)
+        if not (0 <= start <= 23 and 0 <= end <= 23) or start == end:
+            raise ValueError(raw)
+    except ValueError:
+        log.warning("ignoring unusable SPEAK_HOURS=%r, speaking around the clock", raw)
+        return None
+    return start, end
+
+
+# Hours during which alerts are read aloud, e.g. SPEAK_HOURS=23-8 for
+# nights only. Telegram delivery is untouched; only the speaker sleeps.
+SPEAK_WINDOW = parse_window(os.getenv("SPEAK_HOURS", ""))
 # Google's default media receiver: the app that plays a plain URL.
 MEDIA_RECEIVER = "CC1AD845"
 
@@ -66,6 +95,17 @@ TREND_WORDS = {"📈": "up", "📉": "down"}
 def enabled() -> bool:
     """Speaking needs both endpoints; without them the relay just stays quiet."""
     return bool(SPEAK_ALERTS and CAST_HOST and TTS_HOST)
+
+
+def within_window(now: datetime | None = None) -> bool:
+    """Whether the clock currently allows speaking at all."""
+    if SPEAK_WINDOW is None:
+        return True
+    start, end = SPEAK_WINDOW
+    hour = (now or datetime.now()).hour
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
 
 
 def rounded(price: str) -> str:
@@ -233,6 +273,9 @@ def cast_url(url: str) -> None:
 async def announce(compact: str, counter: int) -> bool:
     """Speak one relayed line. Never raises: a mute speaker is not an outage."""
     if not enabled():
+        return False
+    if SPEAK_WINDOW is not None and not within_window():
+        log.debug("outside speaking hours %s-%s: %s", *SPEAK_WINDOW, compact)
         return False
     text = spoken(compact)
     if text is None:
