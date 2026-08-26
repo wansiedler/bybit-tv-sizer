@@ -9,6 +9,9 @@ services:
     env_file: .env
     environment:
       SESSION_NAME: /app/session/lexx_relay
+      # SPEAK_HOURS is wall-clock time; without this the container sits in
+      # UTC and speaks two hours late.
+      TZ: ${TZ:-Europe/Berlin}
     # The Nest fetches the spoken alert from here, so this has to be reachable
     # on the LAN — not just on localhost.
     ports:
