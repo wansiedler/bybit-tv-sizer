@@ -267,9 +267,14 @@ async def run() -> None:
             # The speaker fetches its audio from us, so the file server has to be
             # up before the first alert can arrive.
             audio = speaker.serve_forever() if speaker.enabled() else None
+            speaking = f" · 🔊 {speaker.hours_text()}" if audio is not None else ""
+            if audio is not None:
+                log.info("speaking hours: %s", speaker.hours_text())
 
             started = time.time()
-            await notify(http, f"🟢 {RELAY_NAME} up — listening {SOURCE} as @{who}")
+            await notify(http, f"🟢 {RELAY_NAME} up — listening {SOURCE} as @{who}{speaking}")
+            if audio is not None:
+                await speaker.lifecycle("Relay up")
 
             answering = asyncio.create_task(
                 commands.poll(
@@ -294,7 +299,11 @@ async def run() -> None:
             await asyncio.gather(*pending, *done, return_exceptions=True)
 
             uptime = human(time.time() - started)
+            # Telegram first: it is quick, while a dead speaker can eat its
+            # timeouts out of the 30s stop grace period.
             await notify(http, f"🔴 {RELAY_NAME} down — {shutdown.reason}, uptime {uptime}")
+            if audio is not None:
+                await speaker.lifecycle("Relay down")
 
     finally:
         if audio is not None:

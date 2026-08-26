@@ -12,6 +12,7 @@ the URL is resolved by the speaker, not by us.
     TTS_PORT=8422               # published to the LAN in docker-compose.yml
     SPEAK_ALERTS=1              # 0 to keep the speaker quiet
     SPEAK_HOURS=23-8            # speak only from 23:00 to 8:00; empty = always
+    SPEAK_LIFECYCLE=1           # say "Relay up"/"Relay down"; 0 to mute
 """
 
 import asyncio
@@ -58,13 +59,16 @@ SPEAK_INTERRUPT = os.getenv("SPEAK_INTERRUPT", "1").lower() not in ("0", "false"
 # streams cannot be brought back. Set SPEAK_RESUME=0 to leave the speaker
 # silent after an alert instead.
 SPEAK_RESUME = os.getenv("SPEAK_RESUME", "1").lower() not in ("0", "false", "no", "")
+# Say "Relay up"/"Relay down" on the speaker as the relay starts and stops.
+# The Telegram counterpart is NOTIFY_LIFECYCLE. Set SPEAK_LIFECYCLE=0 to mute.
+SPEAK_LIFECYCLE = os.getenv("SPEAK_LIFECYCLE", "1").lower() not in ("0", "false", "no", "")
 
 
 def parse_window(raw: str) -> tuple[int, int] | None:
-    """"23-8" -> (23, 8): speak from 23:00 up to, not including, 8:00.
+    """Parse "23-8" into (23, 8): speak from 23:00 up to, not including, 8:00.
 
     Local time, wrapping past midnight when the start is the later hour.
-    Empty means around the clock; anything unparseable is refused loudly
+    Empty means around the clock; anything unparsable is refused loudly
     rather than silently muting every alert.
     """
     if not raw.strip():
@@ -95,6 +99,14 @@ TREND_WORDS = {"📈": "up", "📉": "down"}
 def enabled() -> bool:
     """Speaking needs both endpoints; without them the relay just stays quiet."""
     return bool(SPEAK_ALERTS and CAST_HOST and TTS_HOST)
+
+
+def hours_text() -> str:
+    """The speaking window as humans read it, for the startup notice."""
+    if SPEAK_WINDOW is None:
+        return "round the clock"
+    start, end = SPEAK_WINDOW
+    return f"{start:02d}:00–{end:02d}:00"
 
 
 def within_window(now: datetime | None = None) -> bool:
@@ -270,6 +282,21 @@ def cast_url(url: str) -> None:
         cast.disconnect()
 
 
+async def say(text: str, name: str) -> bool:
+    """Render and speak arbitrary text. Never raises: best-effort by design."""
+    if not enabled():
+        return False
+    try:
+        await asyncio.to_thread(write_speech, text, name)
+        await asyncio.to_thread(cast_url, f"http://{TTS_HOST}:{TTS_PORT}/{name}")
+    # Deliberately broad: speaking is best-effort and must never propagate.
+    except Exception:  # noqa: BLE001
+        log.exception("could not speak %r", text)
+        return False
+    log.info("spoke: %s", text)
+    return True
+
+
 async def announce(compact: str, counter: int) -> bool:
     """Speak one relayed line. Never raises: a mute speaker is not an outage."""
     if not enabled():
@@ -281,13 +308,15 @@ async def announce(compact: str, counter: int) -> bool:
     if text is None:
         log.debug("not speakable: %s", compact)
         return False
-    name = f"alert-{counter % 20}.mp3"
-    try:
-        await asyncio.to_thread(write_speech, text, name)
-        await asyncio.to_thread(cast_url, f"http://{TTS_HOST}:{TTS_PORT}/{name}")
-    # Deliberately broad: speaking is best-effort and must never propagate.
-    except Exception:  # noqa: BLE001
-        log.exception("could not speak %r", text)
+    return await say(text, f"alert-{counter % 20}.mp3")
+
+
+async def lifecycle(text: str) -> bool:
+    """Speak a start/stop notice, e.g. "Relay up".
+
+    Deliberately exempt from SPEAK_HOURS: the point is to hear that the relay
+    changed state whenever that happens, not only at night.
+    """
+    if not SPEAK_LIFECYCLE:
         return False
-    log.info("spoke: %s", text)
-    return True
+    return await say(text, "notice.mp3")
