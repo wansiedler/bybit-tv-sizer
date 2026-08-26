@@ -383,6 +383,80 @@ def test_run_reports_up_and_down(config, monkeypatch):
     assert FakeClient.instances[0].disconnected is True
 
 
+def test_run_announces_speaking_hours_with_a_speaker(config, monkeypatch):
+    class FakeAudio:
+        def shutdown(self):
+            pass
+
+    monkeypatch.setattr(relay.speaker, "enabled", lambda: True)
+    monkeypatch.setattr(relay.speaker, "serve_forever", FakeAudio)
+    monkeypatch.setattr(relay.speaker, "hours_text", lambda: "23:00–08:00")
+
+    async def no_lifecycle(text):
+        return False
+
+    monkeypatch.setattr(relay.speaker, "lifecycle", no_lifecycle)
+
+    async def disconnect_immediately(client):
+        return None
+
+    http, _ = _run_relay(monkeypatch, disconnect_immediately)
+
+    assert "🔊 23:00–08:00" in http.posted[0]
+
+
+def test_run_speaks_its_own_lifecycle(config, monkeypatch):
+    class FakeAudio:
+        def shutdown(self):
+            pass
+
+    said: list[str] = []
+
+    async def fake_lifecycle(text):
+        said.append(text)
+        return True
+
+    monkeypatch.setattr(relay.speaker, "enabled", lambda: True)
+    monkeypatch.setattr(relay.speaker, "serve_forever", FakeAudio)
+    monkeypatch.setattr(relay.speaker, "lifecycle", fake_lifecycle)
+
+    async def disconnect_immediately(client):
+        return None
+
+    _run_relay(monkeypatch, disconnect_immediately)
+
+    assert said == ["Relay up", "Relay down"]
+
+
+def test_run_does_not_speak_lifecycle_without_a_speaker(config, monkeypatch):
+    said: list[str] = []
+
+    async def fake_lifecycle(text):
+        said.append(text)
+        return True
+
+    monkeypatch.setattr(relay.speaker, "enabled", lambda: False)
+    monkeypatch.setattr(relay.speaker, "lifecycle", fake_lifecycle)
+
+    async def disconnect_immediately(client):
+        return None
+
+    _run_relay(monkeypatch, disconnect_immediately)
+
+    assert said == []
+
+
+def test_run_up_notice_stays_plain_without_a_speaker(config, monkeypatch):
+    monkeypatch.setattr(relay.speaker, "enabled", lambda: False)
+
+    async def disconnect_immediately(client):
+        return None
+
+    http, _ = _run_relay(monkeypatch, disconnect_immediately)
+
+    assert "🔊" not in http.posted[0]
+
+
 def test_run_shuts_down_on_sigterm(config, monkeypatch):
     async def signal_then_hang(client):
         callback, args = _handlers[signal.SIGTERM]
@@ -526,9 +600,13 @@ def test_run_stops_the_audio_server_it_started(config, monkeypatch):
         spoken.append(compact)
         return True
 
+    async def no_lifecycle(text):
+        return False
+
     monkeypatch.setattr(relay.speaker, "enabled", lambda: True)
     monkeypatch.setattr(relay.speaker, "serve_forever", FakeAudio)
     monkeypatch.setattr(relay.speaker, "announce", fake_announce)
+    monkeypatch.setattr(relay.speaker, "lifecycle", no_lifecycle)
 
     async def one_alert(client):
         await client.handler(

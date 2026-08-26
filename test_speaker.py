@@ -77,6 +77,20 @@ def test_parse_window_refuses_nonsense_without_muting(raw, caplog):
 
 
 @pytest.mark.parametrize(
+    ("window", "expected"),
+    [
+        ((23, 8), "23:00–08:00"),
+        ((9, 17), "09:00–17:00"),
+        (None, "round the clock"),
+    ],
+)
+def test_hours_text_reads_the_window_out(monkeypatch, window, expected):
+    monkeypatch.setattr(speaker, "SPEAK_WINDOW", window)
+
+    assert speaker.hours_text() == expected
+
+
+@pytest.mark.parametrize(
     ("window", "hour", "expected"),
     [
         ((23, 8), 23, True),  # wraps midnight
@@ -523,6 +537,42 @@ def test_announce_speaks_inside_speaking_hours(wired, monkeypatch, stub_gtts, st
 def test_announce_skips_unspeakable_lines(wired, stub_gtts, stub_cast):
     assert asyncio.run(speaker.announce("relay started", 1)) is False
     assert stub_gtts == []
+
+
+# --------------------------------------------------------------------------- #
+#  lifecycle notices                                                           #
+# --------------------------------------------------------------------------- #
+def test_lifecycle_speaks_at_any_hour(wired, monkeypatch, stub_gtts, stub_cast):
+    # 12:00 is outside a 23-8 window; a state change must be heard anyway.
+    monkeypatch.setattr(speaker, "SPEAK_WINDOW", (23, 8))
+    monkeypatch.setattr(speaker, "within_window", lambda now=None: False)
+
+    assert asyncio.run(speaker.lifecycle("Relay up")) is True
+    assert stub_gtts == [("Relay up", "en")]
+    assert stub_cast["played"][0][0] == "http://192.0.2.20:8422/notice.mp3"
+
+
+def test_lifecycle_can_be_muted(wired, monkeypatch, stub_gtts, stub_cast):
+    monkeypatch.setattr(speaker, "SPEAK_LIFECYCLE", False)
+
+    assert asyncio.run(speaker.lifecycle("Relay up")) is False
+    assert stub_gtts == []
+
+
+def test_lifecycle_silent_without_a_speaker(wired, monkeypatch, stub_gtts, stub_cast):
+    monkeypatch.setattr(speaker, "CAST_HOST", "")
+
+    assert asyncio.run(speaker.lifecycle("Relay up")) is False
+    assert stub_gtts == []
+
+
+def test_say_survives_a_dead_speaker(wired, stub_gtts, stub_cast, caplog):
+    stub_cast["fail"] = OSError("no route to host")
+
+    with caplog.at_level("ERROR", logger="relay.speaker"):
+        assert asyncio.run(speaker.say("Relay up", "notice.mp3")) is False
+
+    assert "could not speak" in caplog.text
 
 
 def test_announce_survives_a_dead_speaker(wired, stub_gtts, stub_cast, caplog):
