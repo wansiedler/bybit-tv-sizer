@@ -7,7 +7,16 @@
     <!-- Container mode: wait for colima's docker daemon (its own LaunchAgent,
          com.abiosoft.colima, starts it), then bring the relay container up.
          The container itself has restart: unless-stopped, so no KeepAlive:
-         this job only needs to fire once per login. -->
+         this job only needs to fire once per login.
+         DOCKER_CONTEXT pins the colima daemon: Docker Desktop owns the
+         /usr/local/bin/docker symlink and the default context, and without
+         the pin this job would start a second relay in Desktop's daemon —
+         two relays on one session is a Telegram 409. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>DOCKER_CONTEXT</key>
+        <string>colima</string>
+    </dict>
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
