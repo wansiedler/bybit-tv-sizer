@@ -80,11 +80,13 @@ cp com.lexx.relay.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lexx.relay.plist
 ```
 
-The agent waits for the Docker daemon (colima's own LaunchAgent brings that
-up), then runs `docker compose up -d` and exits. Crash recovery is the
-container's job — `restart: unless-stopped` in `docker-compose.yml` — so the
-agent has no `KeepAlive`; it only guarantees the compose project comes up
-after login.
+The agent runs `launchd-start.sh`: it first clears colima's stale `vz.pid`
+if an unclean shutdown left one behind (lima otherwise refuses to start with
+"vz driver is running but host agent is not"), waits for the Docker daemon
+(colima's own LaunchAgent brings that up), then runs `docker compose up -d`
+and exits. Crash recovery is the container's job — `restart: unless-stopped`
+in `docker-compose.yml` — so the agent has no `KeepAlive`; it only guarantees
+the compose project comes up after login.
 
 Never run `relay.py` directly while the container is up: the two instances
 fight over the bot's `getUpdates` (a stream of 409s), and whichever grabs

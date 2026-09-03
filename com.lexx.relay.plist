@@ -4,10 +4,11 @@
 <dict>
     <key>Label</key>
     <string>com.lexx.relay</string>
-    <!-- Container mode: wait for colima's docker daemon (its own LaunchAgent,
-         com.abiosoft.colima, starts it), then bring the relay container up.
-         The container itself has restart: unless-stopped, so no KeepAlive:
-         this job only needs to fire once per login.
+    <!-- Container mode: launchd-start.sh clears stale colima vz.pid state
+         left by an unclean shutdown, waits for colima's docker daemon (its
+         own LaunchAgent, com.abiosoft.colima, starts it), then brings the
+         relay container up. The container itself has restart: unless-stopped,
+         so no KeepAlive: this job only needs to fire once per login.
          DOCKER_CONTEXT pins the colima daemon: Docker Desktop owns the
          /usr/local/bin/docker symlink and the default context, and without
          the pin this job would start a second relay in Desktop's daemon —
@@ -20,8 +21,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>-c</string>
-        <string>for i in $(seq 1 60); do /usr/local/bin/docker info >/dev/null 2>&amp;1 &amp;&amp; break; sleep 5; done; exec /usr/local/bin/docker compose up -d</string>
+        <string>/Users/me/lexx-relay/launchd-start.sh</string>
     </array>
     <key>WorkingDirectory</key>
     <string>/Users/me/lexx-relay</string>
