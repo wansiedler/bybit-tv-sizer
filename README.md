@@ -105,6 +105,16 @@ Stop the relay with `docker compose down` (the agent will bring it back next
 login); retire the agent with `launchctl bootout gui/$(id -u)/com.lexx.relay`
 followed by removing the plist from `~/Library/LaunchAgents`.
 
+`reboot.sh` says "Rebooting" on the Nest (through the running container's
+speech stack) and then restarts the machine. Alias it so `reboot` and
+`sudo reboot` both go through it — the trailing space in the `sudo` alias
+makes zsh alias-expand the word that follows:
+
+```bash
+alias sudo='sudo '
+alias reboot='/Users/me/lexx-relay/reboot.sh'
+```
+
 Complete the Telegram login interactively at least once first — launchd
 cannot type the code for you:
 
