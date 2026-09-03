@@ -1,0 +1,51 @@
+name: CodeQL
+
+# Semantic code scanning, the one analysis Trivy and the linters do not do:
+# it follows data flow, so it catches taint reaching a sink rather than
+# pattern-matching a line. Weekly, because new queries land after the code does.
+#
+# CodeQL has nowhere to publish without code scanning, which on a private repo
+# means GitHub Advanced Security. Without it every run fails on the upload, so
+# the whole workflow is opt-in, exactly like the Trivy SARIF push:
+#   gh variable set ENABLE_CODE_SCANNING --body true
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    if: ${{ vars.ENABLE_CODE_SCANNING == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938   # v4
+        with:
+          languages: python
+          # security-extended adds the lower-precision queries; on a codebase
+          # this small the extra noise is cheap and the extra reach is not.
+          queries: security-extended
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938   # v4
+        with:
+          category: /language:python

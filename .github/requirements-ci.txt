@@ -6,3 +6,8 @@ mypy==2.3.1
 bandit==1.9.4
 pytest==9.1.1
 pytest-cov==7.1.0
+# Static analysis of the workflows themselves (unpinned actions, injection
+# sinks, over-broad permissions) — the CI equivalent of bandit.
+zizmor==1.30.0
+# Dependency CVEs across the pinned toolchain.
+pip-audit==2.10.1

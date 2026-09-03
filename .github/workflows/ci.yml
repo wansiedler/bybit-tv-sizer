@@ -30,12 +30,12 @@ jobs:
   #  Quality: pre-commit hook suite (ruff, mypy, bandit, yamllint, ...) #
   # ------------------------------------------------------------------ #
   quality:
-    if: ${{ github.event.pull_request.draft != true }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
         with:
           fetch-depth: 0   # the diff gate needs the merge-base with the base ref
+          persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97   # v7
         with:
@@ -116,7 +116,6 @@ jobs:
   #  Tests: the parser is the part with logic worth pinning down        #
   # ------------------------------------------------------------------ #
   tests:
-    if: ${{ github.event.pull_request.draft != true }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -125,6 +124,8 @@ jobs:
         python-version: ["3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97   # v7
         with:
@@ -206,10 +207,11 @@ jobs:
   #  actionlint: hard gate over the workflow files themselves           #
   # ------------------------------------------------------------------ #
   actionlint:
-    if: ${{ github.event.pull_request.draft != true }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
+        with:
+          persist-credentials: false
 
       - name: actionlint
         # The action shells out to docker, which act's job containers lack.
@@ -239,7 +241,6 @@ jobs:
   #  Security, which this private repo may not have.                    #
   # ------------------------------------------------------------------ #
   security:
-    if: ${{ github.event.pull_request.draft != true }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -247,6 +248,8 @@ jobs:
       actions: read   # codeql-action reads the run it belongs to
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
+        with:
+          persist-credentials: false
 
       - name: Trivy filesystem scan (SARIF)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25   # v0.36.0
@@ -321,10 +324,11 @@ jobs:
   #  Image: the artifact that actually runs on the host                 #
   # ------------------------------------------------------------------ #
   docker:
-    if: ${{ github.event.pull_request.draft != true }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
+        with:
+          persist-credentials: false
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e   # v4
         if: ${{ !env.ACT }}
@@ -357,3 +361,259 @@ jobs:
           format: table
           severity: CRITICAL,HIGH
           exit-code: "0"   # base-image CVEs are informational, not a merge blocker
+  secrets:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read   # the action enumerates the commits of its PR
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: gitleaks
+        if: ${{ !env.ACT }}
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e   # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  supply-chain:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97   # v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install toolchain
+        run: |
+          pip install --require-hashes --only-binary :all: -r .github/requirements-ci.lock
+
+      # Blocking: a workflow that leaks its token or runs attacker-controlled
+      # input is a supply-chain hole, not a style nit.
+      - name: zizmor (workflow audit)
+        run: |
+          set +e
+          out=$(zizmor --persona=regular --format plain .github/workflows 2>&1)
+          rc=$?
+          set -e
+          echo "$out"
+          {
+            echo "## $([ $rc -eq 0 ] && echo '✅' || echo '❌') zizmor"
+            echo ""
+            echo '```'
+            tail -n 60 <<< "$out"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+      # Informational: a CVE in a linter cannot reach production from here,
+      # and a fresh advisory should not red an unrelated PR.
+      - name: pip-audit (CI toolchain)
+        if: ${{ !cancelled() }}
+        run: |
+          set +e
+          out=$(pip-audit --strict --progress-spinner off 2>&1)
+          rc=$?
+          set -e
+          echo "$out"
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning::pip-audit findings in the CI toolchain (non-blocking)"
+            {
+              echo "## ⚠️ pip-audit (informational)"
+              echo ""
+              echo '```'
+              tail -n 40 <<< "$out"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## ✅ pip-audit: no known CVEs" >> "$GITHUB_STEP_SUMMARY"
+          fi
+  sonar:
+    # Opt-in: SonarQube Cloud refuses a CI analysis while Automatic Analysis is
+    # enabled on the project, so switch that off first, then
+    #   gh variable set ENABLE_SONAR_CI --body true
+    if: ${{ vars.ENABLE_SONAR_CI == 'true' }}
+    runs-on: ubuntu-latest
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
+        with:
+          fetch-depth: 0   # Sonar attributes findings to commits; shallow blinds it
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97   # v7
+        if: ${{ env.SONAR_TOKEN != '' }}
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      # Sonar reads coverage.xml rather than running the suite itself.
+      - name: Coverage report for Sonar
+        if: ${{ env.SONAR_TOKEN != '' }}
+        run: |
+          # pyaes (telethon dep) publishes no wheel; its sdist stays hash-pinned.
+          pip install --require-hashes --only-binary :all: --no-binary pyaes -r requirements.lock
+          pip install --require-hashes --only-binary :all: -r .github/requirements-ci.lock
+          pytest --cov --cov-report=xml --color=no
+
+      - name: SonarQube scan
+        if: ${{ env.SONAR_TOKEN != '' && !env.ACT }}
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f   # v8.2.1
+
+      # The scanner returns as soon as the upload lands; the verdict is computed
+      # server-side afterwards. Without this step the job goes green while the
+      # Quality Gate is still pending, and the findings stay on sonarcloud.io
+      # where nothing in the run points at them.
+      - name: Quality Gate and findings to Summary
+        if: ${{ !cancelled() && env.SONAR_TOKEN != '' && !env.ACT }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, time, urllib.error, urllib.parse, urllib.request
+
+          token = os.environ["SONAR_TOKEN"]
+          summary_file = open(os.environ["GITHUB_STEP_SUMMARY"], "a")
+
+
+          def say(line=""):
+              """Write to the run summary and to the step log.
+
+              The summary renders on its own tab, so a step that only writes
+              there looks silent from the log -- which is exactly how the
+              earlier breakage stayed invisible.
+              """
+              print(line, file=summary_file)
+              print(line)
+
+
+          def api(url):
+              req = urllib.request.Request(url)
+              req.add_header("Authorization", f"Bearer {token}")
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      return json.load(resp)
+              except urllib.error.HTTPError as exc:
+                  detail = exc.read().decode(errors="replace").strip()
+                  raise RuntimeError(f"{url.split('?')[0]} -> HTTP {exc.code} {detail}") from None
+
+
+          def report_gate():
+              """Write the verdict and the open issues; return True if the gate failed."""
+              report = dict(
+                  line.split("=", 1)
+                  for line in open(".scannerwork/report-task.txt").read().splitlines()
+                  if "=" in line
+              )
+              server, key, dashboard = (
+                  report["serverUrl"],
+                  report["projectKey"],
+                  report["dashboardUrl"],
+              )
+
+              # The compute engine queues the analysis; poll it out rather than
+              # guessing how long it takes.
+              task = {}
+              for _ in range(60):
+                  task = api(report["ceTaskUrl"])["task"]
+                  if task["status"] in ("SUCCESS", "FAILED", "CANCELED"):
+                      break
+                  time.sleep(5)
+
+              if task.get("status") != "SUCCESS":
+                  say(f"## ⚠️ Sonar: analysis {task.get('status', 'timed out')}")
+                  say(f"\n[Dashboard]({dashboard})")
+                  return False
+
+              # A pull request analysis is not addressable by analysisId -- that
+              # answers HTTP 400. Both endpoints take the same scope parameter,
+              # so build it once from whatever the task says it analysed.
+              if task.get("pullRequest"):
+                  scope = "&" + urllib.parse.urlencode({"pullRequest": task["pullRequest"]})
+              elif task.get("branch"):
+                  scope = "&" + urllib.parse.urlencode({"branch": task["branch"]})
+              else:
+                  scope = ""
+
+              gate = api(
+                  f"{server}/api/qualitygates/project_status"
+                  f"?{urllib.parse.urlencode({'projectKey': key})}{scope}"
+              )["projectStatus"]
+              mark = {"OK": "✅", "ERROR": "❌"}.get(gate["status"], "⚠️")
+              say(f"## {mark} Sonar Quality Gate: {gate['status']}")
+              say()
+
+              failed = [c for c in gate.get("conditions", []) if c["status"] != "OK"]
+              if failed:
+                  say("| Condition | Actual | Threshold |")
+                  say("| --- | ---: | ---: |")
+                  for c in failed:
+                      say(
+                          f"| {c['metricKey']} | {c.get('actualValue', '?')} "
+                          f"| {c['comparator']} {c.get('errorThreshold', '?')} |"
+                      )
+                  say()
+
+              # SonarQube Cloud names this parameter componentKeys; "components"
+              # is Server-only and answers HTTP 400 here.
+              query = urllib.parse.urlencode(
+                  {
+                      "componentKeys": key,
+                      "resolved": "false",
+                      "ps": 50,
+                      "s": "SEVERITY",
+                      "asc": "false",
+                  }
+              )
+              issues = api(f"{server}/api/issues/search?{query}{scope}")
+              found = issues.get("issues", [])
+              if not found:
+                  say("No open issues.")
+              else:
+                  say(f"### {issues.get('total', len(found))} open issue(s)")
+                  say()
+                  say("| Rule | Impact | Location | Message |")
+                  say("| --- | --- | --- | --- |")
+                  for issue in found:
+                      where = issue.get("component", "").split(":", 1)[-1]
+                      line = issue.get("line")
+                      impact = (
+                          ", ".join(
+                              f"{i['softwareQuality'].lower()}:{i['severity'].lower()}"
+                              for i in issue.get("impacts", [])
+                          )
+                          or issue.get("severity", "?")
+                      )
+                      # A pipe in the message would split the table row.
+                      message = issue.get("message", "").replace("|", "\\|")
+                      say(
+                          f"| `{issue.get('rule', '?')}` | {impact} "
+                          f"| {where}{f':{line}' if line else ''} | {message} |"
+                      )
+
+              say(f"\n[Full report]({dashboard})")
+              return gate["status"] == "ERROR"
+
+
+          # A hiccup in the reporting itself is not a reason to red the build:
+          # only the gate verdict is. The scan step already failed if the
+          # analysis never reached Sonar.
+          try:
+              failed_gate = report_gate()
+          except (OSError, RuntimeError, KeyError) as exc:
+              say(f"## ⚠️ Sonar: could not read the verdict ({exc})")
+              failed_gate = False
+
+          raise SystemExit(1 if failed_gate else 0)
+          EOF
+
+      - name: Note a missing token
+        if: ${{ env.SONAR_TOKEN == '' }}
+        run: |
+          echo "## ⏭️ Sonar: skipped (no SONAR_TOKEN secret)" >> "$GITHUB_STEP_SUMMARY"
