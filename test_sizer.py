@@ -324,6 +324,117 @@ def test_tick_skips_an_unsizable_order(monkeypatch):
     assert http.amended == []
 
 
+# ------------------------------------------------------------------ margin cap
+class CappedHTTP(FakeHTTP):
+    """FakeHTTP with an available balance and a symbol leverage."""
+
+    def __init__(self):
+        super().__init__()
+        self.available = "60"
+        self.leverage = "1"
+
+    async def get(self, url, headers=None, timeout=None):
+        if "/v5/account/wallet-balance" in url:
+            rows = [{"totalEquity": self.equity, "totalAvailableBalance": self.available}]
+            return FakeResponse({"retCode": 0, "result": {"list": rows}})
+        if "/v5/position/list" in url:
+            return FakeResponse({"retCode": 0, "result": {"list": [{"leverage": self.leverage}]}})
+        return await super().get(url, headers=headers, timeout=timeout)
+
+
+def test_margin_cap_adds_the_held_quantity():
+    http = CappedHTTP()
+
+    cap = asyncio.run(sizer.margin_cap(http, "BTCUSDT", Decimal("60000"), Decimal("0.001")))
+
+    # 0.001 held + 60 USDT * 1x / 60000 * 0.97
+    assert cap == Decimal("0.001") + Decimal("60") / Decimal("60000") * Decimal("0.97")
+
+
+def test_margin_cap_scales_with_leverage():
+    http = CappedHTTP()
+    http.leverage = "10"
+
+    cap = asyncio.run(sizer.margin_cap(http, "BTCUSDT", Decimal("60000"), Decimal("0")))
+
+    assert cap == Decimal("60") * 10 / Decimal("60000") * Decimal("0.97")
+
+
+def test_margin_cap_unknown_without_a_balance_figure():
+    http = CappedHTTP()
+    http.available = ""
+
+    assert asyncio.run(sizer.margin_cap(http, "BTCUSDT", Decimal("60000"), Decimal("0"))) is None
+
+
+def test_margin_cap_swallows_api_errors(caplog):
+    class Refusing(CappedHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise OSError("bybit down")
+
+    with caplog.at_level("ERROR", logger="relay.sizer"):
+        cap = asyncio.run(sizer.margin_cap(Refusing(), "BTCUSDT", Decimal("1"), Decimal("0")))
+
+    assert cap is None
+    assert "no margin cap" in caplog.text
+
+
+def test_tick_caps_a_grow_to_the_free_margin(monkeypatch):
+    monkeypatch.setattr(sizer, "DRY_RUN", False)
+    http, out = CappedHTTP(), Recorder()
+    # Wanted: 0.05 BTC. Free margin at 1x: 60 USDT -> 0.00097 -> rounded 0;
+    # bump available so the cap lands between have and want.
+    http.available = "600"
+    http.orders = [ORDER]
+
+    run_tick(http, out)
+
+    # cap = 0.001 + 600/60000*0.97 = 0.0107 -> 0.010 after lot rounding
+    assert http.amended[0]["qty"] == "0.010"
+    assert "урезано по марже" in out.sent[0]
+
+
+def test_tick_skips_the_grow_when_no_margin_at_all(monkeypatch, caplog):
+    monkeypatch.setattr(sizer, "DRY_RUN", False)
+    http, out = CappedHTTP(), Recorder()
+    http.available = "1"  # rounds below one lot step of headroom
+    http.orders = [ORDER]
+
+    with caplog.at_level("INFO", logger="relay.sizer"):
+        run_tick(http, out)
+
+    assert http.amended == []
+    assert "no margin to grow" in caplog.text
+
+
+def test_tick_shrinks_without_consulting_the_margin(monkeypatch):
+    monkeypatch.setattr(sizer, "DRY_RUN", False)
+
+    class NoCapCalls(CappedHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            assert "/v5/position/list" not in url, "shrinking must not fetch leverage"
+            return await super().get(url, headers=headers, timeout=timeout)
+
+    http, out = NoCapCalls(), Recorder()
+    http.orders = [dict(ORDER, qty="0.100")]  # bigger than the 0.05 target
+
+    run_tick(http, out)
+
+    assert http.amended[0]["qty"] == "0.050"
+
+
+def test_tick_grows_uncapped_when_the_cap_is_unknown(monkeypatch):
+    monkeypatch.setattr(sizer, "DRY_RUN", False)
+    http, out = CappedHTTP(), Recorder()
+    http.available = ""  # cap unknowable -> old behaviour, full amend
+    http.orders = [ORDER]
+
+    run_tick(http, out)
+
+    assert http.amended[0]["qty"] == "0.050"
+    assert "урезано" not in out.sent[0]
+
+
 # ------------------------------------------------------------------ RR gate
 @pytest.mark.parametrize(
     ("patch", "expected"),

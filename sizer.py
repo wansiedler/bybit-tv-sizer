@@ -201,6 +201,39 @@ def rr_warning(order: dict) -> str | None:
     return f"RR {rr:.2f} < {MIN_RR}"
 
 
+# Keep this share of the margin headroom unused when capping — price can
+# move between the check and the amend.
+_MARGIN_SAFETY = Decimal("0.97")
+
+
+async def margin_cap(http: httpx.AsyncClient, symbol: str, entry: Decimal, have: Decimal):
+    """The largest quantity the free balance can carry, or None when unknown.
+
+    The order's current quantity is already margined, so the cap is what is
+    held now plus what the available balance buys at the symbol's exchange
+    leverage. Unknown means "don't cap": worst case the amend is refused
+    with the same 110007 the cap exists to avoid.
+    """
+    try:
+        result = await bybit_watch._get(
+            http, "/v5/account/wallet-balance", {"accountType": ACCOUNT_TYPE}
+        )
+        accounts = result.get("list") or []
+        available = accounts[0].get("totalAvailableBalance") if accounts else ""
+        if not available:
+            return None
+        result = await bybit_watch._get(
+            http, "/v5/position/list", {"category": CATEGORY, "symbol": symbol}
+        )
+        rows = result.get("list") or []
+        leverage = Decimal(rows[0].get("leverage") or "1") if rows else Decimal(1)
+        return have + Decimal(available) * leverage / entry * _MARGIN_SAFETY
+    # Deliberately broad: no cap is merely the pre-cap behaviour.
+    except Exception:  # noqa: BLE001
+        log.exception("no margin cap for %s", symbol)
+        return None
+
+
 async def tick(http: httpx.AsyncClient, send) -> None:
     """One pass: resize every managed, settled order that is the wrong size."""
     open_orders = await get_open_orders(http)
@@ -228,20 +261,35 @@ async def tick(http: httpx.AsyncClient, send) -> None:
         if complaint and _warned.get(order_id) != signature:
             _warned[order_id] = signature
             await send(f"⚠️ {symbol} {order.get('side', '?')} limit @ {order['price']}: {complaint}")
-        want = target_qty(order, equity, await get_instrument(http, symbol))
+        instrument = await get_instrument(http, symbol)
+        want = target_qty(order, equity, instrument)
         if want is None:
             continue
         have = Decimal(order["qty"])
+        capped = False
+        if want > have:
+            # Growing the order needs free margin; shrinking always fits.
+            cap = await margin_cap(http, symbol, Decimal(order["price"]), have)
+            if cap is not None and cap < want:
+                lot = instrument["lotSizeFilter"]
+                cap = round_step(cap, Decimal(lot["qtyStep"]))
+                if cap <= have or cap < Decimal(lot["minOrderQty"]):
+                    log.info("%s %s: no margin to grow, leaving as is", symbol, order_id[:8])
+                    continue
+                want, capped = cap, True
         if have == want:
             continue
         if DRY_RUN:
             log.info("[dry-run] %s %s: qty %s -> %s", symbol, order_id[:8], have, want)
             continue
         await amend_qty(http, symbol, order_id, want)
-        log.info("%s %s: qty %s -> %s", symbol, order_id[:8], have, want)
+        log.info(
+            "%s %s: qty %s -> %s%s", symbol, order_id[:8], have, want, " (capped)" if capped else ""
+        )
         await send(
             f"⚖️ {symbol} {order.get('side', '?')} limit @ {order['price']}\n"
             f"stop {order.get('stopLoss') or '?'} → qty {have} → {want}"
+            + (" (урезано по марже — подними плечо инструмента)" if capped else "")
         )
 
 
