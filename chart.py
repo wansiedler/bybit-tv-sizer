@@ -20,7 +20,7 @@ from PIL import Image, ImageDraw, ImageFont
 TITLE_FONT = ImageFont.load_default(24)
 LABEL_FONT = ImageFont.load_default(16)
 
-WIDTH, HEIGHT = 1400, 700
+WIDTH, HEIGHT = 1600, 800
 MARGIN = 16
 PRICE_GUTTER = 130  # right-hand strip where the level labels live
 
@@ -29,6 +29,8 @@ UP = (38, 166, 154)
 DOWN = (239, 83, 80)
 ENTRY = (208, 214, 222)
 TEXT = (208, 214, 222)
+GRID = (34, 40, 54)
+GRID_TEXT = (120, 128, 144)
 # Zone fills stay translucent so the candles read through them.
 PROFIT_FILL = (38, 166, 154, 46)
 RISK_FILL = (239, 83, 80, 46)
@@ -88,6 +90,14 @@ def render(
     chart_right = WIDTH - PRICE_GUTTER
     slots = len(candles) + pad_right
     step = (chart_right - MARGIN) / slots
+
+    # A faint price grid, TradingView-style, under everything else.
+    span = (highest - lowest) or 1.0
+    for i in range(1, 8):
+        price = lowest + span * i / 8
+        y = to_y(price)
+        draw.line((MARGIN, y, chart_right, y), fill=GRID, width=1)
+        draw.text((chart_right + 8, y - 8), f"{price:.4g}", fill=GRID_TEXT, font=LABEL_FONT)
 
     def x_of(index: int) -> float:
         return MARGIN + step * index + step / 2

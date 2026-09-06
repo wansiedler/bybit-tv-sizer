@@ -52,7 +52,7 @@ POLL = int(os.getenv("BYBIT_POLL", "10"))
 # Kline timeframe for every chart the relay draws, in minutes.
 CHART_INTERVAL = os.getenv("CHART_INTERVAL", "15")
 # How many bars of context a chart shows (Bybit caps one request at 1000).
-CHART_BARS = min(int(os.getenv("CHART_BARS", "200")), 1000)
+CHART_BARS = min(int(os.getenv("CHART_BARS", "400")), 1000)
 RECV_WINDOW = "5000"
 
 
@@ -170,7 +170,7 @@ async def entry_chart(http: httpx.AsyncClient, symbol: str, position: Position) 
             position.take_profit,
             position.stop_loss,
             entry_index=len(candles) - 1,
-            pad_right=max(CHART_BARS // 5, 4),
+            pad_right=max(CHART_BARS // 6, 4),
             timeframe=f"{CHART_INTERVAL}m",
         )
     # Deliberately broad: a chart is garnish, never worth losing the notice.
