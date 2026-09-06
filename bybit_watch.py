@@ -25,6 +25,7 @@ import httpx
 from dotenv import load_dotenv
 
 import chart
+import sheets
 from coin_names import COIN_NAMES
 from parser import base_symbol
 
@@ -619,6 +620,21 @@ async def tick(
                 if opened_fee or closed_fee:
                     line += f"·комса{opened_fee:.4g}+{closed_fee:.4g}"
                 spoken_line += f", {'profit' if pnl >= 0 else 'loss'} {abs(pnl):.0f}"
+                await sheets.log_close(
+                    http,
+                    {
+                        "symbol": base_symbol(symbol),
+                        "side": was.side,
+                        "value": round(was.value, 2),
+                        "entry": float(record.get("avgEntryPrice") or 0),
+                        "exit": float(record.get("avgExitPrice") or 0),
+                        "pnl": pnl,
+                        "pnl_pct": round(pnl / depo * 100, 4) if depo else "",
+                        "fees": round(opened_fee + closed_fee, 6),
+                        "opened": record.get("createdTime", ""),
+                        "closed": record.get("updatedTime", ""),
+                    },
+                )
                 png = await close_chart(http, symbol, was, record, _plain(line))
         if png is None or not await send_photo(line, png):
             await send(line)

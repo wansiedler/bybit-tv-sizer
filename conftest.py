@@ -17,6 +17,7 @@ import pytest
 
 import bybit_watch
 import commands
+import sheets
 import speaker
 import tv_alerts
 
@@ -33,6 +34,8 @@ def _default_config(monkeypatch, tmp_path):
     monkeypatch.setattr(bybit_watch, "RISK_TARGET", 0.005)
     monkeypatch.setattr(bybit_watch, "MIN_RR", 2.0)
     monkeypatch.setattr(tv_alerts, "TV_WEBHOOK_SECRET", "")
+    monkeypatch.setattr(sheets, "SHEETS_URL", "")
+    monkeypatch.setattr(sheets, "SHEETS_SECRET", "")
     monkeypatch.setattr(commands, "SOURCE", "source_bot")
     monkeypatch.setattr(commands, "WATCH_USERS", ["some_trader"])
     monkeypatch.setattr(commands, "POLL_TIMEOUT", 25)
