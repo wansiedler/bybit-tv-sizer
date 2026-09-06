@@ -380,7 +380,7 @@ def test_poll_survives_a_transport_failure(owner, monkeypatch):
 
 def test_poll_survives_a_failing_command(owner, monkeypatch, caplog):
     class Exploding(Recorder):
-        async def send(self, text):
+        async def send(self, text, html=False):
             raise RuntimeError("telegram is down")
 
     rec = Exploding()
