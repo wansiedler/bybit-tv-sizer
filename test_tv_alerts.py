@@ -42,15 +42,15 @@ def test_webhook_queues_the_alert_text():
     assert asyncio.run(run()) == "CL broke 92"
 
 
-def test_webhook_refuses_a_wrong_secret():
+def test_webhook_hangs_up_on_a_wrong_secret():
     async def run():
         queue: asyncio.Queue = asyncio.Queue()
         httpd = tv_alerts.serve(asyncio.get_running_loop(), queue)
         try:
             port = httpd.server_address[1]
-            with pytest.raises(urllib.error.HTTPError) as excinfo:
+            # Not an HTTP error: the connection dies without a single byte.
+            with pytest.raises((ConnectionError, urllib.error.URLError)):
                 await asyncio.to_thread(post, port, "/tv/wrong")
-            assert excinfo.value.code == 404
             assert queue.empty()
         finally:
             httpd.shutdown()
@@ -94,22 +94,19 @@ def test_get_shows_the_alive_page_only_on_the_secret_path():
             port = httpd.server_address[1]
 
             def get(path):
-                try:
-                    with urllib.request.urlopen(
-                        f"http://127.0.0.1:{port}{path}", timeout=5
-                    ) as response:
-                        return response.status, response.read()
-                except urllib.error.HTTPError as refusal:
-                    return refusal.code, refusal.read()
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}{path}", timeout=5
+                ) as response:
+                    return response.status, response.read()
 
             status, body = await asyncio.to_thread(get, "/tv/s3cret")
             assert status == 200
             assert b"lexx-relay" in body
 
+            # Every other path gets no HTTP answer at all.
             for path in ("/", "/tv/wrong", "/anything"):
-                status, body = await asyncio.to_thread(get, path)
-                assert status == 404
-                assert "недоступно".encode() in body
+                with pytest.raises((ConnectionError, urllib.error.URLError)):
+                    await asyncio.to_thread(get, path)
             assert queue.empty()
         finally:
             httpd.shutdown()

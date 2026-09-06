@@ -42,10 +42,18 @@ class _Handler(BaseHTTPRequestHandler):
     loop: asyncio.AbstractEventLoop
     queue: asyncio.Queue
 
+    def _refuse(self) -> None:
+        """Hang up without a single byte of answer.
+
+        To anyone off the secret path the server does not exist: a browser
+        shows its "page unavailable" error, Cloudflare shows a bad gateway.
+        """
+        self.close_connection = True
+        self.connection.close()
+
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's spelling
         if self.path != f"/tv/{TV_WEBHOOK_SECRET}":
-            # 404 without detail: no hint whether the path was close.
-            self.send_error(404)
+            self._refuse()
             return
         length = min(int(self.headers.get("Content-Length") or 0), MAX_BODY)
         text = self.rfile.read(length).decode("utf-8", errors="replace").strip()
@@ -56,21 +64,14 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(b"ok")
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's spelling
-        """The alive page, but only on the exact secret path.
-
-        Everything else — the bare host included — answers "недоступно":
-        a passer-by who found the hostname learns nothing. The secret is
-        long enough that answering differently on it is not a usable oracle.
-        """
-        if self.path == f"/tv/{TV_WEBHOOK_SECRET}":
-            body = (
-                "lexx-relay · TradingView webhook\nAlive. Alerts arrive as POST from TradingView.\n"
-            ).encode()
-            status = 200
-        else:
-            body = "недоступно\n".encode()
-            status = 404
-        self.send_response(status)
+        """The alive page on the exact secret path; dead silence elsewhere."""
+        if self.path != f"/tv/{TV_WEBHOOK_SECRET}":
+            self._refuse()
+            return
+        body = (
+            "lexx-relay · TradingView webhook\nAlive. Alerts arrive as POST from TradingView.\n"
+        ).encode()
+        self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
