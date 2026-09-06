@@ -15,7 +15,7 @@ from io import BytesIO
 
 from PIL import Image, ImageDraw
 
-WIDTH, HEIGHT = 1000, 640
+WIDTH, HEIGHT = 1400, 700
 MARGIN = 16
 PRICE_GUTTER = 130  # right-hand strip where the level labels live
 
@@ -60,6 +60,7 @@ def render(
     exit_index: int | None = None,
     exit_price: float | None = None,
     pad_right: int = 0,
+    timeframe: str = "",
 ) -> bytes:
     """The chart as PNG bytes. Raises on empty candles: nothing to draw.
 
@@ -130,7 +131,10 @@ def render(
         level(exit_price, UP if won else DOWN, "out")
 
     arrow = "▲" if side == "long" else "▼"
-    draw.text((MARGIN + 6, MARGIN + 4), f"{symbol} · {side} {arrow}", fill=TEXT)
+    title = f"{symbol} · {side} {arrow}"
+    if timeframe:
+        title += f" · {timeframe}"
+    draw.text((MARGIN + 6, MARGIN + 4), title, fill=TEXT)
 
     out = BytesIO()
     image.save(out, format="PNG")

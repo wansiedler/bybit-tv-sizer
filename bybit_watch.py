@@ -51,6 +51,8 @@ API_URL = _api_url()
 POLL = int(os.getenv("BYBIT_POLL", "10"))
 # Kline timeframe for every chart the relay draws, in minutes.
 CHART_INTERVAL = os.getenv("CHART_INTERVAL", "15")
+# How many bars of context a chart shows (Bybit caps one request at 1000).
+CHART_BARS = min(int(os.getenv("CHART_BARS", "200")), 1000)
 RECV_WINDOW = "5000"
 
 
@@ -159,7 +161,7 @@ async def entry_chart(http: httpx.AsyncClient, symbol: str, position: Position) 
     trade.
     """
     try:
-        _, candles = await _klines(http, symbol, CHART_INTERVAL, {"limit": "60"})
+        _, candles = await _klines(http, symbol, CHART_INTERVAL, {"limit": str(CHART_BARS)})
         return chart.render(
             base_symbol(symbol),
             position.side,
@@ -168,7 +170,8 @@ async def entry_chart(http: httpx.AsyncClient, symbol: str, position: Position) 
             position.take_profit,
             position.stop_loss,
             entry_index=len(candles) - 1,
-            pad_right=15,
+            pad_right=max(CHART_BARS // 5, 4),
+            timeframe=f"{CHART_INTERVAL}m",
         )
     # Deliberately broad: a chart is garnish, never worth losing the notice.
     except Exception:  # noqa: BLE001
@@ -190,13 +193,16 @@ async def close_chart(
     try:
         opened, closed = int(record["createdTime"]), int(record["updatedTime"])
         span = int(CHART_INTERVAL) * 60_000
-        bars = (closed - opened) // span + 12  # 8 bars of lead-in, 3 of tail, slack
+        trade_bars = (closed - opened) // span
+        # Lead-in fills the frame up to CHART_BARS of context around the trade.
+        lead = max(CHART_BARS - trade_bars - 3, 8)
+        bars = trade_bars + lead + 4  # plus the tail and a slack bar
         times, candles = await _klines(
             http,
             symbol,
             CHART_INTERVAL,
             {
-                "start": str(opened - 8 * span),
+                "start": str(opened - lead * span),
                 "end": str(closed + 3 * span),
                 "limit": str(min(bars, 1000)),
             },
@@ -212,6 +218,7 @@ async def close_chart(
             exit_index=_bar_of(times, closed),
             exit_price=float(record["avgExitPrice"]),
             pad_right=2,
+            timeframe=f"{CHART_INTERVAL}m",
         )
     # Deliberately broad: a chart is garnish, never worth losing the notice.
     except Exception:  # noqa: BLE001
