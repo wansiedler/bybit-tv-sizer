@@ -297,7 +297,14 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         total_net += net
         lines.append("\n".join(block))
         if send_album is not None:
-            png = await entry_chart(http, symbol, position, _plain("\n".join(block)))
+            png = await entry_chart(
+                http,
+                symbol,
+                position,
+                entry_note=f"PnL {net:+,.2f}{share(net)}",
+                tp_note=f"{at_tp:+,.2f}{share(at_tp)}" if position.take_profit else "",
+                sl_note=f"{at_sl:+,.2f}{share(at_sl)}" if position.stop_loss else "",
+            )
             if png is not None:
                 pngs.append(png)
     # A total of one position would just repeat its line.
@@ -357,13 +364,13 @@ def _bar_of(times: list[int], moment: int) -> int:
     return fits[-1] if fits else 0
 
 
-def _plain(text: str) -> tuple[str, ...]:
-    """Markup-free lines of a notice, ready to be painted onto a chart."""
-    return tuple(text.replace("<b>", "").replace("</b>", "").splitlines())
-
-
 async def entry_chart(
-    http: httpx.AsyncClient, symbol: str, position: Position, info: tuple[str, ...] = ()
+    http: httpx.AsyncClient,
+    symbol: str,
+    position: Position,
+    entry_note: str = "",
+    tp_note: str = "",
+    sl_note: str = "",
 ) -> bytes | None:
     """A PNG of recent candles with the entry, TP and SL drawn in. Best-effort:
     the text notice must go out even when the picture cannot be made.
@@ -384,7 +391,9 @@ async def entry_chart(
             entry_index=len(candles) - 1,
             pad_right=max(CHART_BARS // 6, 4),
             timeframe=f"{CHART_INTERVAL}m",
-            info=info,
+            entry_note=entry_note,
+            tp_note=tp_note,
+            sl_note=sl_note,
         )
     # Deliberately broad: a chart is garnish, never worth losing the notice.
     except Exception:  # noqa: BLE001
@@ -393,7 +402,7 @@ async def entry_chart(
 
 
 async def close_chart(
-    http: httpx.AsyncClient, symbol: str, was: Position, record: dict, info: tuple[str, ...] = ()
+    http: httpx.AsyncClient, symbol: str, was: Position, record: dict, exit_note: str = ""
 ) -> bytes | None:
     """A PNG of the finished trade: entry to exit, zone colored by outcome.
 
@@ -430,7 +439,7 @@ async def close_chart(
             exit_price=float(record["avgExitPrice"]),
             pad_right=2,
             timeframe=f"{CHART_INTERVAL}m",
-            info=info,
+            exit_note=exit_note,
         )
     # Deliberately broad: a chart is garnish, never worth losing the notice.
     except Exception:  # noqa: BLE001
@@ -607,7 +616,16 @@ async def tick(
                 line += "\n" + ",".join(extras)
             for warn in trade_warnings(now, depo):
                 line += f"\n{warn}"
-            png = await entry_chart(http, symbol, now, _plain(line))
+            png = await entry_chart(
+                http,
+                symbol,
+                now,
+                entry_note=f"fee {fee:.2f}" if fee else "",
+                tp_note=(
+                    f"{target:+,.2f}{share(target, depo)}" if now.take_profit is not None else ""
+                ),
+                sl_note=(f"{at_sl:+,.2f}{share(at_sl, depo)}" if now.stop_loss is not None else ""),
+            )
         elif kind == "closed" and was is not None:
             record = await closed_record(http, symbol)
             if record is not None:
@@ -635,7 +653,9 @@ async def tick(
                         "closed": record.get("updatedTime", ""),
                     },
                 )
-                png = await close_chart(http, symbol, was, record, _plain(line))
+                png = await close_chart(
+                    http, symbol, was, record, exit_note=f"{pnl:+,.2f}{share(pnl, depo)}"
+                )
         if png is None or not await send_photo(line, png):
             await send(line)
         await speak(spoken_line)

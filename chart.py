@@ -70,7 +70,10 @@ def render(
     exit_price: float | None = None,
     pad_right: int = 0,
     timeframe: str = "",
-    info: tuple[str, ...] = (),
+    entry_note: str = "",
+    tp_note: str = "",
+    sl_note: str = "",
+    exit_note: str = "",
 ) -> bytes:
     """The chart as PNG bytes. Raises on empty candles: nothing to draw.
 
@@ -134,28 +137,30 @@ def render(
         top, bottom = sorted((to_y(candle.open), to_y(candle.close)))
         draw.rectangle((x - body / 2, top, x + body / 2, max(bottom, top + 1)), fill=color)
 
-    def level(price: float, color: tuple[int, int, int], tag: str) -> None:
+    def level(price: float, color: tuple[int, int, int], tag: str, note: str = "") -> None:
         y = to_y(price)
         for x in range(int(zone_left), int(zone_right) + 6, 12):  # dashed
             draw.line((x, y, x + 6, y), fill=color, width=2)
         draw.text((chart_right + 8, y - 8), f"{tag} {price:g}", fill=color, font=LABEL_FONT)
+        if note:
+            # The figure sits right against its line, inside the zone. ASCII
+            # only: the bundled font has no cyrillic or typographic minus.
+            width = draw.textlength(note, font=LABEL_FONT)
+            draw.text((chart_right - width - 12, y - 30), note, fill=color, font=LABEL_FONT)
 
-    level(entry, ENTRY, "in")
+    level(entry, ENTRY, "in", entry_note)
     if take_profit:
-        level(take_profit, UP, "tp")
+        level(take_profit, UP, "tp", tp_note)
     if stop_loss:
-        level(stop_loss, DOWN, "sl")
+        level(stop_loss, DOWN, "sl", sl_note)
     if exit_price is not None:
         won = (exit_price >= entry) == (side == "long")
-        level(exit_price, UP if won else DOWN, "out")
+        level(exit_price, UP if won else DOWN, "out", exit_note)
 
     title = f"{symbol} · {side}"
     if timeframe:
         title += f" · {timeframe}"
     draw.text((MARGIN + 6, MARGIN + 4), title, fill=TEXT, font=TITLE_FONT)
-    # The trade math, painted right onto the picture under the title.
-    for i, note in enumerate(info):
-        draw.text((MARGIN + 6, MARGIN + 44 + i * 26), note, fill=TEXT, font=LABEL_FONT)
 
     out = BytesIO()
     image.save(out, format="PNG")
