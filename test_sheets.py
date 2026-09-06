@@ -44,7 +44,9 @@ def test_log_close_posts_the_row_with_the_secret():
     ok = asyncio.run(sheets.log_close(http, {"symbol": "CL", "pnl": -0.04}))
 
     assert ok is True
-    assert http.posted == [{"secret": "s3cret", "symbol": "CL", "pnl": -0.04}]
+    assert http.posted == [
+        {"secret": "s3cret", "symbol": "CL", "pnl": -0.04}  # pragma: allowlist secret
+    ]
 
 
 def test_log_close_disabled_without_config(monkeypatch):
