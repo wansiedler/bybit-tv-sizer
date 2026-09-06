@@ -86,6 +86,31 @@ def test_webhook_caps_a_huge_body():
     assert len(asyncio.run(run())) == tv_alerts.MAX_BODY
 
 
+def test_get_answers_politely_without_confirming_the_secret():
+    async def run():
+        queue: asyncio.Queue = asyncio.Queue()
+        httpd = tv_alerts.serve(asyncio.get_running_loop(), queue)
+        try:
+            port = httpd.server_address[1]
+
+            def get(path):
+                with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}{path}", timeout=5
+                ) as response:
+                    return response.status, response.read()
+
+            right = await asyncio.to_thread(get, "/tv/s3cret")
+            wrong = await asyncio.to_thread(get, "/anything")
+            assert right == wrong  # no oracle for the secret
+            assert right[0] == 200
+            assert b"lexx-relay" in right[1]
+            assert queue.empty()
+        finally:
+            httpd.shutdown()
+
+    asyncio.run(run())
+
+
 def test_request_logging_goes_to_the_logger(caplog):
     handler = tv_alerts._Handler.__new__(tv_alerts._Handler)
 

@@ -55,6 +55,20 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"ok")
 
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's spelling
+        """A friendly page for a browser. Same answer on every path: a GET
+        must never confirm whether a secret was right."""
+        body = (
+            "lexx-relay · TradingView webhook\n"
+            "Alive. Alerts arrive as POST from TradingView; "
+            "there is nothing to see here in a browser.\n"
+        ).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def log_message(self, format: str, *args: object) -> None:
         log.debug("tv http: " + format, *args)
 
