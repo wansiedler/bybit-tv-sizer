@@ -147,29 +147,36 @@ def test_diff_quiet_when_nothing_moved():
             "opened",
             None,
             Position("long", 115661.3, 0.1621, 18748.7),
-            "💰 FARTCOIN long 18,749 USDT @ 0.1621",
+            "💰📈FARTCOIN 18,749@0.1621",
             "Fartcoin long opened",
         ),
-        ("closed", LONG, None, "💸 FARTCOIN long closed", "Fartcoin long closed"),
+        (
+            "opened",
+            None,
+            Position("short", 100.0, 0.16, 16.0, stop_loss=0.17),
+            "💰📉FARTCOIN 16@0.16 · sl 0.17",
+            "Fartcoin short opened",
+        ),
+        ("closed", LONG, None, "💸📈FARTCOIN", "Fartcoin long closed"),
         (
             "changed",
             LONG,
             BIGGER,
-            "💰 FARTCOIN long increased 16 → 32 USDT",
+            "💰📈FARTCOIN 16→32",
             "Fartcoin long increased",
         ),
         (
             "changed",
             BIGGER,
             LONG,
-            "💰 FARTCOIN long reduced 32 → 16 USDT",
+            "💰📈FARTCOIN 32→16",
             "Fartcoin long reduced",
         ),
         (
             "flipped",
             LONG,
             SHORT,
-            "💰 FARTCOIN flipped to short 16 USDT @ 0.16",
+            "💰FARTCOIN → short 16@0.16",
             "Fartcoin flipped to short",
         ),
     ],
@@ -217,7 +224,7 @@ def test_tick_announces_an_open(keyed):
 
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == ["💰 FARTCOIN long 18,749 USDT @ 0.1621\n⚠️ без стопа"]
+    assert out.sent == ["💰📈FARTCOIN 18,749@0.1621\n⚠️ без стопа"]
     assert out.spoken == ["Fartcoin long opened"]
 
 
@@ -644,7 +651,7 @@ def test_tick_appends_the_entry_fee_when_fills_are_fresh(keyed):
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
     assert out.sent == [
-        "💰 FARTCOIN long 18,749 USDT @ 0.1621 · fee 0.073 USDT · на тейке ≈ +11,565.98 USDT"
+        "💰📈FARTCOIN 18,749@0.1621 · sl 0.15\nкомса 0.073, tp 0.2621: <b>+11,565.98</b>"
     ]
 
 
@@ -657,7 +664,7 @@ def test_tick_reports_the_take_target_as_a_share_of_equity(keyed):
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
     assert out.sent == [
-        "💰 FARTCOIN long 18,749 USDT @ 0.1621 · на тейке ≈ +11,566.13 USDT (+57.83% депо)"
+        "💰📈FARTCOIN 18,749@0.1621 · sl 0.15\ntp 0.2621: <b>+11,566.13 (+57.83%)</b>"
         "\n⚠️ риск 7.00% депо, цель 0.5%"
     ]
 
@@ -680,7 +687,7 @@ def test_tick_sends_an_entry_chart_when_candles_exist(keyed):
 
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
-    assert out.photos == ["💰 FARTCOIN long 18,749 USDT @ 0.1621 · на тейке ≈ +3,226.95 USDT"]
+    assert out.photos == ["💰📈FARTCOIN 18,749@0.1621 · sl 0.15\ntp 0.19: <b>+3,226.95</b>"]
     assert out.sent == []  # the caption carries the notice
     assert out.spoken == ["Fartcoin long opened"]
 
@@ -693,8 +700,8 @@ def test_tick_falls_back_to_text_when_telegram_refuses_the_photo(keyed):
 
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
-    assert out.photos == ["💰 FARTCOIN long 18,749 USDT @ 0.1621\n⚠️ без стопа"]
-    assert out.sent == ["💰 FARTCOIN long 18,749 USDT @ 0.1621\n⚠️ без стопа"]
+    assert out.photos == ["💰📈FARTCOIN 18,749@0.1621\n⚠️ без стопа"]
+    assert out.sent == ["💰📈FARTCOIN 18,749@0.1621\n⚠️ без стопа"]
 
 
 def test_tick_sends_a_close_chart_with_the_pnl_caption(keyed):
@@ -705,9 +712,7 @@ def test_tick_sends_a_close_chart_with_the_pnl_caption(keyed):
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
-    assert out.photos == [
-        "💸 FARTCOIN long closed, PnL +512.30 USDT чистыми · fees 0.073 + 0.078 USDT"
-    ]
+    assert out.photos == ["💸📈FARTCOIN: <b>+512.30</b> · комса 0.073+0.078"]
     assert out.sent == []
     assert out.spoken == ["Fartcoin long closed, profit 512"]
 
@@ -784,7 +789,7 @@ def test_tick_reports_a_resize_as_plain_text(keyed):
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
     assert out.photos == []
-    assert out.sent == ["💰 FARTCOIN long increased 16 → 37,497 USDT"]
+    assert out.sent == ["💰📈FARTCOIN 16→37,497"]
 
 
 def test_tick_reports_pnl_on_a_close(keyed):
@@ -794,9 +799,7 @@ def test_tick_reports_pnl_on_a_close(keyed):
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == [
-        "💸 FARTCOIN long closed, PnL +512.30 USDT чистыми · fees 0.073 + 0.078 USDT"
-    ]
+    assert out.sent == ["💸📈FARTCOIN: <b>+512.30</b> · комса 0.073+0.078"]
     assert out.spoken == ["Fartcoin long closed, profit 512"]
 
 
@@ -808,9 +811,7 @@ def test_tick_close_reports_the_pnl_as_a_share_of_equity(keyed):
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == [
-        "💸 FARTCOIN long closed, PnL +512.30 USDT чистыми (+5.12% депо) · fees 0.073 + 0.078 USDT"
-    ]
+    assert out.sent == ["💸📈FARTCOIN: <b>+512.30 (+5.12%)</b> · комса 0.073+0.078"]
 
 
 @pytest.mark.parametrize(
@@ -852,7 +853,7 @@ def test_tick_close_without_fee_fields_stays_plain(keyed):
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == ["💸 FARTCOIN long closed, PnL +512.30 USDT чистыми"]
+    assert out.sent == ["💸📈FARTCOIN: <b>+512.30</b>"]
 
 
 def test_tick_close_survives_a_missing_pnl(keyed):
@@ -862,7 +863,7 @@ def test_tick_close_survives_a_missing_pnl(keyed):
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == ["💸 FARTCOIN long closed"]
+    assert out.sent == ["💸📈FARTCOIN"]
 
 
 # --------------------------------------------------------------------------- #
@@ -902,7 +903,7 @@ def test_poll_survives_failures_and_keeps_going(keyed, monkeypatch, caplog):
 
     assert "bybit poll failed" in caplog.text
     assert any(seconds >= 30 for seconds in slept)  # backed off after the failure
-    assert out.sent and out.sent[0].startswith("💸 FARTCOIN long closed")
+    assert out.sent and out.sent[0].startswith("💸📈FARTCOIN")
 
 
 def test_poll_lets_cancellation_through(keyed, monkeypatch):

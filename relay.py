@@ -163,7 +163,7 @@ async def send_photo_via_bot(http: httpx.AsyncClient, caption: str, png: bytes) 
     try:
         response = await http.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-            data={"chat_id": TARGET_CHAT_ID, "caption": caption},
+            data={"chat_id": TARGET_CHAT_ID, "caption": caption, "parse_mode": "HTML"},
             files={"photo": ("chart.png", png, "image/png")},
             timeout=30,
         )
@@ -367,7 +367,8 @@ async def run() -> None:
                     asyncio.create_task(
                         bybit_watch.poll(
                             http,
-                            lambda text: send_via_bot(http, text),
+                            # The watcher composes its own markup: HTML is safe.
+                            lambda text: send_via_bot(http, text, True),
                             speaker.trade,
                             lambda caption, png: send_photo_via_bot(http, caption, png),
                         )

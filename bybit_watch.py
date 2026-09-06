@@ -288,7 +288,7 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         total_net += net
         lines.append(f"{head}\n{detail}")
         if send_album is not None:
-            png = await entry_chart(http, symbol, position)
+            png = await entry_chart(http, symbol, position, _plain(f"{head}\n{detail}"))
             if png is not None:
                 pngs.append(png)
     # A total of one position would just repeat its line.
@@ -348,7 +348,14 @@ def _bar_of(times: list[int], moment: int) -> int:
     return fits[-1] if fits else 0
 
 
-async def entry_chart(http: httpx.AsyncClient, symbol: str, position: Position) -> bytes | None:
+def _plain(text: str) -> tuple[str, ...]:
+    """Markup-free lines of a notice, ready to be painted onto a chart."""
+    return tuple(text.replace("<b>", "").replace("</b>", "").splitlines())
+
+
+async def entry_chart(
+    http: httpx.AsyncClient, symbol: str, position: Position, info: tuple[str, ...] = ()
+) -> bytes | None:
     """A PNG of recent candles with the entry, TP and SL drawn in. Best-effort:
     the text notice must go out even when the picture cannot be made.
 
@@ -368,6 +375,7 @@ async def entry_chart(http: httpx.AsyncClient, symbol: str, position: Position) 
             entry_index=len(candles) - 1,
             pad_right=max(CHART_BARS // 6, 4),
             timeframe=f"{CHART_INTERVAL}m",
+            info=info,
         )
     # Deliberately broad: a chart is garnish, never worth losing the notice.
     except Exception:  # noqa: BLE001
@@ -376,7 +384,7 @@ async def entry_chart(http: httpx.AsyncClient, symbol: str, position: Position) 
 
 
 async def close_chart(
-    http: httpx.AsyncClient, symbol: str, was: Position, record: dict
+    http: httpx.AsyncClient, symbol: str, was: Position, record: dict, info: tuple[str, ...] = ()
 ) -> bytes | None:
     """A PNG of the finished trade: entry to exit, zone colored by outcome.
 
@@ -413,6 +421,7 @@ async def close_chart(
             exit_price=float(record["avgExitPrice"]),
             pad_right=2,
             timeframe=f"{CHART_INTERVAL}m",
+            info=info,
         )
     # Deliberately broad: a chart is garnish, never worth losing the notice.
     except Exception:  # noqa: BLE001
@@ -518,28 +527,33 @@ def diff(
     return changes
 
 
+def _arrow(side: str) -> str:
+    return "📈" if side == "long" else "📉"
+
+
 def describe(kind: str, symbol: str, was: Position | None, now: Position | None) -> tuple[str, str]:
-    """One change as (bot line, spoken line)."""
+    """One change as (bot line, spoken line) — the same terse dialect as
+    /positions: direction arrow, value@entry, no filler words."""
     sym = base_symbol(symbol)
     name = COIN_NAMES.get(sym, sym)
     if kind == "opened" and now is not None:
-        return (
-            f"💰 {sym} {now.side} {now.value:,.0f} USDT @ {now.price}",
-            f"{name} {now.side} opened",
-        )
+        head = f"💰{_arrow(now.side)}{sym} {now.value:,.0f}@{now.price:g}"
+        if now.stop_loss:
+            head += f" · sl {now.stop_loss:g}"
+        return head, f"{name} {now.side} opened"
     if kind == "flipped" and now is not None:
         return (
-            f"💰 {sym} flipped to {now.side} {now.value:,.0f} USDT @ {now.price}",
+            f"💰{sym} → {now.side} {now.value:,.0f}@{now.price:g}",
             f"{name} flipped to {now.side}",
         )
     if kind == "changed" and was is not None and now is not None:
         word = "increased" if now.size > was.size else "reduced"
         return (
-            f"💰 {sym} {now.side} {word} {was.value:,.0f} → {now.value:,.0f} USDT",
+            f"💰{_arrow(now.side)}{sym} {was.value:,.0f}→{now.value:,.0f}",
             f"{name} {now.side} {word}",
         )
     assert was is not None  # closed  # noqa: S101
-    return f"💸 {sym} {was.side} closed", f"{name} {was.side} closed"
+    return f"💸{_arrow(was.side)}{sym}", f"{name} {was.side} closed"
 
 
 async def tick(
@@ -554,41 +568,44 @@ async def tick(
     after = await positions(http)
     if before is None:
         return after
+
+    def share(amount: float, depo: float | None) -> str:
+        return f" ({amount / depo * 100:+.2f}%)" if depo else ""
+
     for kind, symbol, was, now in diff(before, after):
         line, spoken_line = describe(kind, symbol, was, now)
         png = None
         if kind in ("opened", "flipped") and now is not None:
             fee = await entry_fee(http, symbol)
-            if fee:
-                line += f" · fee {fee:.4g} USDT"
             depo = await equity(http)
+            extras = []
+            if fee:
+                extras.append(f"комса {fee:.4g}")
             if now.take_profit is not None:
                 # What reaching the TP pays, net of both fees: the entry fee
                 # just paid and a like-sized one for the exit.
                 target = abs(now.take_profit - now.price) * now.size
                 if fee:
                     target -= 2 * fee
-                line += f" · на тейке ≈ {target:+,.2f} USDT"
-                if depo:
-                    line += f" ({target / depo * 100:+.2f}% депо)"
+                extras.append(f"tp {now.take_profit:g}: <b>{target:+,.2f}{share(target, depo)}</b>")
+            if extras:
+                line += "\n" + ", ".join(extras)
             for warn in trade_warnings(now, depo):
                 line += f"\n{warn}"
-            png = await entry_chart(http, symbol, now)
+            png = await entry_chart(http, symbol, now, _plain(line))
         elif kind == "closed" and was is not None:
             record = await closed_record(http, symbol)
             if record is not None:
                 # Bybit's closedPnl is already net of both fees.
                 pnl = float(record["closedPnl"])
-                line += f", PnL {pnl:+,.2f} USDT чистыми"
                 depo = await equity(http)
-                if depo:
-                    line += f" ({pnl / depo * 100:+.2f}% депо)"
+                line += f": <b>{pnl:+,.2f}{share(pnl, depo)}</b>"
                 opened_fee = float(record.get("openFee") or 0)
                 closed_fee = float(record.get("closeFee") or 0)
                 if opened_fee or closed_fee:
-                    line += f" · fees {opened_fee:.4g} + {closed_fee:.4g} USDT"
+                    line += f" · комса {opened_fee:.4g}+{closed_fee:.4g}"
                 spoken_line += f", {'profit' if pnl >= 0 else 'loss'} {abs(pnl):.0f}"
-                png = await close_chart(http, symbol, was, record)
+                png = await close_chart(http, symbol, was, record, _plain(line))
         if png is None or not await send_photo(line, png):
             await send(line)
         await speak(spoken_line)

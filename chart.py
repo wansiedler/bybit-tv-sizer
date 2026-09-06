@@ -70,6 +70,7 @@ def render(
     exit_price: float | None = None,
     pad_right: int = 0,
     timeframe: str = "",
+    info: tuple[str, ...] = (),
 ) -> bytes:
     """The chart as PNG bytes. Raises on empty candles: nothing to draw.
 
@@ -152,6 +153,9 @@ def render(
     if timeframe:
         title += f" · {timeframe}"
     draw.text((MARGIN + 6, MARGIN + 4), title, fill=TEXT, font=TITLE_FONT)
+    # The trade math, painted right onto the picture under the title.
+    for i, note in enumerate(info):
+        draw.text((MARGIN + 6, MARGIN + 44 + i * 26), note, fill=TEXT, font=LABEL_FONT)
 
     out = BytesIO()
     image.save(out, format="PNG")
