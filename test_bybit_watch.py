@@ -245,6 +245,51 @@ def test_tick_falls_back_to_text_when_telegram_refuses_the_photo(keyed):
     assert out.sent == ["💰 FARTCOIN long 18,749 USDT @ 0.1621"]
 
 
+def test_tick_sends_a_close_chart_with_the_pnl_caption(keyed):
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[]]
+    http.pnl_rows = [closed()]
+    http.kline_rows = KLINES
+
+    asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
+
+    assert out.photos == ["💸 FARTCOIN long closed, PnL +512.30 USDT"]
+    assert out.sent == []
+    assert out.spoken == ["Fartcoin long closed, profit 512"]
+
+
+def test_bar_of_clamps_to_the_fetched_range(keyed):
+    times = [100, 200, 300]
+
+    assert bybit_watch._bar_of(times, 250) == 1
+    assert bybit_watch._bar_of(times, 999) == 2
+    assert bybit_watch._bar_of(times, 50) == 0  # before the first bar
+
+
+def test_close_chart_picks_a_coarse_interval_for_a_long_trade(keyed):
+    # Ten days: even 240-minute bars exceed 48, so the fallback must hold.
+    http = FakeHTTP()
+    http.kline_rows = KLINES
+    record = closed()
+    record["updatedTime"] = str(int(record["createdTime"]) + 10 * 24 * 3600 * 1000)
+
+    png = asyncio.run(bybit_watch.close_chart(http, "FARTCOINUSDT", "long", record))
+
+    assert png is not None and png.startswith(b"\x89PNG")
+    assert any("interval=240" in url for url in http.requests)
+
+
+def test_close_chart_gives_up_quietly(keyed, caplog):
+    # No candles in range: render refuses, the notice must still go out.
+    http = FakeHTTP()
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        png = asyncio.run(bybit_watch.close_chart(http, "FARTCOINUSDT", "long", closed()))
+
+    assert png is None
+    assert "no close chart" in caplog.text
+
+
 def test_entry_chart_gives_up_quietly_without_candles(keyed, caplog):
     http = FakeHTTP()
 
@@ -265,10 +310,30 @@ def test_positions_reads_tp_and_sl(keyed):
     assert got["FARTCOINUSDT"].stop_loss == 0.15
 
 
+def closed(pnl="512.3", entry="0.16", exit_price="0.17"):
+    return {
+        "closedPnl": pnl,
+        "createdTime": "1700000000000",
+        "updatedTime": "1700003600000",
+        "avgEntryPrice": entry,
+        "avgExitPrice": exit_price,
+    }
+
+
+def test_tick_reports_a_resize_as_plain_text(keyed):
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[row(size="231322.6", value="37497.4")]]
+
+    asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
+
+    assert out.photos == []
+    assert out.sent == ["💰 FARTCOIN long increased 16 → 37,497 USDT"]
+
+
 def test_tick_reports_pnl_on_a_close(keyed):
     http, out = FakeHTTP(), Recorder()
     http.position_pages = [[]]
-    http.pnl_rows = [{"closedPnl": "512.3"}]
+    http.pnl_rows = [closed()]
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
@@ -341,12 +406,12 @@ def test_poll_lets_cancellation_through(keyed, monkeypatch):
     assert out.sent == []
 
 
-def test_closed_pnl_swallows_api_errors(keyed, caplog):
+def test_closed_record_swallows_api_errors(keyed, caplog):
     class Refusing(FakeHTTP):
         async def get(self, url, headers=None, timeout=None):
             raise OSError("bybit down")
 
     with caplog.at_level("ERROR", logger="relay.bybit"):
-        assert asyncio.run(bybit_watch.closed_pnl(Refusing(), "FARTCOINUSDT")) is None
+        assert asyncio.run(bybit_watch.closed_record(Refusing(), "FARTCOINUSDT")) is None
 
     assert "no closed pnl" in caplog.text

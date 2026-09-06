@@ -96,20 +96,38 @@ async def positions(http: httpx.AsyncClient) -> dict[str, Position]:
     return open_now
 
 
+async def _klines(
+    http: httpx.AsyncClient, symbol: str, interval: str, extra: dict[str, str]
+) -> tuple[list[int], list[chart.Candle]]:
+    """Bar start times and candles, oldest first (Bybit hands newest first)."""
+    result = await _get(
+        http,
+        "/v5/market/kline",
+        {"category": "linear", "symbol": symbol, "interval": interval, **extra},
+    )
+    times, candles = [], []
+    for ts, o, h, low, c, *_ in reversed(result.get("list", [])):
+        times.append(int(ts))
+        candles.append(chart.Candle(float(o), float(h), float(low), float(c)))
+    return times, candles
+
+
+def _bar_of(times: list[int], moment: int) -> int:
+    """The bar whose slot holds `moment`, clamped to the fetched range."""
+    fits = [i for i, ts in enumerate(times) if ts <= moment]
+    return fits[-1] if fits else 0
+
+
 async def entry_chart(http: httpx.AsyncClient, symbol: str, position: Position) -> bytes | None:
     """A PNG of recent candles with the entry, TP and SL drawn in. Best-effort:
-    the text notice must go out even when the picture cannot be made."""
+    the text notice must go out even when the picture cannot be made.
+
+    The position zones start at the newest bar — the entry — and stretch into
+    the empty right-hand side, the way the TradingView tool draws an open
+    trade.
+    """
     try:
-        result = await _get(
-            http,
-            "/v5/market/kline",
-            {"category": "linear", "symbol": symbol, "interval": "15", "limit": "60"},
-        )
-        # Bybit hands the newest bar first; the chart reads left to right.
-        candles = [
-            chart.Candle(float(o), float(h), float(low), float(c))
-            for _, o, h, low, c, *_ in reversed(result.get("list", []))
-        ]
+        _, candles = await _klines(http, symbol, "15", {"limit": "60"})
         return chart.render(
             base_symbol(symbol),
             position.side,
@@ -117,6 +135,8 @@ async def entry_chart(http: httpx.AsyncClient, symbol: str, position: Position) 
             position.price,
             position.take_profit,
             position.stop_loss,
+            entry_index=len(candles) - 1,
+            pad_right=15,
         )
     # Deliberately broad: a chart is garnish, never worth losing the notice.
     except Exception:  # noqa: BLE001
@@ -124,14 +144,49 @@ async def entry_chart(http: httpx.AsyncClient, symbol: str, position: Position) 
         return None
 
 
-async def closed_pnl(http: httpx.AsyncClient, symbol: str) -> float | None:
-    """Realized PnL of the most recently closed position, best-effort."""
+# Kline intervals (minutes) coarse enough to fit a whole trade in ~48 bars.
+_INTERVALS = (1, 3, 5, 15, 30, 60, 120, 240)
+
+
+async def close_chart(
+    http: httpx.AsyncClient, symbol: str, side: str, record: dict
+) -> bytes | None:
+    """A PNG of the finished trade: entry to exit, zone colored by outcome."""
+    try:
+        opened, closed = int(record["createdTime"]), int(record["updatedTime"])
+        minutes = max((closed - opened) / 60_000, 1)
+        interval = next((step for step in _INTERVALS if minutes / step <= 48), _INTERVALS[-1])
+        span = interval * 60_000
+        times, candles = await _klines(
+            http,
+            symbol,
+            str(interval),
+            {"start": str(opened - 8 * span), "end": str(closed + 3 * span)},
+        )
+        return chart.render(
+            base_symbol(symbol),
+            side,
+            candles,
+            float(record["avgEntryPrice"]),
+            entry_index=_bar_of(times, opened),
+            exit_index=_bar_of(times, closed),
+            exit_price=float(record["avgExitPrice"]),
+            pad_right=2,
+        )
+    # Deliberately broad: a chart is garnish, never worth losing the notice.
+    except Exception:  # noqa: BLE001
+        log.exception("no close chart for %s", symbol)
+        return None
+
+
+async def closed_record(http: httpx.AsyncClient, symbol: str) -> dict | None:
+    """The most recently closed position's record, best-effort."""
     try:
         result = await _get(
             http, "/v5/position/closed-pnl", {"category": "linear", "symbol": symbol, "limit": "1"}
         )
         rows = result.get("list", [])
-        return float(rows[0]["closedPnl"]) if rows else None
+        return rows[0] if rows else None
     # Deliberately broad: the close notice must go out even without a figure.
     except Exception:  # noqa: BLE001
         log.exception("no closed pnl for %s", symbol)
@@ -195,16 +250,16 @@ async def tick(
         return after
     for kind, symbol, was, now in diff(before, after):
         line, spoken_line = describe(kind, symbol, was, now)
-        if kind == "closed":
-            pnl = await closed_pnl(http, symbol)
-            if pnl is not None:
+        png = None
+        if kind in ("opened", "flipped") and now is not None:
+            png = await entry_chart(http, symbol, now)
+        elif kind == "closed" and was is not None:
+            record = await closed_record(http, symbol)
+            if record is not None:
+                pnl = float(record["closedPnl"])
                 line += f", PnL {pnl:+,.2f} USDT"
                 spoken_line += f", {'profit' if pnl >= 0 else 'loss'} {abs(pnl):.0f}"
-        png = (
-            await entry_chart(http, symbol, now)
-            if kind in ("opened", "flipped") and now is not None
-            else None
-        )
+                png = await close_chart(http, symbol, was.side, record)
         if png is None or not await send_photo(line, png):
             await send(line)
         await speak(spoken_line)

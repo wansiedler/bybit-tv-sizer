@@ -56,3 +56,44 @@ def test_render_survives_zero_prices():
 def test_render_refuses_an_empty_chart():
     with pytest.raises(ValueError, match="no candles"):
         chart.render("X", "long", [], 1.0, None, None)
+
+
+@pytest.mark.parametrize(
+    ("side", "exit_price"),
+    [
+        ("long", 0.170),  # long, exited higher: profit colors
+        ("long", 0.150),  # long, exited lower: loss colors
+        ("short", 0.150),  # short, exited lower: profit colors
+    ],
+)
+def test_render_draws_a_finished_trade(side, exit_price):
+    png = chart.render(
+        "FARTCOIN",
+        side,
+        CANDLES,
+        0.162,
+        entry_index=0,
+        exit_index=2,
+        exit_price=exit_price,
+        pad_right=2,
+    )
+
+    assert png.startswith(b"\x89PNG")
+
+
+def test_render_zones_start_at_the_entry_bar():
+    """Left of the entry bar the zone fill must not appear."""
+    entry, tp = 0.162, 0.170
+    png = chart.render("FARTCOIN", "long", CANDLES, entry, tp, None, entry_index=2, pad_right=10)
+
+    image = load(png).convert("RGB")
+    # Sample inside the profit zone's price band: right of the entry bar the
+    # fill tints the background; left of it the background stays clean.
+    slots = len(CANDLES) + 10
+    step = (chart.WIDTH - chart.PRICE_GUTTER - chart.MARGIN) / slots
+    y = chart.HEIGHT // 3  # inside the entry..tp band for these numbers
+    left = image.getpixel((int(chart.MARGIN + step * 0.5), y))
+    right = image.getpixel((int(chart.MARGIN + step * (slots - 1)), y))
+
+    assert left == chart.BACKGROUND
+    assert right != chart.BACKGROUND
