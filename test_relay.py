@@ -428,6 +428,25 @@ def test_run_speaks_its_own_lifecycle(config, monkeypatch):
     assert said == ["Relay up", "Relay down"]
 
 
+def test_run_starts_the_bybit_watcher_when_keyed(config, monkeypatch):
+    started = []
+
+    async def fake_poll(http, send, speak):
+        started.append((send, speak))
+        await asyncio.sleep(3600)  # runs until the relay cancels it
+
+    monkeypatch.setattr(relay.bybit_watch, "enabled", lambda: True)
+    monkeypatch.setattr(relay.bybit_watch, "poll", fake_poll)
+
+    async def disconnect_immediately(client):
+        return None
+
+    _run_relay(monkeypatch, disconnect_immediately)
+
+    assert len(started) == 1
+    assert started[0][1] is relay.speaker.trade
+
+
 def test_run_does_not_speak_lifecycle_without_a_speaker(config, monkeypatch):
     said: list[str] = []
 

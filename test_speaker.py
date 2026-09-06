@@ -545,6 +545,13 @@ def test_trade_speaks_inside_the_window(wired, stub_gtts, stub_cast):
     assert stub_cast["played"][0][0] == "http://192.0.2.20:8422/trade.mp3"
 
 
+def test_trade_silent_without_a_speaker(wired, monkeypatch, stub_gtts, stub_cast):
+    monkeypatch.setattr(speaker, "CAST_HOST", "")
+
+    assert asyncio.run(speaker.trade("Fartcoin long opened")) is False
+    assert stub_gtts == []
+
+
 def test_trade_respects_the_window(wired, monkeypatch, stub_gtts, stub_cast):
     monkeypatch.setattr(speaker, "SPEAK_WINDOW", (23, 8))
     monkeypatch.setattr(speaker, "within_window", lambda now=None: False)

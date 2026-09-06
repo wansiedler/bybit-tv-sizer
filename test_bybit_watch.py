@@ -56,7 +56,7 @@ def test_sign_is_hmac_over_the_v5_payload(keyed):
     # Vector computed independently: HMAC-SHA256("secret", "1700000000000key5000a=1")
     assert (
         bybit_watch.sign("1700000000000", "a=1")
-        == "d026b6d817e30bf57f231da2f2e4c6cbb5b776a49bc545459332eaabf806ca3a"
+        == "d026b6d817e30bf57f231da2f2e4c6cbb5b776a49bc545459332eaabf806ca3a"  # pragma: allowlist secret
     )
 
 
@@ -218,15 +218,20 @@ def test_poll_survives_failures_and_keeps_going(keyed, monkeypatch, caplog):
     out = Recorder()
 
     class Flaky(FakeHTTP):
+        def __init__(self):
+            super().__init__()
+            self.list_calls = 0
+
         async def get(self, url, headers=None, timeout=None):
-            if "/v5/position/list" in url and len(self.position_pages) == 2:
-                self.position_pages.pop(0)
-                raise OSError("bybit down")
+            if "/v5/position/list" in url:
+                self.list_calls += 1
+                if self.list_calls == 2:
+                    raise OSError("bybit down")
             return await super().get(url, headers=headers, timeout=timeout)
 
     http = Flaky()
     # Prime with one long, fail once, then the position is gone -> "closed".
-    http.position_pages = [[row()], ["fails"], []]
+    http.position_pages = [[row()], []]
 
     slept = []
 
@@ -243,3 +248,29 @@ def test_poll_survives_failures_and_keeps_going(keyed, monkeypatch, caplog):
     assert "bybit poll failed" in caplog.text
     assert any(seconds >= 30 for seconds in slept)  # backed off after the failure
     assert out.sent and out.sent[0].startswith("💸 FARTCOIN long closed")
+
+
+def test_poll_lets_cancellation_through(keyed, monkeypatch):
+    """Being cancelled mid-fetch must end the loop, not count as a bad poll."""
+
+    class Cancelling(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise asyncio.CancelledError
+
+    out = Recorder()
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(bybit_watch.poll(Cancelling(), out.send, out.speak))
+
+    assert out.sent == []
+
+
+def test_closed_pnl_swallows_api_errors(keyed, caplog):
+    class Refusing(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise OSError("bybit down")
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        assert asyncio.run(bybit_watch.closed_pnl(Refusing(), "FARTCOINUSDT")) is None
+
+    assert "no closed pnl" in caplog.text
