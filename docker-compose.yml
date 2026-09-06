@@ -16,6 +16,8 @@ services:
     # on the LAN — not just on localhost.
     ports:
       - "${TTS_PORT:-8422}:${TTS_PORT:-8422}"
+      # TradingView webhook receiver; harmless while TV_WEBHOOK_SECRET is empty.
+      - "${TV_PORT:-8423}:${TV_PORT:-8423}"
     volumes:
       - ./session:/app/session
     # First run needs a terminal for the Telegram login code:

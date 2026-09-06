@@ -497,6 +497,35 @@ def test_run_starts_the_sizer_when_opted_in(config, monkeypatch):
     assert len(started) == 1
 
 
+def test_run_starts_the_tv_webhook_when_a_secret_is_set(config, monkeypatch):
+    stopped = []
+
+    class FakeWebhook:
+        def shutdown(self):
+            stopped.append(True)
+
+    started = []
+
+    def fake_serve(loop, queue):
+        started.append(queue)
+        return FakeWebhook()
+
+    async def fake_pump(queue, send, speak):
+        await asyncio.sleep(3600)  # runs until the relay cancels it
+
+    monkeypatch.setattr(relay.tv_alerts, "enabled", lambda: True)
+    monkeypatch.setattr(relay.tv_alerts, "serve", fake_serve)
+    monkeypatch.setattr(relay.tv_alerts, "pump", fake_pump)
+
+    async def disconnect_immediately(client):
+        return None
+
+    _run_relay(monkeypatch, disconnect_immediately)
+
+    assert len(started) == 1
+    assert stopped == [True]  # the webhook came down with the relay
+
+
 def test_run_does_not_speak_lifecycle_without_a_speaker(config, monkeypatch):
     said: list[str] = []
 

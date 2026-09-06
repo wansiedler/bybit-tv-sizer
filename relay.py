@@ -24,6 +24,7 @@ import bybit_watch
 import commands
 import sizer
 import speaker
+import tv_alerts
 from parser import parse_alert
 
 load_dotenv()
@@ -275,6 +276,7 @@ async def run() -> None:
     shutdown = _Shutdown()
     shutdown.install()
     audio = None
+    webhook = None
     uptime = "0s"
 
     # Everything below runs under try/finally: an exception on the way up —
@@ -329,6 +331,14 @@ async def run() -> None:
                 background.add(
                     asyncio.create_task(sizer.poll(http, lambda text: send_via_bot(http, text)))
                 )
+            if tv_alerts.enabled():
+                alerts: asyncio.Queue = asyncio.Queue()
+                webhook = tv_alerts.serve(asyncio.get_running_loop(), alerts)
+                background.add(
+                    asyncio.create_task(
+                        tv_alerts.pump(alerts, lambda text: send_via_bot(http, text), speaker.trade)
+                    )
+                )
             listening = asyncio.create_task(client.run_until_disconnected())
             stopping = asyncio.create_task(shutdown.event.wait())
             done, pending = await asyncio.wait(
@@ -352,6 +362,8 @@ async def run() -> None:
     finally:
         if audio is not None:
             audio.shutdown()
+        if webhook is not None:
+            webhook.shutdown()
         await client.disconnect()
     log.info("stopped cleanly after %s", uptime)
 
