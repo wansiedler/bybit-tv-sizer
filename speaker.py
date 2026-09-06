@@ -311,6 +311,16 @@ async def announce(compact: str, counter: int) -> bool:
     return await say(text, f"alert-{counter % 20}.mp3")
 
 
+async def trade(text: str) -> bool:
+    """Speak one of your own trade events, honoring SPEAK_HOURS like alerts."""
+    if not enabled():
+        return False
+    if SPEAK_WINDOW is not None and not within_window():
+        log.debug("outside speaking hours %s-%s: %s", *SPEAK_WINDOW, text)
+        return False
+    return await say(text, "trade.mp3")
+
+
 async def lifecycle(text: str) -> bool:
     """Speak a start/stop notice, e.g. "Relay up".
 

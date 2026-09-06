@@ -189,6 +189,7 @@ COIN_NAMES = {
     "EVAA": "EVAA Protocol",
     "EWT": "Energy Web Token",
     "F": "SynFutures",
+    "FARTCOIN": "Fartcoin",
     "FF": "Falcon Finance",
     "FHE": "Mind Network",
     "FIDA": "Bonfida",

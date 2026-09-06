@@ -20,6 +20,7 @@ import httpx
 from dotenv import load_dotenv
 from telethon import TelegramClient, events
 
+import bybit_watch
 import commands
 import speaker
 from parser import parse_alert
@@ -285,12 +286,19 @@ async def run() -> None:
                     speaker.enabled(),
                 )
             )
+            background = {answering}
+            if bybit_watch.enabled():
+                background.add(
+                    asyncio.create_task(
+                        bybit_watch.poll(http, lambda text: send_via_bot(http, text), speaker.trade)
+                    )
+                )
             listening = asyncio.create_task(client.run_until_disconnected())
             stopping = asyncio.create_task(shutdown.event.wait())
             done, pending = await asyncio.wait(
                 {listening, stopping}, return_when=asyncio.FIRST_COMPLETED
             )
-            pending.add(answering)
+            pending |= background
             for task in pending:
                 task.cancel()
             # `done` is gathered too: if run_until_disconnected raised, its

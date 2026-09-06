@@ -539,6 +539,20 @@ def test_announce_skips_unspeakable_lines(wired, stub_gtts, stub_cast):
     assert stub_gtts == []
 
 
+def test_trade_speaks_inside_the_window(wired, stub_gtts, stub_cast):
+    assert asyncio.run(speaker.trade("Fartcoin long opened")) is True
+    assert stub_gtts == [("Fartcoin long opened", "en")]
+    assert stub_cast["played"][0][0] == "http://192.0.2.20:8422/trade.mp3"
+
+
+def test_trade_respects_the_window(wired, monkeypatch, stub_gtts, stub_cast):
+    monkeypatch.setattr(speaker, "SPEAK_WINDOW", (23, 8))
+    monkeypatch.setattr(speaker, "within_window", lambda now=None: False)
+
+    assert asyncio.run(speaker.trade("Fartcoin long opened")) is False
+    assert stub_gtts == []
+
+
 # --------------------------------------------------------------------------- #
 #  lifecycle notices                                                           #
 # --------------------------------------------------------------------------- #
