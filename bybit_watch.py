@@ -274,7 +274,7 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         # off — the entry already paid, the exit still to come.
         fees = 2 * TAKER_FEE * position.value
         net = position.unrealised - fees
-        head = f"{arrow} {base_symbol(symbol)} {position.value:,.0f}$ @ {position.price:g}"
+        head = f"{arrow}{base_symbol(symbol)} {position.value:,.0f}$ @{position.price:g}"
         if position.stop_loss:
             head += f" · sl {position.stop_loss:g}"
         detail = (
@@ -283,7 +283,7 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         if position.take_profit:
             sign = 1 if position.side == "long" else -1
             at_tp = sign * (position.take_profit - position.price) * position.size - fees
-            detail += f" · на tp {position.take_profit:g}: <b>{at_tp:+,.2f}{share(at_tp)}</b>"
+            detail += f", tp {position.take_profit:g}: <b>{at_tp:+,.2f}{share(at_tp)}</b>"
         total += position.unrealised
         total_net += net
         lines.append(f"{head}\n{detail}")
