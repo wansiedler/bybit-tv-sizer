@@ -344,6 +344,20 @@ def test_tick_appends_the_entry_fee_when_fills_are_fresh(keyed):
     ]
 
 
+def test_tick_reports_the_take_target_as_a_share_of_equity(keyed):
+    http, out = FakeHTTP(), Recorder()
+    # Clean numbers: 0.1 to the TP on 115661.3 coins = 11,566.13 USDT gross.
+    http.position_pages = [[row(tp="0.2621", sl="0.15")]]
+    http.equity_rows = [{"totalEquity": "20000"}]
+
+    asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
+
+    assert out.sent == [
+        "💰 FARTCOIN long 18,749 USDT @ 0.1621 · на тейке ≈ +11,566.13 USDT (+57.83% депо)"
+        "\n⚠️ риск 7.00% депо, цель 0.5%"
+    ]
+
+
 def test_entry_fee_swallows_api_errors(keyed, caplog):
     class Refusing(FakeHTTP):
         async def get(self, url, headers=None, timeout=None):
