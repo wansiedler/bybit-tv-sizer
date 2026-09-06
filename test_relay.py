@@ -40,7 +40,7 @@ class FakeHTTP:
         self._get_response = get_response or FakeResponse(
             payload={"ok": True, "result": {"username": "bot"}}
         )
-        self.posted: list[str] = []
+        self.posted: list[object] = []
 
     async def __aenter__(self):
         return self
