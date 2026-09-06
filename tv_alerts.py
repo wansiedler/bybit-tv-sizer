@@ -56,14 +56,21 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(b"ok")
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's spelling
-        """A friendly page for a browser. Same answer on every path: a GET
-        must never confirm whether a secret was right."""
-        body = (
-            "lexx-relay · TradingView webhook\n"
-            "Alive. Alerts arrive as POST from TradingView; "
-            "there is nothing to see here in a browser.\n"
-        ).encode()
-        self.send_response(200)
+        """The alive page, but only on the exact secret path.
+
+        Everything else — the bare host included — answers "недоступно":
+        a passer-by who found the hostname learns nothing. The secret is
+        long enough that answering differently on it is not a usable oracle.
+        """
+        if self.path == f"/tv/{TV_WEBHOOK_SECRET}":
+            body = (
+                "lexx-relay · TradingView webhook\nAlive. Alerts arrive as POST from TradingView.\n"
+            ).encode()
+            status = 200
+        else:
+            body = "недоступно\n".encode()
+            status = 404
+        self.send_response(status)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()

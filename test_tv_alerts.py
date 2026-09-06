@@ -86,7 +86,7 @@ def test_webhook_caps_a_huge_body():
     assert len(asyncio.run(run())) == tv_alerts.MAX_BODY
 
 
-def test_get_answers_politely_without_confirming_the_secret():
+def test_get_shows_the_alive_page_only_on_the_secret_path():
     async def run():
         queue: asyncio.Queue = asyncio.Queue()
         httpd = tv_alerts.serve(asyncio.get_running_loop(), queue)
@@ -94,16 +94,22 @@ def test_get_answers_politely_without_confirming_the_secret():
             port = httpd.server_address[1]
 
             def get(path):
-                with urllib.request.urlopen(
-                    f"http://127.0.0.1:{port}{path}", timeout=5
-                ) as response:
-                    return response.status, response.read()
+                try:
+                    with urllib.request.urlopen(
+                        f"http://127.0.0.1:{port}{path}", timeout=5
+                    ) as response:
+                        return response.status, response.read()
+                except urllib.error.HTTPError as refusal:
+                    return refusal.code, refusal.read()
 
-            right = await asyncio.to_thread(get, "/tv/s3cret")
-            wrong = await asyncio.to_thread(get, "/anything")
-            assert right == wrong  # no oracle for the secret
-            assert right[0] == 200
-            assert b"lexx-relay" in right[1]
+            status, body = await asyncio.to_thread(get, "/tv/s3cret")
+            assert status == 200
+            assert b"lexx-relay" in body
+
+            for path in ("/", "/tv/wrong", "/anything"):
+                status, body = await asyncio.to_thread(get, path)
+                assert status == 404
+                assert "недоступно".encode() in body
             assert queue.empty()
         finally:
             httpd.shutdown()
