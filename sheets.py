@@ -12,6 +12,7 @@ Both empty disables the journal. Logging is best-effort: a dead sheet must
 never block a close notice.
 """
 
+import json
 import logging
 import os
 
@@ -36,9 +37,12 @@ async def log_close(http: httpx.AsyncClient, entry: dict) -> bool:
     if not enabled():
         return False
     try:
+        # text/plain, not application/json: Apps Script's front door answers
+        # 405 to a JSON content type but happily parses the same body.
         response = await http.post(
             SHEETS_URL,
-            json={"secret": SHEETS_SECRET, **entry},
+            content=json.dumps({"secret": SHEETS_SECRET, **entry}),
+            headers={"Content-Type": "text/plain"},
             timeout=20,
             follow_redirects=True,  # Apps Script answers через redirect
         )

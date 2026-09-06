@@ -25,10 +25,13 @@ class FakeHTTP:
         self.error = error
         self.posted: list[dict] = []
 
-    async def post(self, url, json=None, timeout=None, follow_redirects=False):
+    async def post(self, url, content=None, headers=None, timeout=None, follow_redirects=False):
         if self.error is not None:
             raise self.error
-        self.posted.append(json)
+        import json as _json
+
+        assert headers == {"Content-Type": "text/plain"}
+        self.posted.append(_json.loads(content))
         return self.response
 
 
