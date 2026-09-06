@@ -689,7 +689,7 @@ def test_tick_sends_an_entry_chart_when_candles_exist(keyed):
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
     assert out.photos == [
-        "💰📈FARTCOIN 18,749@0.1621 · sl0.15:<b>-1,420.13</b>\ntp 0.19:<b>+3,206.33</b>"
+        "💰📈FARTCOIN 18,749@0.1621 · sl0.15:<b>-1,420.13</b> · RR2.31\ntp 0.19:<b>+3,206.33</b>"
     ]
     assert out.sent == []  # the caption carries the notice
     assert out.spoken == ["Fartcoin long opened"]
