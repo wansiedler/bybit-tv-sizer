@@ -562,6 +562,26 @@ def test_positions_report_without_depo_keeps_plain_numbers(keyed):
     assert "Σ" not in text  # a single position needs no total
 
 
+def test_sl_without_tp_shows_risk_but_no_rr(keyed):
+    # /positions side of it.
+    http = FakeHTTP()
+    http.position_pages = [[dict(row(sl="0.15"), unrealisedPnl="1")]]
+
+    report = asyncio.run(bybit_watch.positions_report(http))
+
+    assert "sl0.15:<b>-1,420.13</b>" in report
+    assert "RR" not in report
+
+    # And the entry-notice side.
+    http2, out = FakeHTTP(), Recorder()
+    http2.position_pages = [[row(sl="0.15")]]
+
+    asyncio.run(bybit_watch.tick(http2, {}, out.send, out.speak, out.send_photo))
+
+    assert "sl0.15:" in out.sent[0]
+    assert "RR" not in out.sent[0]
+
+
 def test_positions_report_totals_without_depo(keyed):
     http = FakeHTTP()
     http.position_pages = [
