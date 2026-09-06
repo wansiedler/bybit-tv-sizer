@@ -467,7 +467,7 @@ def test_positions_report_sends_one_album(keyed):
     caption, count = albums[0]
     assert count == 1
     assert caption.startswith("📈 FARTCOIN long")
-    assert "Σ uPnL +512.30 USDT" in caption
+    assert "Σ" not in caption  # one position: no repeating total line
 
 
 def test_positions_report_falls_back_to_text_without_candles(keyed):
@@ -549,7 +549,18 @@ def test_positions_report_without_depo_keeps_plain_numbers(keyed):
     text = asyncio.run(bybit_watch.positions_report(http))
 
     assert "%" not in text  # no percent shares without an equity figure
-    assert "Σ uPnL +1.00 USDT · ~чистыми" in text
+    assert "Σ" not in text  # a single position needs no total
+
+
+def test_positions_report_totals_without_depo(keyed):
+    http = FakeHTTP()
+    http.position_pages = [
+        [dict(row(), unrealisedPnl="1"), dict(row(symbol="OPUSDT"), unrealisedPnl="2")]
+    ]
+
+    text = asyncio.run(bybit_watch.positions_report(http))
+
+    assert text.endswith("Σ uPnL +3.00 USDT · ~чистыми -38.25")
 
 
 def test_klines_pages_past_bybits_request_cap(keyed):

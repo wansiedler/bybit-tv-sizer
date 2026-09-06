@@ -288,10 +288,13 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
             png = await entry_chart(http, symbol, position)
             if png is not None:
                 pngs.append(png)
-    footer = f"Σ uPnL {total:+,.2f} USDT · ~чистыми {total_net:+,.2f}"
-    if depo:
-        footer += f" ({total / depo * 100:+.2f}% от депо {depo:,.0f})"
-    text = "\n".join([*lines, footer])
+    # A total of one position would just repeat its line.
+    if len(lines) > 1:
+        footer = f"Σ uPnL {total:+,.2f} USDT · ~чистыми {total_net:+,.2f}"
+        if depo:
+            footer += f" ({total / depo * 100:+.2f}% от депо {depo:,.0f})"
+        lines.append(footer)
+    text = "\n".join(lines)
     # Telegram caps a media-group caption at 1024 characters.
     if send_album is not None and pngs and len(text) <= 1024 and await send_album(text, pngs):
         return ""
