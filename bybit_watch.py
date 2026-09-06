@@ -139,6 +139,66 @@ async def positions(http: httpx.AsyncClient) -> dict[str, Position]:
     return open_now
 
 
+# /stopall arms on the first call and fires on the second within this window:
+# commands in Telegram are tappable, and one stray tap must not flatten the
+# whole book.
+_STOPALL_WINDOW = 30.0
+_stopall_armed = 0.0
+
+
+async def close_everything(http: httpx.AsyncClient) -> str:
+    """Close every open position at market, reduce-only. Two-step confirm."""
+    global _stopall_armed
+    if not enabled():
+        return "Bybit не подключён: нет API-ключей"
+    try:
+        result = await _get(http, "/v5/position/list", {"category": "linear", "settleCoin": "USDT"})
+        rows = [r for r in result.get("list", []) if float(r.get("size") or 0) != 0]
+    # Deliberately broad: a chat command must answer, not crash the poller.
+    except Exception:  # noqa: BLE001
+        log.exception("stopall listing failed")
+        return "Bybit не ответил, попробуй ещё раз"
+    if not rows:
+        _stopall_armed = 0.0
+        return "Открытых позиций нет — закрывать нечего"
+
+    names = ", ".join(base_symbol(r["symbol"]) for r in rows)
+    now = time.monotonic()
+    if now - _stopall_armed > _STOPALL_WINDOW:
+        _stopall_armed = now
+        return (
+            f"⚠️ Закрою МАРКЕТОМ {len(rows)} поз.: {names}\n"
+            f"Повтори /stopall в течение {_STOPALL_WINDOW:.0f} секунд для подтверждения."
+        )
+
+    _stopall_armed = 0.0
+    lines = []
+    for r in rows:
+        symbol = r["symbol"]
+        try:
+            await _post(
+                http,
+                "/v5/order/create",
+                {
+                    "category": "linear",
+                    "symbol": symbol,
+                    # The opposite side, reduce-only: it can only close.
+                    "side": "Sell" if r.get("side") == "Buy" else "Buy",
+                    "orderType": "Market",
+                    "qty": r["size"],
+                    "reduceOnly": True,
+                    "positionIdx": int(r.get("positionIdx") or 0),
+                },
+            )
+            lines.append(f"✅ {base_symbol(symbol)} закрывается")
+        # Deliberately broad: one refused close must not strand the rest.
+        except Exception as exc:  # noqa: BLE001
+            log.exception("could not close %s", symbol)
+            lines.append(f"❌ {base_symbol(symbol)}: {exc}")
+    lines.append("Отчёты 💸 с PnL придут, как позиции закроются.")
+    return "\n".join(lines)
+
+
 async def positions_report(http: httpx.AsyncClient) -> str:
     """Every open position as one line, for the bot's /positions command."""
     if not enabled():

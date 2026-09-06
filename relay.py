@@ -314,6 +314,7 @@ async def run() -> None:
                     speaker.announce,
                     speaker.enabled(),
                     lambda: bybit_watch.positions_report(http),
+                    lambda: bybit_watch.close_everything(http),
                 )
             )
             background = {answering}

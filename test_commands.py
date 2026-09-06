@@ -158,6 +158,27 @@ def test_positions_without_a_reporter_falls_back_to_help(owner):
     assert rec.sent == [commands.HELP]
 
 
+def test_stopall_answers_with_the_result(owner):
+    rec = Recorder()
+
+    async def stop_all():
+        return "⚠️ Закрою МАРКЕТОМ 2 поз.: CL, GRAM"
+
+    asyncio.run(
+        commands.dispatch("stopall", commands.Stats(), rec.send, rec.speak, True, None, stop_all)
+    )
+
+    assert rec.sent == ["⚠️ Закрою МАРКЕТОМ 2 поз.: CL, GRAM"]
+
+
+def test_stopall_without_a_closer_falls_back_to_help(owner):
+    rec = Recorder()
+
+    asyncio.run(commands.dispatch("stopall", commands.Stats(), rec.send, rec.speak, True))
+
+    assert rec.sent == [commands.HELP]
+
+
 def test_status(owner):
     rec = Recorder()
 

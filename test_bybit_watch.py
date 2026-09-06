@@ -262,6 +262,127 @@ def test_trade_warnings_skip_without_depo_target_or_tp(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+#  /stopall                                                                    #
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def disarmed(monkeypatch):
+    monkeypatch.setattr(bybit_watch, "_stopall_armed", 0.0)
+
+
+def test_stopall_without_keys(monkeypatch, disarmed):
+    monkeypatch.setattr(bybit_watch, "API_KEY", "")
+
+    assert "нет API-ключей" in asyncio.run(bybit_watch.close_everything(FakeHTTP()))
+
+
+def test_stopall_survives_a_dead_api(keyed, disarmed, caplog):
+    class Refusing(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise OSError("bybit down")
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        assert "не ответил" in asyncio.run(bybit_watch.close_everything(Refusing()))
+
+
+def test_stopall_with_nothing_open_disarms(keyed, monkeypatch):
+    monkeypatch.setattr(bybit_watch, "_stopall_armed", 1e12)  # was armed
+    http = FakeHTTP()
+    http.position_pages = [[]]
+
+    assert "закрывать нечего" in asyncio.run(bybit_watch.close_everything(http))
+    assert bybit_watch._stopall_armed == 0.0
+
+
+class ClosingHTTP(FakeHTTP):
+    """FakeHTTP that also records order-create posts."""
+
+    def __init__(self):
+        super().__init__()
+        self.orders: list[dict] = []
+        self.refuse_order = False
+
+    async def post(self, url, content=None, headers=None, timeout=None):
+        import json as _json
+
+        if self.refuse_order:
+            raise OSError("order rejected")
+        self.orders.append(_json.loads(content))
+        return FakeResponse({"retCode": 0, "result": {}})
+
+
+def test_stopall_arms_first_and_places_nothing(keyed, disarmed):
+    http = ClosingHTTP()
+    http.position_pages = [[row(), row(symbol="OPUSDT", side="Sell", size="10")]]
+
+    text = asyncio.run(bybit_watch.close_everything(http))
+
+    assert "Закрою МАРКЕТОМ 2 поз.: FARTCOIN, OP" in text
+    assert "Повтори /stopall" in text
+    assert http.orders == []
+
+
+def test_stopall_confirmed_closes_reduce_only(keyed, disarmed):
+    http = ClosingHTTP()
+    http.position_pages = [
+        [row(), row(symbol="OPUSDT", side="Sell", size="10")],
+        [row(), row(symbol="OPUSDT", side="Sell", size="10")],
+    ]
+
+    asyncio.run(bybit_watch.close_everything(http))  # arm
+    text = asyncio.run(bybit_watch.close_everything(http))  # fire
+
+    assert text.count("✅") == 2
+    assert "Отчёты 💸" in text
+    assert http.orders == [
+        {
+            "category": "linear",
+            "symbol": "FARTCOINUSDT",
+            "side": "Sell",  # closes the long
+            "orderType": "Market",
+            "qty": "115661.3",
+            "reduceOnly": True,
+            "positionIdx": 0,
+        },
+        {
+            "category": "linear",
+            "symbol": "OPUSDT",
+            "side": "Buy",  # closes the short
+            "orderType": "Market",
+            "qty": "10",
+            "reduceOnly": True,
+            "positionIdx": 0,
+        },
+    ]
+    assert bybit_watch._stopall_armed == 0.0  # spent, next call re-arms
+
+
+def test_stopall_confirmation_expires(keyed, disarmed, monkeypatch):
+    # A zero-length window: by the second call the confirmation has lapsed.
+    monkeypatch.setattr(bybit_watch, "_STOPALL_WINDOW", 0.0)
+    http = ClosingHTTP()
+    http.position_pages = [[row()], [row()]]
+
+    asyncio.run(bybit_watch.close_everything(http))
+    text = asyncio.run(bybit_watch.close_everything(http))
+
+    assert "Повтори /stopall" in text  # re-armed instead of firing
+    assert http.orders == []
+
+
+def test_stopall_reports_a_refused_close(keyed, disarmed, caplog):
+    http = ClosingHTTP()
+    http.refuse_order = True
+    http.position_pages = [[row()], [row()]]
+
+    asyncio.run(bybit_watch.close_everything(http))
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        text = asyncio.run(bybit_watch.close_everything(http))
+
+    assert "❌ FARTCOIN" in text
+    assert "could not close" in caplog.text
+
+
+# --------------------------------------------------------------------------- #
 #  /positions report                                                           #
 # --------------------------------------------------------------------------- #
 def test_positions_report_without_keys(monkeypatch):
