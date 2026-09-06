@@ -15,6 +15,7 @@ configures the endpoints through its `wired` fixture, and `test_relay` patches
 
 import pytest
 
+import bybit_watch
 import commands
 import speaker
 
@@ -23,6 +24,11 @@ import speaker
 def _default_config(monkeypatch, tmp_path):
     monkeypatch.setattr(speaker, "CAST_HOST", "")
     monkeypatch.setattr(speaker, "TTS_HOST", "")
+    # Real Bybit keys in the developer's .env must not arm the watcher or the
+    # sizer inside the suite; tests that want them keyed say so themselves.
+    monkeypatch.setattr(bybit_watch, "API_KEY", "")
+    monkeypatch.setattr(bybit_watch, "API_SECRET", "")
+    monkeypatch.setattr(bybit_watch, "API_URL", "https://api.bybit.com")
     monkeypatch.setattr(commands, "SOURCE", "source_bot")
     monkeypatch.setattr(commands, "WATCH_USERS", ["some_trader"])
     monkeypatch.setattr(commands, "POLL_TIMEOUT", 25)

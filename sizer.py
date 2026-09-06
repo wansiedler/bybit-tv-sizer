@@ -5,14 +5,18 @@ You place a limit order with any quantity through Bybit's broker panel on the
 chart; this watcher rewrites the quantity so the distance between entry and
 stop-loss always risks the same fixed percentage of account equity.
 
-    SIZER=1                 # off by default: this one amends real orders
     DRY_RUN=1               # log and announce instead of amending
     RISK_PCT=0.5            # percent of equity between entry and stop
     FALLBACK_SL_PCT=0       # assumed stop when the order has none; 0 skips
     MAX_LEVERAGE=5          # notional ceiling, as a multiple of equity
-    SIZER_SYMBOLS=          # comma-separated allowlist; empty = all
-    SIZER_POLL=3            # seconds between passes
+    SYMBOLS=                # comma-separated allowlist; empty = all
+    POLL_SEC=3              # seconds between passes
     SETTLE_POLLS=2          # passes the order must hold still first
+    CATEGORY=linear
+    SETTLE_COIN=USDT
+
+The variable names match bybit-tv-sizer one to one, and so does the arming:
+present API keys switch the sizer on, DRY_RUN=1 keeps it harmless.
 
 Needs the Bybit key to carry Read AND Trade permission (never withdrawal).
 It will not touch market orders, conditional orders, reduce-only exits,
@@ -34,13 +38,14 @@ log = logging.getLogger("relay.sizer")
 # relay.py imports this module before its own load_dotenv(), same as speaker.
 load_dotenv()
 
-SIZER = os.getenv("SIZER", "0").lower() not in ("0", "false", "no", "")
 DRY_RUN = os.getenv("DRY_RUN", "1").lower() not in ("0", "false", "no", "")
 RISK_PCT = Decimal(os.getenv("RISK_PCT", "0.5")) / Decimal(100)
 FALLBACK_SL_PCT = Decimal(os.getenv("FALLBACK_SL_PCT", "0")) / Decimal(100)
 MAX_LEVERAGE = Decimal(os.getenv("MAX_LEVERAGE", "5"))
-SYMBOLS = {s.strip().upper() for s in os.getenv("SIZER_SYMBOLS", "").split(",") if s.strip()}
-POLL = float(os.getenv("SIZER_POLL", "3"))
+SYMBOLS = {s.strip().upper() for s in os.getenv("SYMBOLS", "").split(",") if s.strip()}
+POLL = float(os.getenv("POLL_SEC", "3"))
+CATEGORY = os.getenv("CATEGORY", "linear")
+SETTLE_COIN = os.getenv("SETTLE_COIN", "USDT")
 SETTLE_POLLS = int(os.getenv("SETTLE_POLLS", "2"))
 ACCOUNT_TYPE = os.getenv("ACCOUNT_TYPE", "UNIFIED")
 
@@ -50,8 +55,8 @@ _instruments: dict[str, dict] = {}
 
 
 def enabled() -> bool:
-    """Explicitly opted in, and the API key pair is present."""
-    return SIZER and bybit_watch.enabled()
+    """Armed exactly like the original: the API key pair being present."""
+    return bybit_watch.enabled()
 
 
 async def get_equity(http: httpx.AsyncClient) -> Decimal:
@@ -66,7 +71,7 @@ async def get_equity(http: httpx.AsyncClient) -> Decimal:
 
 async def get_open_orders(http: httpx.AsyncClient) -> list[dict]:
     result = await bybit_watch._get(
-        http, "/v5/order/realtime", {"category": "linear", "settleCoin": "USDT", "limit": "50"}
+        http, "/v5/order/realtime", {"category": CATEGORY, "settleCoin": SETTLE_COIN, "limit": "50"}
     )
     orders: list[dict] = result.get("list") or []
     return orders
@@ -76,7 +81,7 @@ async def get_instrument(http: httpx.AsyncClient, symbol: str) -> dict:
     """Lot-size filter for a symbol, cached: the exchange never changes it midday."""
     if symbol not in _instruments:
         result = await bybit_watch._get(
-            http, "/v5/market/instruments-info", {"category": "linear", "symbol": symbol}
+            http, "/v5/market/instruments-info", {"category": CATEGORY, "symbol": symbol}
         )
         items = result.get("list") or []
         if not items:
@@ -89,7 +94,7 @@ async def amend_qty(http: httpx.AsyncClient, symbol: str, order_id: str, qty: De
     await bybit_watch._post(
         http,
         "/v5/order/amend",
-        {"category": "linear", "symbol": symbol, "orderId": order_id, "qty": str(qty)},
+        {"category": CATEGORY, "symbol": symbol, "orderId": order_id, "qty": str(qty)},
     )
 
 

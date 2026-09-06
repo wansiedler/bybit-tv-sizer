@@ -35,7 +35,19 @@ load_dotenv()
 
 API_KEY = os.getenv("BYBIT_API_KEY", "")
 API_SECRET = os.getenv("BYBIT_API_SECRET", "")
-API_URL = os.getenv("BYBIT_API_URL", "https://api.bybit.com")
+
+
+def _api_url() -> str:
+    """BYBIT_API_URL wins; otherwise BYBIT_TESTNET picks the public host."""
+    override = os.getenv("BYBIT_API_URL", "")
+    if override:
+        return override
+    if os.getenv("BYBIT_TESTNET", "0") == "1":
+        return "https://api-testnet.bybit.com"
+    return "https://api.bybit.com"
+
+
+API_URL = _api_url()
 POLL = int(os.getenv("BYBIT_POLL", "10"))
 RECV_WINDOW = "5000"
 

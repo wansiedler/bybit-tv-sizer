@@ -34,7 +34,6 @@ def _isolate(monkeypatch):
     """Every test starts from a known config and empty module state."""
     monkeypatch.setattr(bybit_watch, "API_KEY", "key")
     monkeypatch.setattr(bybit_watch, "API_SECRET", "secret")
-    monkeypatch.setattr(sizer, "SIZER", True)
     monkeypatch.setattr(sizer, "DRY_RUN", True)
     monkeypatch.setattr(sizer, "RISK_PCT", Decimal("0.005"))
     monkeypatch.setattr(sizer, "FALLBACK_SL_PCT", Decimal("0"))
@@ -92,13 +91,20 @@ class Recorder:
 
 
 # ------------------------------------------------------------------ config
-def test_enabled_needs_the_flag_and_the_keys(monkeypatch):
+def test_enabled_follows_the_keys_like_the_original(monkeypatch):
     assert sizer.enabled() is True
-    monkeypatch.setattr(sizer, "SIZER", False)
-    assert sizer.enabled() is False
-    monkeypatch.setattr(sizer, "SIZER", True)
     monkeypatch.setattr(bybit_watch, "API_KEY", "")
     assert sizer.enabled() is False
+
+
+def test_api_url_matches_the_original_selection(monkeypatch):
+    monkeypatch.delenv("BYBIT_API_URL", raising=False)
+    monkeypatch.setenv("BYBIT_TESTNET", "1")
+    assert bybit_watch._api_url() == "https://api-testnet.bybit.com"
+    monkeypatch.setenv("BYBIT_TESTNET", "0")
+    assert bybit_watch._api_url() == "https://api.bybit.com"
+    monkeypatch.setenv("BYBIT_API_URL", "http://127.0.0.1:9")
+    assert bybit_watch._api_url() == "http://127.0.0.1:9"
 
 
 # ------------------------------------------------------------------ transport
