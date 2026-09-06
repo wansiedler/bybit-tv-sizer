@@ -279,6 +279,11 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
             # What the stop costs if it fires, fees included.
             at_sl = -abs(position.price - position.stop_loss) * position.size - fees
             head += f" · sl{position.stop_loss:g}:<b>{at_sl:+,.2f}{share(at_sl)}</b>"
+            if position.take_profit:
+                rr = abs(position.take_profit - position.price) / abs(
+                    position.price - position.stop_loss
+                )
+                head += f" · RR{rr:.2f}"
         block = [
             head,
             f"PnL{position.unrealised:+,.2f}−комса{fees:.2f}=<b>{net:+,.2f}{share(net)}</b>",
@@ -586,6 +591,9 @@ async def tick(
                 # What the stop costs if it fires, fees included.
                 at_sl = -abs(now.price - now.stop_loss) * now.size - fees
                 line += f" · sl{now.stop_loss:g}:<b>{at_sl:+,.2f}{share(at_sl, depo)}</b>"
+                if now.take_profit is not None:
+                    rr = abs(now.take_profit - now.price) / abs(now.price - now.stop_loss)
+                    line += f" · RR{rr:.2f}"
             extras = []
             if fee:
                 extras.append(f"комса{fee:.4g}")
