@@ -51,8 +51,9 @@ API_URL = _api_url()
 POLL = int(os.getenv("BYBIT_POLL", "10"))
 # Kline timeframe for every chart the relay draws, in minutes.
 CHART_INTERVAL = os.getenv("CHART_INTERVAL", "15")
-# How many bars of context a chart shows (Bybit caps one request at 1000).
-CHART_BARS = min(int(os.getenv("CHART_BARS", "400")), 1000)
+# How many bars of context a chart shows. Bybit caps one request at 1000
+# bars, so anything above that is fetched in pages.
+CHART_BARS = min(int(os.getenv("CHART_BARS", "1800")), 3000)
 RECV_WINDOW = "5000"
 
 
@@ -131,16 +132,41 @@ async def positions(http: httpx.AsyncClient) -> dict[str, Position]:
 
 
 async def _klines(
-    http: httpx.AsyncClient, symbol: str, interval: str, extra: dict[str, str]
+    http: httpx.AsyncClient,
+    symbol: str,
+    interval: str,
+    limit: int,
+    start: int | None = None,
+    end: int | None = None,
 ) -> tuple[list[int], list[chart.Candle]]:
-    """Bar start times and candles, oldest first (Bybit hands newest first)."""
-    result = await _get(
-        http,
-        "/v5/market/kline",
-        {"category": "linear", "symbol": symbol, "interval": interval, **extra},
-    )
+    """Bar start times and candles, oldest first.
+
+    Bybit hands bars newest first, 1000 per request at most; more context is
+    paged backwards through `end` until `limit` bars are in hand, the range
+    is exhausted, or `start` is reached.
+    """
+    rows: list[list[str]] = []
+    remaining, cursor = limit, end
+    while remaining > 0:
+        page = min(remaining, 1000)
+        params = {"category": "linear", "symbol": symbol, "interval": interval}
+        params["limit"] = str(page)
+        if start is not None:
+            params["start"] = str(start)
+        if cursor is not None:
+            params["end"] = str(cursor)
+        result = await _get(http, "/v5/market/kline", params)
+        batch = result.get("list", [])
+        if not batch:
+            break
+        rows.extend(batch)
+        remaining -= len(batch)
+        oldest = int(batch[-1][0])
+        if len(batch) < page or (start is not None and oldest <= start):
+            break
+        cursor = oldest - 1
     times, candles = [], []
-    for ts, o, h, low, c, *_ in reversed(result.get("list", [])):
+    for ts, o, h, low, c, *_ in reversed(rows):
         times.append(int(ts))
         candles.append(chart.Candle(float(o), float(h), float(low), float(c)))
     return times, candles
@@ -161,7 +187,7 @@ async def entry_chart(http: httpx.AsyncClient, symbol: str, position: Position) 
     trade.
     """
     try:
-        _, candles = await _klines(http, symbol, CHART_INTERVAL, {"limit": str(CHART_BARS)})
+        _, candles = await _klines(http, symbol, CHART_INTERVAL, CHART_BARS)
         return chart.render(
             base_symbol(symbol),
             position.side,
@@ -196,16 +222,14 @@ async def close_chart(
         trade_bars = (closed - opened) // span
         # Lead-in fills the frame up to CHART_BARS of context around the trade.
         lead = max(CHART_BARS - trade_bars - 3, 8)
-        bars = trade_bars + lead + 4  # plus the tail and a slack bar
+        bars = min(trade_bars + lead + 4, 3000)  # plus the tail and a slack bar
         times, candles = await _klines(
             http,
             symbol,
             CHART_INTERVAL,
-            {
-                "start": str(opened - lead * span),
-                "end": str(closed + 3 * span),
-                "limit": str(min(bars, 1000)),
-            },
+            bars,
+            start=opened - lead * span,
+            end=closed + 3 * span,
         )
         return chart.render(
             base_symbol(symbol),

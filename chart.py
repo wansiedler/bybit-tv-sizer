@@ -124,7 +124,8 @@ def render(
         if stop_loss:
             zone(entry, stop_loss, RISK_FILL)
 
-    body = max(2.0, step * 0.6)
+    # At TradingView-zoom densities a bar is a single pixel column.
+    body = max(1.0, step * 0.7)
     for i, candle in enumerate(candles):
         x = x_of(i)
         color = UP if candle.close >= candle.open else DOWN

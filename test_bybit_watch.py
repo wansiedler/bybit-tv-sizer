@@ -224,6 +224,70 @@ KLINES = [
 ]
 
 
+def test_klines_pages_past_bybits_request_cap(keyed):
+    """More than 1000 bars must arrive via backward pagination on `end`."""
+
+    class Paged(FakeHTTP):
+        def __init__(self):
+            super().__init__()
+            # A full page of 1000, then the requested remainder of 500 —
+            # newest first inside each page, like the real API.
+            self.pages = [
+                [
+                    [str(2_000_999 - i * 1000), "1", "2", "0.5", "1.5", "1", "1"]
+                    for i in range(1000)
+                ],
+                [[str(1_000_999 - i * 1000), "1", "2", "0.5", "1.5", "1", "1"] for i in range(500)],
+            ]
+
+        async def get(self, url, headers=None, timeout=None):
+            self.requests.append(url)
+            return FakeResponse({"retCode": 0, "result": {"list": self.pages.pop(0)}})
+
+    http = Paged()
+    times, candles = asyncio.run(bybit_watch._klines(http, "CLUSDT", "15", 1500))
+
+    assert len(candles) == 1500  # trimmed nothing: both pages consumed
+    assert times == sorted(times)  # oldest first
+    assert len(http.requests) == 2
+    assert "end=1001998" in http.requests[1]  # one ms below page one's oldest bar
+
+
+def test_klines_stops_on_an_exhausted_range(keyed):
+    http = FakeHTTP()
+    http.kline_rows = KLINES  # two bars, fewer than the page asks for
+
+    times, candles = asyncio.run(bybit_watch._klines(http, "CLUSDT", "15", 1500))
+
+    assert len(candles) == 2
+    assert len([u for u in http.requests if "kline" in u]) == 1
+
+
+def test_klines_stops_at_the_start_bound(keyed):
+    http = FakeHTTP()
+
+    class AtStart(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            self.requests.append(url)
+            # Newest first; the oldest bar in the page sits at `start`.
+            rows = [[str(2499 - i), "1", "2", "0.5", "1.5", "1", "1"] for i in range(1000)]
+            return FakeResponse({"retCode": 0, "result": {"list": rows}})
+
+    http = AtStart()
+    _, candles = asyncio.run(bybit_watch._klines(http, "CLUSDT", "15", 2000, start=1500, end=99999))
+
+    assert len(candles) == 1000  # the oldest bar reached `start`; no second page
+    assert len(http.requests) == 1
+
+
+def test_klines_handles_an_empty_answer(keyed):
+    http = FakeHTTP()  # kline_rows empty
+
+    times, candles = asyncio.run(bybit_watch._klines(http, "CLUSDT", "15", 100))
+
+    assert (times, candles) == ([], [])
+
+
 def test_tick_appends_the_entry_fee_when_fills_are_fresh(keyed):
     import time
 
