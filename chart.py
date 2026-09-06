@@ -17,12 +17,14 @@ from PIL import Image, ImageDraw, ImageFont
 
 # The bundled scalable font: no system fonts to rely on in a slim image, and
 # no glyphs outside basic latin — so labels stick to plain words, no arrows.
-TITLE_FONT = ImageFont.load_default(24)
-LABEL_FONT = ImageFont.load_default(16)
+TITLE_FONT = ImageFont.load_default(30)
+LABEL_FONT = ImageFont.load_default(20)
 
-WIDTH, HEIGHT = 1600, 800
+# TradingView-like proportions: tall enough that candles keep their shape
+# even when a distant TP or SL stretches the price scale.
+WIDTH, HEIGHT = 1920, 1280
 MARGIN = 16
-PRICE_GUTTER = 130  # right-hand strip where the level labels live
+PRICE_GUTTER = 160  # right-hand strip where the level labels live
 
 BACKGROUND = (19, 23, 34)
 UP = (38, 166, 154)
