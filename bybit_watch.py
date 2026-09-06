@@ -99,7 +99,7 @@ async def _get(http: httpx.AsyncClient, path: str, params: dict[str, str]) -> di
     return _result(response.json(), path)
 
 
-async def _post(http: httpx.AsyncClient, path: str, params: dict[str, str]) -> dict:
+async def _post(http: httpx.AsyncClient, path: str, params: dict[str, object]) -> dict:
     """One signed POST: the v5 signature covers the JSON body, verbatim."""
     body = json.dumps(params, separators=(",", ":"))
     timestamp = str(int(time.time() * 1000))
