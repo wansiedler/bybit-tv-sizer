@@ -51,7 +51,15 @@ class FakeHTTP:
     async def post(self, url, json=None, data=None, files=None, timeout=None):
         if self._post_error is not None:
             raise self._post_error
-        self.posted.append(json["text"] if json is not None else data["caption"])
+        if json is not None:
+            self.posted.append(json["text"])
+        elif "media" in (data or {}):
+            import json as _json
+
+            media = _json.loads(data["media"])
+            self.posted.append((media[0].get("caption", ""), len(media), len(files or {})))
+        else:
+            self.posted.append(data["caption"])
         return self._post_response
 
     async def get(self, url, timeout=None):
@@ -258,6 +266,38 @@ def test_send_photo_reports_a_refusal(config, caplog):
 
     assert ok is False
     assert "sendPhoto refused" in caplog.text
+
+
+# --------------------------------------------------------------------------- #
+#  send_album_via_bot                                                          #
+# --------------------------------------------------------------------------- #
+def test_send_album_puts_the_caption_on_the_first_photo(config):
+    http = FakeHTTP()
+
+    ok = asyncio.run(relay.send_album_via_bot(as_client(http), "report", [b"png1", b"png2"]))
+
+    assert ok is True
+    assert http.posted == [("report", 2, 2)]
+
+
+def test_send_album_reports_transport_failure(config, caplog):
+    http = FakeHTTP(post_error=relay.httpx.ConnectError("no route"))
+
+    with caplog.at_level("ERROR", logger="relay"):
+        ok = asyncio.run(relay.send_album_via_bot(as_client(http), "report", [b"png"]))
+
+    assert ok is False
+    assert "sendMediaGroup failed" in caplog.text
+
+
+def test_send_album_reports_a_refusal(config, caplog):
+    http = FakeHTTP(post_response=FakeResponse(payload={"ok": False, "description": "nope"}))
+
+    with caplog.at_level("ERROR", logger="relay"):
+        ok = asyncio.run(relay.send_album_via_bot(as_client(http), "report", [b"png"]))
+
+    assert ok is False
+    assert "sendMediaGroup refused" in caplog.text
 
 
 # --------------------------------------------------------------------------- #

@@ -450,33 +450,49 @@ def test_close_reports_a_refusal(keyed, caplog):
 # --------------------------------------------------------------------------- #
 #  /positions report                                                           #
 # --------------------------------------------------------------------------- #
-def test_positions_report_sends_charts_when_it_can(keyed):
+def test_positions_report_sends_one_album(keyed):
     http = ClosingHTTP()
     http.position_pages = [[dict(row(tp="0.19", sl="0.15"), unrealisedPnl="512.3")]]
     http.kline_rows = KLINES
-    photos = []
+    albums = []
 
-    async def send_photo(caption, png):
-        assert png.startswith(b"\x89PNG")
-        photos.append(caption)
+    async def send_album(caption, pngs):
+        assert all(png.startswith(b"\x89PNG") for png in pngs)
+        albums.append((caption, len(pngs)))
         return True
 
-    text = asyncio.run(bybit_watch.positions_report(http, send_photo))
+    text = asyncio.run(bybit_watch.positions_report(http, send_album))
 
-    assert len(photos) == 1 and photos[0].startswith("📈 FARTCOIN long")
-    assert text == "Σ uPnL +512.30 USDT"  # lines travelled as captions
+    assert text == ""  # everything travelled inside the single message
+    caption, count = albums[0]
+    assert count == 1
+    assert caption.startswith("📈 FARTCOIN long")
+    assert "Σ uPnL +512.30 USDT" in caption
 
 
 def test_positions_report_falls_back_to_text_without_candles(keyed):
     http = ClosingHTTP()
     http.position_pages = [[dict(row(), unrealisedPnl="1")]]  # no klines -> no chart
 
-    async def send_photo(caption, png):
-        raise AssertionError("no chart should have been sent")
+    async def send_album(caption, pngs):
+        raise AssertionError("no album should have been sent")
 
-    text = asyncio.run(bybit_watch.positions_report(http, send_photo))
+    text = asyncio.run(bybit_watch.positions_report(http, send_album))
 
     assert "📈 FARTCOIN long" in text
+
+
+def test_positions_report_falls_back_when_telegram_refuses_the_album(keyed):
+    http = ClosingHTTP()
+    http.position_pages = [[dict(row(), unrealisedPnl="1")]]
+    http.kline_rows = KLINES
+
+    async def send_album(caption, pngs):
+        return False
+
+    text = asyncio.run(bybit_watch.positions_report(http, send_album))
+
+    assert "📈 FARTCOIN long" in text  # the text answer still goes out
 
 
 def test_positions_report_without_keys(monkeypatch):
@@ -519,9 +535,10 @@ def test_positions_report_lists_positions_with_depo_share(keyed):
     text = asyncio.run(bybit_watch.positions_report(http))
 
     assert text.splitlines() == [
-        "📈 FARTCOIN long 18,749 USDT @ 0.1621 · uPnL +512.30 (+5.12%) · tp 0.19 · sl 0.15",
-        "📉 OP short 12 USDT @ 1.2 · uPnL -1.50 (-0.01%)",
-        "Σ uPnL +510.80 USDT (+5.11% от депо 10,000)",
+        "📈 FARTCOIN long 18,749 USDT @ 0.1621 · uPnL +512.30 (+5.12%)"
+        " · ~чистыми +491.68 · tp 0.19 · sl 0.15",
+        "📉 OP short 12 USDT @ 1.2 · uPnL -1.50 (-0.01%) · ~чистыми -1.51",
+        "Σ uPnL +510.80 USDT · ~чистыми +490.16 (+5.11% от депо 10,000)",
     ]
 
 
@@ -531,8 +548,8 @@ def test_positions_report_without_depo_keeps_plain_numbers(keyed):
 
     text = asyncio.run(bybit_watch.positions_report(http))
 
-    assert "(" not in text  # no percent shares without an equity figure
-    assert text.endswith("Σ uPnL +1.00 USDT")
+    assert "%" not in text  # no percent shares without an equity figure
+    assert "Σ uPnL +1.00 USDT · ~чистыми" in text
 
 
 def test_klines_pages_past_bybits_request_cap(keyed):

@@ -154,6 +154,19 @@ def test_positions_answers_with_the_report(owner):
     assert rec.sent == ["📈 FARTCOIN long 18,749 USDT @ 0.1621 · uPnL +512.30"]
 
 
+def test_positions_stays_silent_after_an_album(owner):
+    rec = Recorder()
+
+    async def report():
+        return ""  # the media group already carried everything
+
+    asyncio.run(
+        commands.dispatch("positions", "", commands.Stats(), rec.send, rec.speak, True, report)
+    )
+
+    assert rec.sent == []
+
+
 def test_positions_without_a_reporter_falls_back_to_help(owner):
     rec = Recorder()
 

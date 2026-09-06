@@ -117,6 +117,39 @@ async def send_via_bot(http: httpx.AsyncClient, text: str) -> bool:
     return True
 
 
+async def send_album_via_bot(http: httpx.AsyncClient, caption: str, pngs: list[bytes]) -> bool:
+    """Post several pictures as one media group — a single Telegram message.
+
+    The caption rides on the first photo; Telegram caps a group at ten.
+    """
+    import json as _json
+
+    media = []
+    files = {}
+    for i, png in enumerate(pngs[:10]):
+        name = f"p{i}"
+        item: dict[str, str] = {"type": "photo", "media": f"attach://{name}"}
+        if i == 0:
+            item["caption"] = caption
+        media.append(item)
+        files[name] = (f"{name}.png", png, "image/png")
+    try:
+        response = await http.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMediaGroup",
+            data={"chat_id": TARGET_CHAT_ID, "media": _json.dumps(media)},
+            files=files,
+            timeout=60,
+        )
+    except httpx.HTTPError:
+        log.exception("sendMediaGroup failed")
+        return False
+
+    if not _accepted(response, "sendMediaGroup"):
+        return False
+    log.info("sent album of %s: %s", len(files), caption.splitlines()[0])
+    return True
+
+
 async def send_photo_via_bot(http: httpx.AsyncClient, caption: str, png: bytes) -> bool:
     """Post one picture with a caption. Returns True when Telegram accepted it."""
     try:
@@ -314,7 +347,7 @@ async def run() -> None:
                     speaker.announce,
                     speaker.enabled(),
                     lambda: bybit_watch.positions_report(
-                        http, lambda caption, png: send_photo_via_bot(http, caption, png)
+                        http, lambda caption, pngs: send_album_via_bot(http, caption, pngs)
                     ),
                     lambda: bybit_watch.close_everything(http),
                     lambda arg: bybit_watch.close_position(http, arg),

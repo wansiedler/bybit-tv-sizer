@@ -157,7 +157,10 @@ async def dispatch(
     elif command == "status":
         await send(status_text(stats, speaking))
     elif command == "positions" and positions is not None:
-        await send(await positions())
+        # An empty answer means the report already went out as a media group.
+        report = await positions()
+        if report:
+            await send(report)
     elif command == "stopall" and stop_all is not None:
         await send(await stop_all())
     elif command == "close" and close_one is not None:

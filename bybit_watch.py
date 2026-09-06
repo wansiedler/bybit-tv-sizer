@@ -238,11 +238,16 @@ async def close_position(http: httpx.AsyncClient, query: str) -> str:
     return f"✅ {base_symbol(row['symbol'])} закрывается — отчёт 💸 придёт следом"
 
 
-async def positions_report(http: httpx.AsyncClient, send_photo=None) -> str:
+# Fee assumed per fill for the "net" estimate: market orders pay taker.
+TAKER_FEE = float(os.getenv("TAKER_FEE", "0.00055"))
+
+
+async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
     """Every open position as one line, for the bot's /positions command.
 
-    With `send_photo` each position also goes out as its chart — the same
-    picture an entry produces — captioned with that line.
+    With `send_album` the charts go out as one media group whose first
+    caption carries the whole report — a single Telegram message. The
+    function then returns "" so the caller has nothing left to send.
     """
     if not enabled():
         return "Bybit не подключён: нет API-ключей"
@@ -256,9 +261,14 @@ async def positions_report(http: httpx.AsyncClient, send_photo=None) -> str:
         return "Открытых позиций нет"
     depo = await equity(http)
     lines = []
+    pngs = []
     total = 0.0
+    total_net = 0.0
     for symbol, position in sorted(open_now.items()):
         arrow = "📈" if position.side == "long" else "📉"
+        # uPnL is pure price difference; the estimate takes off both fees at
+        # the taker rate — the entry already paid, the exit still to come.
+        net = position.unrealised - 2 * TAKER_FEE * position.value
         line = (
             f"{arrow} {base_symbol(symbol)} {position.side}"
             f" {position.value:,.0f} USDT @ {position.price:g}"
@@ -266,20 +276,26 @@ async def positions_report(http: httpx.AsyncClient, send_photo=None) -> str:
         )
         if depo:
             line += f" ({position.unrealised / depo * 100:+.2f}%)"
+        line += f" · ~чистыми {net:+,.2f}"
         if position.take_profit:
             line += f" · tp {position.take_profit:g}"
         if position.stop_loss:
             line += f" · sl {position.stop_loss:g}"
         total += position.unrealised
-        if send_photo is not None:
-            png = await entry_chart(http, symbol, position)
-            if png is not None and await send_photo(line, png):
-                continue  # the caption carried the line
+        total_net += net
         lines.append(line)
-    footer = f"Σ uPnL {total:+,.2f} USDT"
+        if send_album is not None:
+            png = await entry_chart(http, symbol, position)
+            if png is not None:
+                pngs.append(png)
+    footer = f"Σ uPnL {total:+,.2f} USDT · ~чистыми {total_net:+,.2f}"
     if depo:
         footer += f" ({total / depo * 100:+.2f}% от депо {depo:,.0f})"
-    return "\n".join([*lines, footer])
+    text = "\n".join([*lines, footer])
+    # Telegram caps a media-group caption at 1024 characters.
+    if send_album is not None and pngs and len(text) <= 1024 and await send_album(text, pngs):
+        return ""
+    return text
 
 
 async def _klines(
