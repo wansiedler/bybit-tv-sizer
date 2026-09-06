@@ -313,8 +313,11 @@ async def run() -> None:
                     lambda text: send_via_bot(http, text),
                     speaker.announce,
                     speaker.enabled(),
-                    lambda: bybit_watch.positions_report(http),
+                    lambda: bybit_watch.positions_report(
+                        http, lambda caption, png: send_photo_via_bot(http, caption, png)
+                    ),
                     lambda: bybit_watch.close_everything(http),
+                    lambda arg: bybit_watch.close_position(http, arg),
                 )
             )
             background = {answering}

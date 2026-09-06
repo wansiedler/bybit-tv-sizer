@@ -383,8 +383,102 @@ def test_stopall_reports_a_refused_close(keyed, disarmed, caplog):
 
 
 # --------------------------------------------------------------------------- #
+#  /close <ticker>                                                             #
+# --------------------------------------------------------------------------- #
+def test_close_without_keys(monkeypatch):
+    monkeypatch.setattr(bybit_watch, "API_KEY", "")
+
+    assert "нет API-ключей" in asyncio.run(bybit_watch.close_position(FakeHTTP(), "CL"))
+
+
+def test_close_without_a_ticker_explains_itself(keyed):
+    assert "/close CL" in asyncio.run(bybit_watch.close_position(FakeHTTP(), "  "))
+
+
+def test_close_survives_a_dead_api(keyed, caplog):
+    class Refusing(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise OSError("bybit down")
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        assert "не ответил" in asyncio.run(bybit_watch.close_position(Refusing(), "CL"))
+
+
+def test_close_unknown_ticker_lists_the_open_ones(keyed):
+    http = ClosingHTTP()
+    http.position_pages = [[row()]]
+
+    text = asyncio.run(bybit_watch.close_position(http, "CL"))
+
+    assert "Позиции CL нет" in text
+    assert "FARTCOIN" in text
+    assert http.orders == []
+
+
+def test_close_matches_the_base_symbol_case_insensitively(keyed):
+    http = ClosingHTTP()
+    http.position_pages = [[row()]]
+
+    text = asyncio.run(bybit_watch.close_position(http, "fartcoin"))
+
+    assert text.startswith("✅ FARTCOIN закрывается")
+    assert http.orders == [
+        {
+            "category": "linear",
+            "symbol": "FARTCOINUSDT",
+            "side": "Sell",
+            "orderType": "Market",
+            "qty": "115661.3",
+            "reduceOnly": True,
+            "positionIdx": 0,
+        }
+    ]
+
+
+def test_close_reports_a_refusal(keyed, caplog):
+    http = ClosingHTTP()
+    http.refuse_order = True
+    http.position_pages = [[row(symbol="OPUSDT", side="Sell", size="10")]]
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        text = asyncio.run(bybit_watch.close_position(http, "OPUSDT"))
+
+    assert text.startswith("❌ OP")
+    assert "could not close" in caplog.text
+
+
+# --------------------------------------------------------------------------- #
 #  /positions report                                                           #
 # --------------------------------------------------------------------------- #
+def test_positions_report_sends_charts_when_it_can(keyed):
+    http = ClosingHTTP()
+    http.position_pages = [[dict(row(tp="0.19", sl="0.15"), unrealisedPnl="512.3")]]
+    http.kline_rows = KLINES
+    photos = []
+
+    async def send_photo(caption, png):
+        assert png.startswith(b"\x89PNG")
+        photos.append(caption)
+        return True
+
+    text = asyncio.run(bybit_watch.positions_report(http, send_photo))
+
+    assert len(photos) == 1 and photos[0].startswith("📈 FARTCOIN long")
+    assert text == "Σ uPnL +512.30 USDT"  # lines travelled as captions
+
+
+def test_positions_report_falls_back_to_text_without_candles(keyed):
+    http = ClosingHTTP()
+    http.position_pages = [[dict(row(), unrealisedPnl="1")]]  # no klines -> no chart
+
+    async def send_photo(caption, png):
+        raise AssertionError("no chart should have been sent")
+
+    text = asyncio.run(bybit_watch.positions_report(http, send_photo))
+
+    assert "📈 FARTCOIN long" in text
+
+
 def test_positions_report_without_keys(monkeypatch):
     monkeypatch.setattr(bybit_watch, "API_KEY", "")
 

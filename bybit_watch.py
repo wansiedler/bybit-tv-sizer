@@ -176,19 +176,8 @@ async def close_everything(http: httpx.AsyncClient) -> str:
     for r in rows:
         symbol = r["symbol"]
         try:
-            await _post(
-                http,
-                "/v5/order/create",
-                {
-                    "category": "linear",
-                    "symbol": symbol,
-                    # The opposite side, reduce-only: it can only close.
-                    "side": "Sell" if r.get("side") == "Buy" else "Buy",
-                    "orderType": "Market",
-                    "qty": r["size"],
-                    "reduceOnly": True,
-                    "positionIdx": int(r.get("positionIdx") or 0),
-                },
+            await _close_market(
+                http, symbol, r.get("side", ""), r["size"], int(r.get("positionIdx") or 0)
             )
             lines.append(f"✅ {base_symbol(symbol)} закрывается")
         # Deliberately broad: one refused close must not strand the rest.
@@ -199,8 +188,62 @@ async def close_everything(http: httpx.AsyncClient) -> str:
     return "\n".join(lines)
 
 
-async def positions_report(http: httpx.AsyncClient) -> str:
-    """Every open position as one line, for the bot's /positions command."""
+async def _close_market(
+    http: httpx.AsyncClient, symbol: str, bybit_side: str, qty: str, position_idx: int = 0
+) -> None:
+    """One reduce-only market order: it can only close, never open."""
+    await _post(
+        http,
+        "/v5/order/create",
+        {
+            "category": "linear",
+            "symbol": symbol,
+            "side": "Sell" if bybit_side == "Buy" else "Buy",
+            "orderType": "Market",
+            "qty": qty,
+            "reduceOnly": True,
+            "positionIdx": position_idx,
+        },
+    )
+
+
+async def close_position(http: httpx.AsyncClient, query: str) -> str:
+    """Close one position by ticker, for /close CL. No confirm: the typed
+    argument is the confirmation."""
+    if not enabled():
+        return "Bybit не подключён: нет API-ключей"
+    if not query.strip():
+        return "Какую позицию? Например: /close CL"
+    wanted = query.strip().upper()
+    try:
+        result = await _get(http, "/v5/position/list", {"category": "linear", "settleCoin": "USDT"})
+        rows = [r for r in result.get("list", []) if float(r.get("size") or 0) != 0]
+    # Deliberately broad: a chat command must answer, not crash the poller.
+    except Exception:  # noqa: BLE001
+        log.exception("close listing failed")
+        return "Bybit не ответил, попробуй ещё раз"
+    matches = [r for r in rows if wanted in (r["symbol"].upper(), base_symbol(r["symbol"]).upper())]
+    if not matches:
+        names = ", ".join(base_symbol(r["symbol"]) for r in rows) or "—"
+        return f"Позиции {wanted} нет. Открыты: {names}"
+    row = matches[0]
+    try:
+        await _close_market(
+            http, row["symbol"], row.get("side", ""), row["size"], int(row.get("positionIdx") or 0)
+        )
+    # Deliberately broad: the refusal text is the answer.
+    except Exception as exc:  # noqa: BLE001
+        log.exception("could not close %s", row["symbol"])
+        return f"❌ {base_symbol(row['symbol'])}: {exc}"
+    return f"✅ {base_symbol(row['symbol'])} закрывается — отчёт 💸 придёт следом"
+
+
+async def positions_report(http: httpx.AsyncClient, send_photo=None) -> str:
+    """Every open position as one line, for the bot's /positions command.
+
+    With `send_photo` each position also goes out as its chart — the same
+    picture an entry produces — captioned with that line.
+    """
     if not enabled():
         return "Bybit не подключён: нет API-ключей"
     try:
@@ -228,6 +271,10 @@ async def positions_report(http: httpx.AsyncClient) -> str:
         if position.stop_loss:
             line += f" · sl {position.stop_loss:g}"
         total += position.unrealised
+        if send_photo is not None:
+            png = await entry_chart(http, symbol, position)
+            if png is not None and await send_photo(line, png):
+                continue  # the caption carried the line
         lines.append(line)
     footer = f"Σ uPnL {total:+,.2f} USDT"
     if depo:

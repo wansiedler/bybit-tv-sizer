@@ -45,6 +45,7 @@ HELP = (
     "Commands:\n"
     "/status — uptime, counters, speaker\n"
     "/positions — open Bybit positions with uPnL\n"
+    "/close <ticker> — close one position at market, e.g. /close CL\n"
     "/stopall — close every position at market (asks to confirm)\n"
     "/test — push a sample alert through the whole chain\n"
     "/ping — answer if alive\n"
@@ -93,8 +94,11 @@ async def fetch_updates(http: httpx.AsyncClient, offset: int | None) -> list[dic
     return updates
 
 
-def command_of(update: dict) -> str | None:
-    """The command in an update, if it is one and it came from the owner."""
+def command_of(update: dict) -> tuple[str, str] | None:
+    """The command and its argument, if the update is one from the owner.
+
+    "/close@some_bot CL" -> ("close", "CL"); no argument -> ("status", "").
+    """
     message = update.get("message")
     if not message:
         return None
@@ -104,9 +108,8 @@ def command_of(update: dict) -> str | None:
     text = message.get("text", "").strip()
     if not text.startswith("/"):
         return None
-    # "/status@some_bot arg" -> "status"
-    word: str = text.split()[0]
-    return word.removeprefix("/").split("@")[0].lower()
+    word, _, rest = text.partition(" ")
+    return word.removeprefix("/").split("@")[0].lower(), rest.strip()
 
 
 def uptime(seconds: float) -> str:
@@ -134,12 +137,20 @@ def status_text(stats: Stats, speaking: bool) -> str:
 
 
 async def dispatch(
-    command: str, stats: Stats, send, speak, speaking: bool, positions=None, stop_all=None
+    command: str,
+    arg: str,
+    stats: Stats,
+    send,
+    speak,
+    speaking: bool,
+    positions=None,
+    stop_all=None,
+    close_one=None,
 ) -> None:
     """Answer one command. Unknown commands get the help text.
 
-    `positions` is an optional async callable returning the open-positions
-    report; without one the command falls through to the help text.
+    `positions`, `stop_all` and `close_one` are optional async callables from
+    the Bybit side; without them their commands fall through to the help text.
     """
     if command == "ping":
         await send("pong")
@@ -149,6 +160,8 @@ async def dispatch(
         await send(await positions())
     elif command == "stopall" and stop_all is not None:
         await send(await stop_all())
+    elif command == "close" and close_one is not None:
+        await send(await close_one(arg))
     elif command == "test":
         await send(f"{SAMPLE_ALERT} (test)")
         spoke = await speak(SAMPLE_ALERT, stats.relayed + 1)
@@ -165,6 +178,7 @@ async def poll(
     speaking: bool,
     positions=None,
     stop_all=None,
+    close_one=None,
 ) -> None:
     """Answer commands until cancelled. Never lets one failure end the loop."""
     offset: int | None = None
@@ -178,12 +192,15 @@ async def poll(
             continue
         for update in updates:
             offset = update["update_id"] + 1
-            command = command_of(update)
-            if command is None:
+            parsed = command_of(update)
+            if parsed is None:
                 continue
-            log.info("command: /%s", command)
+            command, arg = parsed
+            log.info("command: /%s %s", command, arg)
             try:
-                await dispatch(command, stats, send, speak, speaking, positions, stop_all)
+                await dispatch(
+                    command, arg, stats, send, speak, speaking, positions, stop_all, close_one
+                )
             # Deliberately broad: one bad command must not end the loop.
             except Exception:  # noqa: BLE001
                 log.exception("/%s failed", command)

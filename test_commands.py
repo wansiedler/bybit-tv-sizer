@@ -103,10 +103,12 @@ def _update(text, chat_id="777", update_id=1):
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("/ping", "ping"),
-        ("  /Status  ", "status"),
-        ("/status@your_bot", "status"),
-        ("/test now", "test"),
+        ("/ping", ("ping", "")),
+        ("  /Status  ", ("status", "")),
+        ("/status@your_bot", ("status", "")),
+        ("/test now", ("test", "now")),
+        ("/close CL", ("close", "CL")),
+        ("/close@your_bot  cl ", ("close", "cl")),
     ],
 )
 def test_command_of_parses(owner, text, expected):
@@ -134,7 +136,7 @@ def test_command_of_ignores_strangers(owner, caplog):
 def test_ping(owner):
     rec = Recorder()
 
-    asyncio.run(commands.dispatch("ping", commands.Stats(), rec.send, rec.speak, True))
+    asyncio.run(commands.dispatch("ping", "", commands.Stats(), rec.send, rec.speak, True))
 
     assert rec.sent == ["pong"]
 
@@ -145,7 +147,9 @@ def test_positions_answers_with_the_report(owner):
     async def report():
         return "📈 FARTCOIN long 18,749 USDT @ 0.1621 · uPnL +512.30"
 
-    asyncio.run(commands.dispatch("positions", commands.Stats(), rec.send, rec.speak, True, report))
+    asyncio.run(
+        commands.dispatch("positions", "", commands.Stats(), rec.send, rec.speak, True, report)
+    )
 
     assert rec.sent == ["📈 FARTCOIN long 18,749 USDT @ 0.1621 · uPnL +512.30"]
 
@@ -153,7 +157,7 @@ def test_positions_answers_with_the_report(owner):
 def test_positions_without_a_reporter_falls_back_to_help(owner):
     rec = Recorder()
 
-    asyncio.run(commands.dispatch("positions", commands.Stats(), rec.send, rec.speak, True))
+    asyncio.run(commands.dispatch("positions", "", commands.Stats(), rec.send, rec.speak, True))
 
     assert rec.sent == [commands.HELP]
 
@@ -165,7 +169,9 @@ def test_stopall_answers_with_the_result(owner):
         return "⚠️ Закрою МАРКЕТОМ 2 поз.: CL, GRAM"
 
     asyncio.run(
-        commands.dispatch("stopall", commands.Stats(), rec.send, rec.speak, True, None, stop_all)
+        commands.dispatch(
+            "stopall", "", commands.Stats(), rec.send, rec.speak, True, None, stop_all
+        )
     )
 
     assert rec.sent == ["⚠️ Закрою МАРКЕТОМ 2 поз.: CL, GRAM"]
@@ -174,7 +180,33 @@ def test_stopall_answers_with_the_result(owner):
 def test_stopall_without_a_closer_falls_back_to_help(owner):
     rec = Recorder()
 
-    asyncio.run(commands.dispatch("stopall", commands.Stats(), rec.send, rec.speak, True))
+    asyncio.run(commands.dispatch("stopall", "", commands.Stats(), rec.send, rec.speak, True))
+
+    assert rec.sent == [commands.HELP]
+
+
+def test_close_passes_the_ticker(owner):
+    rec = Recorder()
+    seen = []
+
+    async def close_one(arg):
+        seen.append(arg)
+        return "✅ CL закрывается — отчёт 💸 придёт следом"
+
+    asyncio.run(
+        commands.dispatch(
+            "close", "CL", commands.Stats(), rec.send, rec.speak, True, None, None, close_one
+        )
+    )
+
+    assert seen == ["CL"]
+    assert rec.sent == ["✅ CL закрывается — отчёт 💸 придёт следом"]
+
+
+def test_close_without_a_closer_falls_back_to_help(owner):
+    rec = Recorder()
+
+    asyncio.run(commands.dispatch("close", "CL", commands.Stats(), rec.send, rec.speak, True))
 
     assert rec.sent == [commands.HELP]
 
@@ -182,7 +214,7 @@ def test_stopall_without_a_closer_falls_back_to_help(owner):
 def test_status(owner):
     rec = Recorder()
 
-    asyncio.run(commands.dispatch("status", commands.Stats(), rec.send, rec.speak, True))
+    asyncio.run(commands.dispatch("status", "", commands.Stats(), rec.send, rec.speak, True))
 
     assert rec.sent[0].startswith("🟢 up")
 
@@ -191,7 +223,7 @@ def test_test_command_exercises_delivery_and_speech(owner):
     rec = Recorder(spoke=True)
     stats = commands.Stats(relayed=4)
 
-    asyncio.run(commands.dispatch("test", stats, rec.send, rec.speak, True))
+    asyncio.run(commands.dispatch("test", "", stats, rec.send, rec.speak, True))
 
     assert rec.sent == [f"{commands.SAMPLE_ALERT} (test)", "spoke it"]
     assert rec.spoken == [(commands.SAMPLE_ALERT, 5)]
@@ -200,7 +232,7 @@ def test_test_command_exercises_delivery_and_speech(owner):
 def test_test_command_reports_a_silent_speaker(owner):
     rec = Recorder(spoke=False)
 
-    asyncio.run(commands.dispatch("test", commands.Stats(), rec.send, rec.speak, False))
+    asyncio.run(commands.dispatch("test", "", commands.Stats(), rec.send, rec.speak, False))
 
     assert rec.sent[-1] == "speaker silent"
 
@@ -209,7 +241,7 @@ def test_test_command_reports_a_silent_speaker(owner):
 def test_unknown_commands_get_help(owner, command):
     rec = Recorder()
 
-    asyncio.run(commands.dispatch(command, commands.Stats(), rec.send, rec.speak, True))
+    asyncio.run(commands.dispatch(command, "", commands.Stats(), rec.send, rec.speak, True))
 
     assert rec.sent == [commands.HELP]
 
