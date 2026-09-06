@@ -22,6 +22,7 @@ from telethon import TelegramClient, events
 
 import bybit_watch
 import commands
+import sizer
 import speaker
 from parser import parse_alert
 
@@ -323,6 +324,10 @@ async def run() -> None:
                             lambda caption, png: send_photo_via_bot(http, caption, png),
                         )
                     )
+                )
+            if sizer.enabled():
+                background.add(
+                    asyncio.create_task(sizer.poll(http, lambda text: send_via_bot(http, text)))
                 )
             listening = asyncio.create_task(client.run_until_disconnected())
             stopping = asyncio.create_task(shutdown.event.wait())

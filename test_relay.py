@@ -479,6 +479,24 @@ def test_run_starts_the_bybit_watcher_when_keyed(config, monkeypatch):
     assert started[0][1] is relay.speaker.trade
 
 
+def test_run_starts_the_sizer_when_opted_in(config, monkeypatch):
+    started = []
+
+    async def fake_poll(http, send):
+        started.append(send)
+        await asyncio.sleep(3600)  # runs until the relay cancels it
+
+    monkeypatch.setattr(relay.sizer, "enabled", lambda: True)
+    monkeypatch.setattr(relay.sizer, "poll", fake_poll)
+
+    async def disconnect_immediately(client):
+        return None
+
+    _run_relay(monkeypatch, disconnect_immediately)
+
+    assert len(started) == 1
+
+
 def test_run_does_not_speak_lifecycle_without_a_speaker(config, monkeypatch):
     said: list[str] = []
 

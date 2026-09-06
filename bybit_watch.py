@@ -15,6 +15,7 @@ the key should not even be able to.
 import asyncio
 import hashlib
 import hmac
+import json
 import logging
 import os
 import time
@@ -49,22 +50,39 @@ def sign(timestamp: str, query: str) -> str:
     return hmac.new(API_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
 
 
-async def _get(http: httpx.AsyncClient, path: str, params: dict[str, str]) -> dict:
-    """One signed GET. Raises on transport errors and on Bybit refusals."""
-    query = "&".join(f"{k}={v}" for k, v in params.items())
-    timestamp = str(int(time.time() * 1000))
-    headers = {
+def _headers(timestamp: str, payload: str) -> dict[str, str]:
+    return {
         "X-BAPI-API-KEY": API_KEY,
         "X-BAPI-TIMESTAMP": timestamp,
         "X-BAPI-RECV-WINDOW": RECV_WINDOW,
-        "X-BAPI-SIGN": sign(timestamp, query),
+        "X-BAPI-SIGN": sign(timestamp, payload),
     }
-    response = await http.get(f"{API_URL}{path}?{query}", headers=headers, timeout=15)
-    payload = response.json()
+
+
+def _result(payload: dict, path: str) -> dict:
     if payload.get("retCode") != 0:
         raise RuntimeError(f"bybit {path}: {payload.get('retCode')} {payload.get('retMsg')}")
     result: dict = payload.get("result") or {}
     return result
+
+
+async def _get(http: httpx.AsyncClient, path: str, params: dict[str, str]) -> dict:
+    """One signed GET. Raises on transport errors and on Bybit refusals."""
+    query = "&".join(f"{k}={v}" for k, v in params.items())
+    timestamp = str(int(time.time() * 1000))
+    response = await http.get(
+        f"{API_URL}{path}?{query}", headers=_headers(timestamp, query), timeout=15
+    )
+    return _result(response.json(), path)
+
+
+async def _post(http: httpx.AsyncClient, path: str, params: dict[str, str]) -> dict:
+    """One signed POST: the v5 signature covers the JSON body, verbatim."""
+    body = json.dumps(params, separators=(",", ":"))
+    timestamp = str(int(time.time() * 1000))
+    headers = _headers(timestamp, body) | {"Content-Type": "application/json"}
+    response = await http.post(f"{API_URL}{path}", content=body, headers=headers, timeout=15)
+    return _result(response.json(), path)
 
 
 @dataclass(frozen=True)
