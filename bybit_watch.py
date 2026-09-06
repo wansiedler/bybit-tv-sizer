@@ -250,6 +250,25 @@ async def close_chart(
         return None
 
 
+async def equity(http: httpx.AsyncClient) -> float | None:
+    """Account equity in USDT, best-effort: garnish for the PnL percent."""
+    try:
+        result = await _get(
+            http,
+            "/v5/account/wallet-balance",
+            {"accountType": os.getenv("ACCOUNT_TYPE", "UNIFIED")},
+        )
+        rows = result.get("list") or []
+        if not rows:
+            return None
+        value = rows[0].get("totalEquity") or rows[0].get("totalWalletBalance")
+        return float(value) if value else None
+    # Deliberately broad: no equity figure must never block the notice.
+    except Exception:  # noqa: BLE001
+        log.exception("no equity")
+        return None
+
+
 async def entry_fee(http: httpx.AsyncClient, symbol: str) -> float | None:
     """Fees paid on the fills that just opened the position, best-effort.
 
@@ -356,6 +375,9 @@ async def tick(
             if record is not None:
                 pnl = float(record["closedPnl"])
                 line += f", PnL {pnl:+,.2f} USDT"
+                depo = await equity(http)
+                if depo:
+                    line += f" ({pnl / depo * 100:+.2f}% депо)"
                 opened_fee = float(record.get("openFee") or 0)
                 closed_fee = float(record.get("closeFee") or 0)
                 if opened_fee or closed_fee:

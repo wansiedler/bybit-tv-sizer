@@ -31,6 +31,7 @@ class FakeHTTP:
         self.pnl_rows: list[dict[str, Any]] = []
         self.kline_rows: list[list[str]] = []
         self.exec_rows: list[dict[str, Any]] = []
+        self.equity_rows: list[dict[str, Any]] = []
         self.requests: list[str] = []
 
     async def get(self, url, headers=None, timeout=None):
@@ -42,6 +43,8 @@ class FakeHTTP:
             return FakeResponse({"retCode": 0, "result": {"list": self.kline_rows}})
         if "/v5/execution/list" in url:
             return FakeResponse({"retCode": 0, "result": {"list": self.exec_rows}})
+        if "/v5/account/wallet-balance" in url:
+            return FakeResponse({"retCode": 0, "result": {"list": self.equity_rows}})
         return FakeResponse({"retCode": 0, "result": {"list": self.pnl_rows}})
 
 
@@ -437,6 +440,51 @@ def test_tick_reports_pnl_on_a_close(keyed):
 
     assert out.sent == ["💸 FARTCOIN long closed, PnL +512.30 USDT · fees 0.073 + 0.078 USDT"]
     assert out.spoken == ["Fartcoin long closed, profit 512"]
+
+
+def test_tick_close_reports_the_pnl_as_a_share_of_equity(keyed):
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[]]
+    http.pnl_rows = [closed()]
+    http.equity_rows = [{"totalEquity": "10000"}]
+
+    asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
+
+    assert out.sent == [
+        "💸 FARTCOIN long closed, PnL +512.30 USDT (+5.12% депо) · fees 0.073 + 0.078 USDT"
+    ]
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [],  # no accounts at all
+        [{"totalEquity": "", "totalWalletBalance": ""}],  # accounts without figures
+    ],
+)
+def test_equity_absent_figures_return_none(keyed, rows):
+    http = FakeHTTP()
+    http.equity_rows = rows
+
+    assert asyncio.run(bybit_watch.equity(http)) is None
+
+
+def test_equity_falls_back_to_wallet_balance(keyed):
+    http = FakeHTTP()
+    http.equity_rows = [{"totalEquity": "", "totalWalletBalance": "42"}]
+
+    assert asyncio.run(bybit_watch.equity(http)) == 42.0
+
+
+def test_equity_swallows_api_errors(keyed, caplog):
+    class Refusing(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise OSError("bybit down")
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        assert asyncio.run(bybit_watch.equity(Refusing())) is None
+
+    assert "no equity" in caplog.text
 
 
 def test_tick_close_without_fee_fields_stays_plain(keyed):
