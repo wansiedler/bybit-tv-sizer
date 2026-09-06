@@ -397,14 +397,22 @@ async def tick(
             fee = await entry_fee(http, symbol)
             if fee:
                 line += f" · fee {fee:.4g} USDT"
+            if now.take_profit is not None:
+                # What reaching the TP pays, net of both fees: the entry fee
+                # just paid and a like-sized one for the exit.
+                target = abs(now.take_profit - now.price) * now.size
+                if fee:
+                    target -= 2 * fee
+                line += f" · на тейке ≈ {target:+,.2f} USDT"
             for warn in trade_warnings(now, await equity(http)):
                 line += f"\n{warn}"
             png = await entry_chart(http, symbol, now)
         elif kind == "closed" and was is not None:
             record = await closed_record(http, symbol)
             if record is not None:
+                # Bybit's closedPnl is already net of both fees.
                 pnl = float(record["closedPnl"])
-                line += f", PnL {pnl:+,.2f} USDT"
+                line += f", PnL {pnl:+,.2f} USDT чистыми"
                 depo = await equity(http)
                 if depo:
                     line += f" ({pnl / depo * 100:+.2f}% депо)"

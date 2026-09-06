@@ -329,7 +329,7 @@ def test_tick_appends_the_entry_fee_when_fills_are_fresh(keyed):
     import time
 
     http, out = FakeHTTP(), Recorder()
-    http.position_pages = [[row()]]
+    http.position_pages = [[row(tp="0.2621", sl="0.15")]]
     now_ms = int(time.time() * 1000)
     http.exec_rows = [
         {"execFee": "0.05", "execTime": str(now_ms)},
@@ -339,7 +339,9 @@ def test_tick_appends_the_entry_fee_when_fills_are_fresh(keyed):
 
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == ["💰 FARTCOIN long 18,749 USDT @ 0.1621 · fee 0.073 USDT\n⚠️ без стопа"]
+    assert out.sent == [
+        "💰 FARTCOIN long 18,749 USDT @ 0.1621 · fee 0.073 USDT · на тейке ≈ +11,565.98 USDT"
+    ]
 
 
 def test_entry_fee_swallows_api_errors(keyed, caplog):
@@ -360,7 +362,7 @@ def test_tick_sends_an_entry_chart_when_candles_exist(keyed):
 
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
-    assert out.photos == ["💰 FARTCOIN long 18,749 USDT @ 0.1621"]
+    assert out.photos == ["💰 FARTCOIN long 18,749 USDT @ 0.1621 · на тейке ≈ +3,226.95 USDT"]
     assert out.sent == []  # the caption carries the notice
     assert out.spoken == ["Fartcoin long opened"]
 
@@ -385,7 +387,9 @@ def test_tick_sends_a_close_chart_with_the_pnl_caption(keyed):
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
-    assert out.photos == ["💸 FARTCOIN long closed, PnL +512.30 USDT · fees 0.073 + 0.078 USDT"]
+    assert out.photos == [
+        "💸 FARTCOIN long closed, PnL +512.30 USDT чистыми · fees 0.073 + 0.078 USDT"
+    ]
     assert out.sent == []
     assert out.spoken == ["Fartcoin long closed, profit 512"]
 
@@ -472,7 +476,9 @@ def test_tick_reports_pnl_on_a_close(keyed):
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == ["💸 FARTCOIN long closed, PnL +512.30 USDT · fees 0.073 + 0.078 USDT"]
+    assert out.sent == [
+        "💸 FARTCOIN long closed, PnL +512.30 USDT чистыми · fees 0.073 + 0.078 USDT"
+    ]
     assert out.spoken == ["Fartcoin long closed, profit 512"]
 
 
@@ -485,7 +491,7 @@ def test_tick_close_reports_the_pnl_as_a_share_of_equity(keyed):
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
     assert out.sent == [
-        "💸 FARTCOIN long closed, PnL +512.30 USDT (+5.12% депо) · fees 0.073 + 0.078 USDT"
+        "💸 FARTCOIN long closed, PnL +512.30 USDT чистыми (+5.12% депо) · fees 0.073 + 0.078 USDT"
     ]
 
 
@@ -528,7 +534,7 @@ def test_tick_close_without_fee_fields_stays_plain(keyed):
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == ["💸 FARTCOIN long closed, PnL +512.30 USDT"]
+    assert out.sent == ["💸 FARTCOIN long closed, PnL +512.30 USDT чистыми"]
 
 
 def test_tick_close_survives_a_missing_pnl(keyed):
