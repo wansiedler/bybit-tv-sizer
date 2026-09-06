@@ -449,9 +449,9 @@ def test_run_reports_up_and_down(config, monkeypatch):
 
     assert signal.SIGTERM in handlers
     assert signal.SIGINT in handlers
-    assert http.posted[0].startswith("🟢")
+    assert str(http.posted[0]).startswith("🟢")
     # Nothing signalled the relay, so the reason is the dropped connection.
-    assert "connection lost" in http.posted[-1]
+    assert "connection lost" in str(http.posted[-1])
     assert FakeClient.instances[0].disconnected is True
 
 
@@ -474,7 +474,7 @@ def test_run_announces_speaking_hours_with_a_speaker(config, monkeypatch):
 
     http, _ = _run_relay(monkeypatch, disconnect_immediately)
 
-    assert "🔊 23:00–08:00" in http.posted[0]
+    assert "🔊 23:00–08:00" in str(http.posted[0])
 
 
 def test_run_speaks_its_own_lifecycle(config, monkeypatch):
@@ -592,7 +592,7 @@ def test_run_up_notice_stays_plain_without_a_speaker(config, monkeypatch):
 
     http, _ = _run_relay(monkeypatch, disconnect_immediately)
 
-    assert "🔊" not in http.posted[0]
+    assert "🔊" not in str(http.posted[0])
 
 
 def test_run_shuts_down_on_sigterm(config, monkeypatch):
@@ -621,8 +621,9 @@ def test_run_shuts_down_on_sigterm(config, monkeypatch):
 
     asyncio.run(relay.run())
 
-    assert "SIGTERM" in http.posted[-1]
-    assert http.posted[-1].startswith("🔴")
+    last = str(http.posted[-1])
+    assert "SIGTERM" in last
+    assert last.startswith("🔴")
 
 
 def test_run_relays_alerts_and_skips_noise(config, monkeypatch):
