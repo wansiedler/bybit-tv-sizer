@@ -116,6 +116,7 @@ class Position:
     value: float  # position value, USDT
     take_profit: float | None = None
     stop_loss: float | None = None
+    unrealised: float = 0.0
 
 
 async def positions(http: httpx.AsyncClient) -> dict[str, Position]:
@@ -133,8 +134,45 @@ async def positions(http: httpx.AsyncClient) -> dict[str, Position]:
             value=float(row.get("positionValue") or 0),
             take_profit=float(row["takeProfit"]) if row.get("takeProfit") else None,
             stop_loss=float(row["stopLoss"]) if row.get("stopLoss") else None,
+            unrealised=float(row.get("unrealisedPnl") or 0),
         )
     return open_now
+
+
+async def positions_report(http: httpx.AsyncClient) -> str:
+    """Every open position as one line, for the bot's /positions command."""
+    if not enabled():
+        return "Bybit не подключён: нет API-ключей"
+    try:
+        open_now = await positions(http)
+    # Deliberately broad: a chat command must answer, not crash the poller.
+    except Exception:  # noqa: BLE001
+        log.exception("positions report failed")
+        return "Bybit не ответил, попробуй ещё раз"
+    if not open_now:
+        return "Открытых позиций нет"
+    depo = await equity(http)
+    lines = []
+    total = 0.0
+    for symbol, position in sorted(open_now.items()):
+        arrow = "📈" if position.side == "long" else "📉"
+        line = (
+            f"{arrow} {base_symbol(symbol)} {position.side}"
+            f" {position.value:,.0f} USDT @ {position.price:g}"
+            f" · uPnL {position.unrealised:+,.2f}"
+        )
+        if depo:
+            line += f" ({position.unrealised / depo * 100:+.2f}%)"
+        if position.take_profit:
+            line += f" · tp {position.take_profit:g}"
+        if position.stop_loss:
+            line += f" · sl {position.stop_loss:g}"
+        total += position.unrealised
+        lines.append(line)
+    footer = f"Σ uPnL {total:+,.2f} USDT"
+    if depo:
+        footer += f" ({total / depo * 100:+.2f}% от депо {depo:,.0f})"
+    return "\n".join([*lines, footer])
 
 
 async def _klines(

@@ -139,6 +139,25 @@ def test_ping(owner):
     assert rec.sent == ["pong"]
 
 
+def test_positions_answers_with_the_report(owner):
+    rec = Recorder()
+
+    async def report():
+        return "📈 FARTCOIN long 18,749 USDT @ 0.1621 · uPnL +512.30"
+
+    asyncio.run(commands.dispatch("positions", commands.Stats(), rec.send, rec.speak, True, report))
+
+    assert rec.sent == ["📈 FARTCOIN long 18,749 USDT @ 0.1621 · uPnL +512.30"]
+
+
+def test_positions_without_a_reporter_falls_back_to_help(owner):
+    rec = Recorder()
+
+    asyncio.run(commands.dispatch("positions", commands.Stats(), rec.send, rec.speak, True))
+
+    assert rec.sent == [commands.HELP]
+
+
 def test_status(owner):
     rec = Recorder()
 

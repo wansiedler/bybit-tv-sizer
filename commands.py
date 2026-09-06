@@ -44,6 +44,7 @@ SAMPLE_ALERT = "OP 📈 0.10277"
 HELP = (
     "Commands:\n"
     "/status — uptime, counters, speaker\n"
+    "/positions — open Bybit positions with uPnL\n"
     "/test — push a sample alert through the whole chain\n"
     "/ping — answer if alive\n"
     "/help — this list"
@@ -131,12 +132,18 @@ def status_text(stats: Stats, speaking: bool) -> str:
     )
 
 
-async def dispatch(command: str, stats: Stats, send, speak, speaking: bool) -> None:
-    """Answer one command. Unknown commands get the help text."""
+async def dispatch(command: str, stats: Stats, send, speak, speaking: bool, positions=None) -> None:
+    """Answer one command. Unknown commands get the help text.
+
+    `positions` is an optional async callable returning the open-positions
+    report; without one the command falls through to the help text.
+    """
     if command == "ping":
         await send("pong")
     elif command == "status":
         await send(status_text(stats, speaking))
+    elif command == "positions" and positions is not None:
+        await send(await positions())
     elif command == "test":
         await send(f"{SAMPLE_ALERT} (test)")
         spoke = await speak(SAMPLE_ALERT, stats.relayed + 1)
@@ -145,7 +152,9 @@ async def dispatch(command: str, stats: Stats, send, speak, speaking: bool) -> N
         await send(HELP)
 
 
-async def poll(http: httpx.AsyncClient, stats: Stats, send, speak, speaking: bool) -> None:
+async def poll(
+    http: httpx.AsyncClient, stats: Stats, send, speak, speaking: bool, positions=None
+) -> None:
     """Answer commands until cancelled. Never lets one failure end the loop."""
     offset: int | None = None
     log.info("listening for bot commands")
@@ -163,7 +172,7 @@ async def poll(http: httpx.AsyncClient, stats: Stats, send, speak, speaking: boo
                 continue
             log.info("command: /%s", command)
             try:
-                await dispatch(command, stats, send, speak, speaking)
+                await dispatch(command, stats, send, speak, speaking, positions)
             # Deliberately broad: one bad command must not end the loop.
             except Exception:  # noqa: BLE001
                 log.exception("/%s failed", command)

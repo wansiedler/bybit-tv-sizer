@@ -261,6 +261,65 @@ def test_trade_warnings_skip_without_depo_target_or_tp(monkeypatch):
     assert bybit_watch.trade_warnings(WITH_STOP, 1000.0) == []
 
 
+# --------------------------------------------------------------------------- #
+#  /positions report                                                           #
+# --------------------------------------------------------------------------- #
+def test_positions_report_without_keys(monkeypatch):
+    monkeypatch.setattr(bybit_watch, "API_KEY", "")
+
+    assert "нет API-ключей" in asyncio.run(bybit_watch.positions_report(FakeHTTP()))
+
+
+def test_positions_report_survives_a_dead_api(keyed, caplog):
+    class Refusing(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise OSError("bybit down")
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        text = asyncio.run(bybit_watch.positions_report(Refusing()))
+
+    assert "не ответил" in text
+
+
+def test_positions_report_with_nothing_open(keyed):
+    http = FakeHTTP()
+    http.position_pages = [[]]
+
+    assert asyncio.run(bybit_watch.positions_report(http)) == "Открытых позиций нет"
+
+
+def test_positions_report_lists_positions_with_depo_share(keyed):
+    http = FakeHTTP()
+    http.position_pages = [
+        [
+            dict(row(tp="0.19", sl="0.15"), unrealisedPnl="512.3"),
+            dict(
+                row(symbol="OPUSDT", side="Sell", size="10", price="1.2", value="12"),
+                unrealisedPnl="-1.5",
+            ),
+        ]
+    ]
+    http.equity_rows = [{"totalEquity": "10000"}]
+
+    text = asyncio.run(bybit_watch.positions_report(http))
+
+    assert text.splitlines() == [
+        "📈 FARTCOIN long 18,749 USDT @ 0.1621 · uPnL +512.30 (+5.12%) · tp 0.19 · sl 0.15",
+        "📉 OP short 12 USDT @ 1.2 · uPnL -1.50 (-0.01%)",
+        "Σ uPnL +510.80 USDT (+5.11% от депо 10,000)",
+    ]
+
+
+def test_positions_report_without_depo_keeps_plain_numbers(keyed):
+    http = FakeHTTP()
+    http.position_pages = [[dict(row(), unrealisedPnl="1")]]
+
+    text = asyncio.run(bybit_watch.positions_report(http))
+
+    assert "(" not in text  # no percent shares without an equity figure
+    assert text.endswith("Σ uPnL +1.00 USDT")
+
+
 def test_klines_pages_past_bybits_request_cap(keyed):
     """More than 1000 bars must arrive via backward pagination on `end`."""
 
