@@ -276,17 +276,22 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         net = position.unrealised - fees
         head = f"{arrow}{base_symbol(symbol)} {position.value:,.0f}@{position.price:g}"
         if position.stop_loss:
-            head += f"·sl{position.stop_loss:g}"
-        detail = f"PnL{position.unrealised:+,.2f}−комса{fees:.2f}=<b>{net:+,.2f}{share(net)}</b>"
+            # What the stop costs if it fires, fees included.
+            at_sl = -abs(position.price - position.stop_loss) * position.size - fees
+            head += f" · sl{position.stop_loss:g}:<b>{at_sl:+,.2f}{share(at_sl)}</b>"
+        block = [
+            head,
+            f"PnL{position.unrealised:+,.2f}−комса{fees:.2f}=<b>{net:+,.2f}{share(net)}</b>",
+        ]
         if position.take_profit:
             sign = 1 if position.side == "long" else -1
             at_tp = sign * (position.take_profit - position.price) * position.size - fees
-            detail += f",tp{position.take_profit:g}:<b>{at_tp:+,.2f}{share(at_tp)}</b>"
+            block.append(f"tp {position.take_profit:g}:<b>{at_tp:+,.2f}{share(at_tp)}</b>")
         total += position.unrealised
         total_net += net
-        lines.append(f"{head}\n{detail}")
+        lines.append("\n".join(block))
         if send_album is not None:
-            png = await entry_chart(http, symbol, position, _plain(f"{head}\n{detail}"))
+            png = await entry_chart(http, symbol, position, _plain("\n".join(block)))
             if png is not None:
                 pngs.append(png)
     # A total of one position would just repeat its line.
@@ -535,9 +540,9 @@ def describe(kind: str, symbol: str, was: Position | None, now: Position | None)
     sym = base_symbol(symbol)
     name = COIN_NAMES.get(sym, sym)
     if kind == "opened" and now is not None:
+        # The stop-loss risk annotation is appended by tick(), which knows
+        # the deposit share.
         head = f"💰{_arrow(now.side)}{sym} {now.value:,.0f}@{now.price:g}"
-        if now.stop_loss:
-            head += f"·sl{now.stop_loss:g}"
         return head, f"{name} {now.side} opened"
     if kind == "flipped" and now is not None:
         return (
@@ -576,16 +581,19 @@ async def tick(
         if kind in ("opened", "flipped") and now is not None:
             fee = await entry_fee(http, symbol)
             depo = await equity(http)
+            fees = 2 * (fee or TAKER_FEE * now.value)
+            if now.stop_loss is not None:
+                # What the stop costs if it fires, fees included.
+                at_sl = -abs(now.price - now.stop_loss) * now.size - fees
+                line += f" · sl{now.stop_loss:g}:<b>{at_sl:+,.2f}{share(at_sl, depo)}</b>"
             extras = []
             if fee:
                 extras.append(f"комса{fee:.4g}")
             if now.take_profit is not None:
                 # What reaching the TP pays, net of both fees: the entry fee
                 # just paid and a like-sized one for the exit.
-                target = abs(now.take_profit - now.price) * now.size
-                if fee:
-                    target -= 2 * fee
-                extras.append(f"tp{now.take_profit:g}:<b>{target:+,.2f}{share(target, depo)}</b>")
+                target = abs(now.take_profit - now.price) * now.size - fees
+                extras.append(f"tp {now.take_profit:g}:<b>{target:+,.2f}{share(target, depo)}</b>")
             if extras:
                 line += "\n" + ",".join(extras)
             for warn in trade_warnings(now, depo):

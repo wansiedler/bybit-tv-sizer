@@ -154,7 +154,7 @@ def test_diff_quiet_when_nothing_moved():
             "opened",
             None,
             Position("short", 100.0, 0.16, 16.0, stop_loss=0.17),
-            "💰📉FARTCOIN 16@0.16·sl0.17",
+            "💰📉FARTCOIN 16@0.16",
             "Fartcoin short opened",
         ),
         ("closed", LONG, None, "💸📈FARTCOIN", "Fartcoin long closed"),
@@ -543,8 +543,9 @@ def test_positions_report_lists_positions_with_depo_share(keyed):
     text = asyncio.run(bybit_watch.positions_report(http))
 
     assert text.splitlines() == [
-        "📈FARTCOIN 18,749@0.1621·sl0.15",
-        "PnL+512.30−комса20.62=<b>+491.68(+4.92%)</b>,tp0.19:<b>+3,206.33(+32.06%)</b>",
+        "📈FARTCOIN 18,749@0.1621 · sl0.15:<b>-1,420.13(-14.20%)</b>",
+        "PnL+512.30−комса20.62=<b>+491.68(+4.92%)</b>",
+        "tp 0.19:<b>+3,206.33(+32.06%)</b>",
         "📉OP 12@1.2",
         "PnL-1.50−комса0.01=<b>-1.51(-0.02%)</b>",
         "ΣPnL+510.80=<b>+490.16(+4.90%)</b>",
@@ -650,7 +651,9 @@ def test_tick_appends_the_entry_fee_when_fills_are_fresh(keyed):
 
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == ["💰📈FARTCOIN 18,749@0.1621·sl0.15\nкомса0.073,tp0.2621:<b>+11,565.98</b>"]
+    assert out.sent == [
+        "💰📈FARTCOIN 18,749@0.1621 · sl0.15:<b>-1,399.65</b>\nкомса0.073,tp 0.2621:<b>+11,565.98</b>"
+    ]
 
 
 def test_tick_reports_the_take_target_as_a_share_of_equity(keyed):
@@ -662,7 +665,7 @@ def test_tick_reports_the_take_target_as_a_share_of_equity(keyed):
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
     assert out.sent == [
-        "💰📈FARTCOIN 18,749@0.1621·sl0.15\ntp0.2621:<b>+11,566.13(+57.83%)</b>"
+        "💰📈FARTCOIN 18,749@0.1621 · sl0.15:<b>-1,420.13(-7.10%)</b>\ntp 0.2621:<b>+11,545.51(+57.73%)</b>"
         "\n⚠️ риск 7.00% депо, цель 0.5%"
     ]
 
@@ -685,7 +688,9 @@ def test_tick_sends_an_entry_chart_when_candles_exist(keyed):
 
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
-    assert out.photos == ["💰📈FARTCOIN 18,749@0.1621·sl0.15\ntp0.19:<b>+3,226.95</b>"]
+    assert out.photos == [
+        "💰📈FARTCOIN 18,749@0.1621 · sl0.15:<b>-1,420.13</b>\ntp 0.19:<b>+3,206.33</b>"
+    ]
     assert out.sent == []  # the caption carries the notice
     assert out.spoken == ["Fartcoin long opened"]
 
