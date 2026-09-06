@@ -514,6 +514,40 @@ async def entry_fee(http: httpx.AsyncClient, symbol: str) -> float | None:
         return None
 
 
+def journal_row(symbol: str, was: Position, record: dict, pnl: float) -> list:
+    """One trade as a row of the trading-diary sheet.
+
+    Columns: Дата открытия, Пара, Позиция, Результат, RR, Анализ,
+    Фактический результат, Ссылка, Комментарий, Анализ ошибок, Состояние.
+    The result figure is the R multiple — PnL over the risk the stop
+    carried; without a stop it falls back to net USDT. Free-text columns
+    stay empty for hand-written notes.
+    """
+    from datetime import datetime
+
+    entry = float(record.get("avgEntryPrice") or was.price)
+    opened_ms = record.get("createdTime")
+    opened = datetime.fromtimestamp(int(opened_ms) / 1000).strftime("%d/%m/%Y") if opened_ms else ""
+    rr = ""
+    if was.stop_loss and was.take_profit:
+        rr = f"1к{abs(was.take_profit - entry) / abs(entry - was.stop_loss):.0f}"
+    risk = abs(entry - was.stop_loss) * was.size if was.stop_loss else 0.0
+    fact: float = round(pnl / risk, 1) if risk else round(pnl, 2)
+    return [
+        opened,
+        symbol,
+        "Лонг" if was.side == "long" else "Шорт",
+        "win" if pnl >= 0 else "stop",
+        rr,
+        "",
+        fact,
+        "",
+        "",
+        "",
+        "",
+    ]
+
+
 async def closed_record(http: httpx.AsyncClient, symbol: str) -> dict | None:
     """The most recently closed position's record, best-effort."""
     try:
@@ -640,21 +674,7 @@ async def tick(
                 if opened_fee or closed_fee:
                     line += f"·комса{opened_fee:.4g}+{closed_fee:.4g}"
                 spoken_line += f", {'profit' if pnl >= 0 else 'loss'} {abs(pnl):.0f}"
-                await sheets.log_close(
-                    http,
-                    {
-                        "symbol": base_symbol(symbol),
-                        "side": was.side,
-                        "value": round(was.value, 2),
-                        "entry": float(record.get("avgEntryPrice") or 0),
-                        "exit": float(record.get("avgExitPrice") or 0),
-                        "pnl": pnl,
-                        "pnl_pct": round(pnl / depo * 100, 4) if depo else "",
-                        "fees": round(opened_fee + closed_fee, 6),
-                        "opened": record.get("createdTime", ""),
-                        "closed": record.get("updatedTime", ""),
-                    },
-                )
+                await sheets.log_close(http, {"row": journal_row(symbol, was, record, pnl)})
                 total_fees = opened_fee + closed_fee
                 png = await close_chart(
                     http,

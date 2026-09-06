@@ -740,6 +740,28 @@ def test_tick_sends_a_close_chart_with_the_pnl_caption(keyed):
     assert out.spoken == ["Fartcoin long closed, profit 512"]
 
 
+def test_journal_row_matches_the_diary_format():
+    was = Position("short", 1.42, 92.0, 131.0, take_profit=84.1, stop_loss=92.88)
+    record = {"avgEntryPrice": "92.04", "createdTime": "1788719433000", "closedPnl": "x"}
+
+    row = bybit_watch.journal_row("CLUSDT", was, record, -1.19)
+
+    assert row[1:5] == ["CLUSDT", "Шорт", "stop", "1к9"]
+    assert row[6] == -1.0  # R multiple: pnl over the stop's risk
+    assert row[0].count("/") == 2  # DD/MM/YYYY
+    assert row[5] == "" and row[7:] == ["", "", "", ""]
+
+
+def test_journal_row_without_a_stop_falls_back_to_usdt():
+    was = Position("long", 1.0, 100.0, 100.0)
+
+    row = bybit_watch.journal_row("CLUSDT", was, {}, 5.4321)
+
+    assert row[0] == "" and row[4] == ""
+    assert row[3] == "win"
+    assert row[6] == 5.43  # plain net USDT, no risk to divide by
+
+
 def test_bar_of_clamps_to_the_fetched_range(keyed):
     times = [100, 200, 300]
 
