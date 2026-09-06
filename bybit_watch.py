@@ -49,6 +49,8 @@ def _api_url() -> str:
 
 API_URL = _api_url()
 POLL = int(os.getenv("BYBIT_POLL", "10"))
+# Kline timeframe for every chart the relay draws, in minutes.
+CHART_INTERVAL = os.getenv("CHART_INTERVAL", "15")
 RECV_WINDOW = "5000"
 
 
@@ -157,7 +159,7 @@ async def entry_chart(http: httpx.AsyncClient, symbol: str, position: Position) 
     trade.
     """
     try:
-        _, candles = await _klines(http, symbol, "15", {"limit": "60"})
+        _, candles = await _klines(http, symbol, CHART_INTERVAL, {"limit": "60"})
         return chart.render(
             base_symbol(symbol),
             position.side,
@@ -174,30 +176,38 @@ async def entry_chart(http: httpx.AsyncClient, symbol: str, position: Position) 
         return None
 
 
-# Kline intervals (minutes) coarse enough to fit a whole trade in ~48 bars.
-_INTERVALS = (1, 3, 5, 15, 30, 60, 120, 240)
-
-
 async def close_chart(
-    http: httpx.AsyncClient, symbol: str, side: str, record: dict
+    http: httpx.AsyncClient, symbol: str, was: Position, record: dict
 ) -> bytes | None:
-    """A PNG of the finished trade: entry to exit, zone colored by outcome."""
+    """A PNG of the finished trade: entry to exit, zone colored by outcome.
+
+    The closed-pnl record carries no TP/SL, so those come from the last
+    position snapshot and are drawn as lines. Every chart stays on
+    CHART_INTERVAL, whatever the trade's length; Bybit caps one kline
+    request at 1000 bars, so a trade longer than that shows its most
+    recent stretch, with the entry clamped to the left edge.
+    """
     try:
         opened, closed = int(record["createdTime"]), int(record["updatedTime"])
-        minutes = max((closed - opened) / 60_000, 1)
-        interval = next((step for step in _INTERVALS if minutes / step <= 48), _INTERVALS[-1])
-        span = interval * 60_000
+        span = int(CHART_INTERVAL) * 60_000
+        bars = (closed - opened) // span + 12  # 8 bars of lead-in, 3 of tail, slack
         times, candles = await _klines(
             http,
             symbol,
-            str(interval),
-            {"start": str(opened - 8 * span), "end": str(closed + 3 * span)},
+            CHART_INTERVAL,
+            {
+                "start": str(opened - 8 * span),
+                "end": str(closed + 3 * span),
+                "limit": str(min(bars, 1000)),
+            },
         )
         return chart.render(
             base_symbol(symbol),
-            side,
+            was.side,
             candles,
             float(record["avgEntryPrice"]),
+            was.take_profit,
+            was.stop_loss,
             entry_index=_bar_of(times, opened),
             exit_index=_bar_of(times, closed),
             exit_price=float(record["avgExitPrice"]),
@@ -289,7 +299,7 @@ async def tick(
                 pnl = float(record["closedPnl"])
                 line += f", PnL {pnl:+,.2f} USDT"
                 spoken_line += f", {'profit' if pnl >= 0 else 'loss'} {abs(pnl):.0f}"
-                png = await close_chart(http, symbol, was.side, record)
+                png = await close_chart(http, symbol, was, record)
         if png is None or not await send_photo(line, png):
             await send(line)
         await speak(spoken_line)

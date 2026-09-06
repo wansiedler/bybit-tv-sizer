@@ -86,21 +86,25 @@ def render(
     def x_of(index: int) -> float:
         return MARGIN + step * index + step / 2
 
-    zone_left = x_of(entry_index)
-    zone_right = x_of(exit_index) if exit_index is not None else chart_right
+    # Bar edges, not centers: a trade entered and exited within one bar still
+    # gets a zone one full bar wide instead of a zero-width sliver.
+    zone_left = x_of(entry_index) - step / 2
+    zone_right = x_of(exit_index) + step / 2 if exit_index is not None else chart_right
 
     def zone(a: float, b: float, fill: tuple[int, int, int, int]) -> None:
         draw.rectangle((zone_left, to_y(max(a, b)), zone_right, to_y(min(a, b))), fill=fill)
 
     # TradingView-style: green between entry and target, red between entry
-    # and stop. A finished trade shows one zone, colored by how it went.
-    if take_profit:
-        zone(entry, take_profit, PROFIT_FILL)
-    if stop_loss:
-        zone(entry, stop_loss, RISK_FILL)
+    # and stop. A finished trade shows one zone, colored by how it went; its
+    # TP and SL stay as lines so the outcome shading remains readable.
     if exit_price is not None:
         won = (exit_price >= entry) == (side == "long")
         zone(entry, exit_price, PROFIT_FILL if won else RISK_FILL)
+    else:
+        if take_profit:
+            zone(entry, take_profit, PROFIT_FILL)
+        if stop_loss:
+            zone(entry, stop_loss, RISK_FILL)
 
     body = max(2.0, step * 0.6)
     for i, candle in enumerate(candles):
@@ -112,7 +116,7 @@ def render(
 
     def level(price: float, color: tuple[int, int, int], tag: str) -> None:
         y = to_y(price)
-        for x in range(int(zone_left), int(zone_right), 12):  # dashed
+        for x in range(int(zone_left), int(zone_right) + 6, 12):  # dashed
             draw.line((x, y, x + 6, y), fill=color, width=2)
         draw.text((chart_right + 8, y - 7), f"{tag} {price:g}", fill=color)
 

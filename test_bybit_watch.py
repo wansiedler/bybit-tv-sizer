@@ -266,17 +266,18 @@ def test_bar_of_clamps_to_the_fetched_range(keyed):
     assert bybit_watch._bar_of(times, 50) == 0  # before the first bar
 
 
-def test_close_chart_picks_a_coarse_interval_for_a_long_trade(keyed):
-    # Ten days: even 240-minute bars exceed 48, so the fallback must hold.
+def test_close_chart_stays_on_the_configured_timeframe(keyed):
+    # A month of trade: the timeframe holds at 15m, the bar count caps at
+    # Bybit's 1000-per-request ceiling.
     http = FakeHTTP()
     http.kline_rows = KLINES
     record = closed()
-    record["updatedTime"] = str(int(record["createdTime"]) + 10 * 24 * 3600 * 1000)
+    record["updatedTime"] = str(int(record["createdTime"]) + 30 * 24 * 3600 * 1000)
 
-    png = asyncio.run(bybit_watch.close_chart(http, "FARTCOINUSDT", "long", record))
+    png = asyncio.run(bybit_watch.close_chart(http, "FARTCOINUSDT", LONG, record))
 
     assert png is not None and png.startswith(b"\x89PNG")
-    assert any("interval=240" in url for url in http.requests)
+    assert any("interval=15" in url and "limit=1000" in url for url in http.requests)
 
 
 def test_close_chart_gives_up_quietly(keyed, caplog):
@@ -284,7 +285,7 @@ def test_close_chart_gives_up_quietly(keyed, caplog):
     http = FakeHTTP()
 
     with caplog.at_level("ERROR", logger="relay.bybit"):
-        png = asyncio.run(bybit_watch.close_chart(http, "FARTCOINUSDT", "long", closed()))
+        png = asyncio.run(bybit_watch.close_chart(http, "FARTCOINUSDT", LONG, closed()))
 
     assert png is None
     assert "no close chart" in caplog.text

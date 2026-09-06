@@ -81,6 +81,45 @@ def test_render_draws_a_finished_trade(side, exit_price):
     assert png.startswith(b"\x89PNG")
 
 
+def test_render_finished_trade_keeps_tp_and_sl_as_lines():
+    # With an exit the outcome zone is the only fill; TP/SL stay as levels.
+    png = chart.render(
+        "FARTCOIN",
+        "short",
+        CANDLES,
+        0.162,
+        0.150,
+        0.170,
+        entry_index=1,
+        exit_index=2,
+        exit_price=0.158,
+    )
+
+    assert png.startswith(b"\x89PNG")
+
+
+def test_render_same_bar_trade_still_shows_a_zone():
+    """Entry and exit inside one bar must not collapse the zone to nothing."""
+    png = chart.render(
+        "GRAM",
+        "short",
+        CANDLES,
+        1.413,
+        entry_index=1,
+        exit_index=1,
+        exit_price=1.417,
+        pad_right=2,
+    )
+
+    image = load(png).convert("RGB")
+    slots = len(CANDLES) + 2
+    step = (chart.WIDTH - chart.PRICE_GUTTER - chart.MARGIN) / slots
+    x = int(chart.MARGIN + step * 1.5)  # inside bar 1
+    column = {image.getpixel((x, y)) for y in range(chart.MARGIN + 2, chart.HEIGHT - chart.MARGIN)}
+
+    assert any(pixel != chart.BACKGROUND for pixel in column)  # the loss fill is there
+
+
 def test_render_zones_start_at_the_entry_bar():
     """Left of the entry bar the zone fill must not appear."""
     entry, tp = 0.162, 0.170
