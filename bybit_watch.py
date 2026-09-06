@@ -260,40 +260,40 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
     if not open_now:
         return "Открытых позиций нет"
     depo = await equity(http)
+
+    def share(amount: float) -> str:
+        return f" ({amount / depo * 100:+.2f}% депо)" if depo else ""
+
     lines = []
     pngs = []
     total = 0.0
     total_net = 0.0
     for symbol, position in sorted(open_now.items()):
         arrow = "📈" if position.side == "long" else "📉"
-        # uPnL is pure price difference; the estimate takes off both fees at
-        # the taker rate — the entry already paid, the exit still to come.
-        net = position.unrealised - 2 * TAKER_FEE * position.value
-        line = (
-            f"{arrow} {base_symbol(symbol)} {position.side}"
-            f" {position.value:,.0f} USDT @ {position.price:g}"
-            f" · uPnL {position.unrealised:+,.2f}"
-        )
-        if depo:
-            line += f" ({position.unrealised / depo * 100:+.2f}%)"
-        line += f" · ~чистыми {net:+,.2f}"
-        if position.take_profit:
-            line += f" · tp {position.take_profit:g}"
+        # uPnL is pure price difference; both fees at the taker rate come
+        # off — the entry already paid, the exit still to come.
+        fees = 2 * TAKER_FEE * position.value
+        net = position.unrealised - fees
+        head = f"{arrow} {base_symbol(symbol)} {position.value:,.0f}$ @ {position.price:g}"
         if position.stop_loss:
-            line += f" · sl {position.stop_loss:g}"
+            head += f" · sl {position.stop_loss:g}"
+        detail = (
+            f"PnL {position.unrealised:+,.2f} − комса {fees:.2f} = <b>{net:+,.2f}{share(net)}</b>"
+        )
+        if position.take_profit:
+            sign = 1 if position.side == "long" else -1
+            at_tp = sign * (position.take_profit - position.price) * position.size - fees
+            detail += f" · на tp {position.take_profit:g}: <b>{at_tp:+,.2f}{share(at_tp)}</b>"
         total += position.unrealised
         total_net += net
-        lines.append(line)
+        lines.append(f"{head}\n{detail}")
         if send_album is not None:
             png = await entry_chart(http, symbol, position)
             if png is not None:
                 pngs.append(png)
     # A total of one position would just repeat its line.
     if len(lines) > 1:
-        footer = f"Σ uPnL {total:+,.2f} USDT · ~чистыми {total_net:+,.2f}"
-        if depo:
-            footer += f" ({total / depo * 100:+.2f}% от депо {depo:,.0f})"
-        lines.append(footer)
+        lines.append(f"Σ PnL {total:+,.2f} = <b>{total_net:+,.2f}{share(total_net)}</b>")
     text = "\n".join(lines)
     # Telegram caps a media-group caption at 1024 characters.
     if send_album is not None and pngs and len(text) <= 1024 and await send_album(text, pngs):

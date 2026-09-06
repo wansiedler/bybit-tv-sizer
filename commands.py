@@ -160,7 +160,7 @@ async def dispatch(
         # An empty answer means the report already went out as a media group.
         report = await positions()
         if report:
-            await send(report)
+            await send(report, True)  # our own markup: HTML bold is safe
     elif command == "stopall" and stop_all is not None:
         await send(await stop_all())
     elif command == "close" and close_one is not None:

@@ -268,6 +268,22 @@ def test_send_photo_reports_a_refusal(config, caplog):
     assert "sendPhoto refused" in caplog.text
 
 
+def test_send_via_bot_html_mode_sets_parse_mode(config):
+    class CapturingHTTP(FakeHTTP):
+        def __init__(self):
+            super().__init__()
+            self.payloads: list[dict] = []
+
+        async def post(self, url, json=None, data=None, files=None, timeout=None):
+            self.payloads.append(json)
+            return self._post_response
+
+    http = CapturingHTTP()
+
+    assert asyncio.run(relay.send_via_bot(as_client(http), "<b>x</b>", html=True)) is True
+    assert http.payloads[0]["parse_mode"] == "HTML"
+
+
 # --------------------------------------------------------------------------- #
 #  send_album_via_bot                                                          #
 # --------------------------------------------------------------------------- #

@@ -28,7 +28,7 @@ class Recorder:
         self.spoken: list[tuple[str, int]] = []
         self._spoke = spoke
 
-    async def send(self, text):
+    async def send(self, text, html=False):
         self.sent.append(text)
         return True
 

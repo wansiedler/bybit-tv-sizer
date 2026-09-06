@@ -99,12 +99,19 @@ def _accepted(response, what: str) -> bool:
     return True
 
 
-async def send_via_bot(http: httpx.AsyncClient, text: str) -> bool:
-    """Post one line through the bot. Returns True when Telegram accepted it."""
+async def send_via_bot(http: httpx.AsyncClient, text: str, html: bool = False) -> bool:
+    """Post one line through the bot. Returns True when Telegram accepted it.
+
+    `html` turns on Telegram's HTML parse mode — only for text we compose
+    ourselves; relayed foreign text could break parsing with stray tags.
+    """
+    payload: dict[str, object] = {"chat_id": TARGET_CHAT_ID, "text": text}
+    if html:
+        payload["parse_mode"] = "HTML"
     try:
         response = await http.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            json={"chat_id": TARGET_CHAT_ID, "text": text},
+            json=payload,
             timeout=15,
         )
     except httpx.HTTPError:
@@ -131,6 +138,7 @@ async def send_album_via_bot(http: httpx.AsyncClient, caption: str, pngs: list[b
         item: dict[str, str] = {"type": "photo", "media": f"attach://{name}"}
         if i == 0:
             item["caption"] = caption
+            item["parse_mode"] = "HTML"
         media.append(item)
         files[name] = (f"{name}.png", png, "image/png")
     try:
@@ -343,7 +351,7 @@ async def run() -> None:
                 commands.poll(
                     http,
                     stats,
-                    lambda text: send_via_bot(http, text),
+                    lambda text, html=False: send_via_bot(http, text, html),
                     speaker.announce,
                     speaker.enabled(),
                     lambda: bybit_watch.positions_report(
