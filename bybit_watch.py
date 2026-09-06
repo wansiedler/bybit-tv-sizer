@@ -262,7 +262,7 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
     depo = await equity(http)
 
     def share(amount: float) -> str:
-        return f" ({amount / depo * 100:+.2f}% депо)" if depo else ""
+        return f" ({amount / depo * 100:+.2f}%)" if depo else ""
 
     lines = []
     pngs = []
@@ -274,7 +274,7 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         # off — the entry already paid, the exit still to come.
         fees = 2 * TAKER_FEE * position.value
         net = position.unrealised - fees
-        head = f"{arrow}{base_symbol(symbol)} {position.value:,.0f}$ @{position.price:g}"
+        head = f"{arrow}{base_symbol(symbol)} {position.value:,.0f}@{position.price:g}"
         if position.stop_loss:
             head += f" · sl {position.stop_loss:g}"
         detail = (
