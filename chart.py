@@ -13,7 +13,12 @@ open (`pad_right` leaves empty future for them to stretch into).
 from dataclasses import dataclass
 from io import BytesIO
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
+
+# The bundled scalable font: no system fonts to rely on in a slim image, and
+# no glyphs outside basic latin — so labels stick to plain words, no arrows.
+TITLE_FONT = ImageFont.load_default(24)
+LABEL_FONT = ImageFont.load_default(16)
 
 WIDTH, HEIGHT = 1400, 700
 MARGIN = 16
@@ -119,7 +124,7 @@ def render(
         y = to_y(price)
         for x in range(int(zone_left), int(zone_right) + 6, 12):  # dashed
             draw.line((x, y, x + 6, y), fill=color, width=2)
-        draw.text((chart_right + 8, y - 7), f"{tag} {price:g}", fill=color)
+        draw.text((chart_right + 8, y - 8), f"{tag} {price:g}", fill=color, font=LABEL_FONT)
 
     level(entry, ENTRY, "in")
     if take_profit:
@@ -130,11 +135,10 @@ def render(
         won = (exit_price >= entry) == (side == "long")
         level(exit_price, UP if won else DOWN, "out")
 
-    arrow = "▲" if side == "long" else "▼"
-    title = f"{symbol} · {side} {arrow}"
+    title = f"{symbol} · {side}"
     if timeframe:
         title += f" · {timeframe}"
-    draw.text((MARGIN + 6, MARGIN + 4), title, fill=TEXT)
+    draw.text((MARGIN + 6, MARGIN + 4), title, fill=TEXT, font=TITLE_FONT)
 
     out = BytesIO()
     image.save(out, format="PNG")
