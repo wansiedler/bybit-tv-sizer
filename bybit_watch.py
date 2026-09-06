@@ -301,7 +301,9 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
                 http,
                 symbol,
                 position,
-                entry_note=f"PnL {net:+,.2f}{share(net)}",
+                entry_note=(
+                    f"PnL {position.unrealised:+,.2f} - fee {fees:.2f} = {net:+,.2f}{share(net)}"
+                ),
                 tp_note=f"{at_tp:+,.2f}{share(at_tp)}" if position.take_profit else "",
                 sl_note=f"{at_sl:+,.2f}{share(at_sl)}" if position.stop_loss else "",
             )
@@ -653,8 +655,16 @@ async def tick(
                         "closed": record.get("updatedTime", ""),
                     },
                 )
+                total_fees = opened_fee + closed_fee
                 png = await close_chart(
-                    http, symbol, was, record, exit_note=f"{pnl:+,.2f}{share(pnl, depo)}"
+                    http,
+                    symbol,
+                    was,
+                    record,
+                    exit_note=(
+                        f"PnL {pnl + total_fees:+,.2f} - fee {total_fees:.2f}"
+                        f" = {pnl:+,.2f}{share(pnl, depo)}"
+                    ),
                 )
         if png is None or not await send_photo(line, png):
             await send(line)
