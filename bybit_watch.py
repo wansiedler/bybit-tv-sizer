@@ -274,16 +274,14 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         # off — the entry already paid, the exit still to come.
         fees = 2 * TAKER_FEE * position.value
         net = position.unrealised - fees
-        head = f"{arrow}{base_symbol(symbol)} {position.value:,.0f}$ @{position.price:g}"
+        head = f"{arrow}{base_symbol(symbol)} {position.value:,.0f}@{position.price:g}"
         if position.stop_loss:
-            head += f" · sl {position.stop_loss:g}"
-        detail = (
-            f"PnL {position.unrealised:+,.2f}−комса {fees:.2f} = <b>{net:+,.2f}{share(net)}</b>"
-        )
+            head += f"·sl{position.stop_loss:g}"
+        detail = f"PnL{position.unrealised:+,.2f}−комса{fees:.2f}=<b>{net:+,.2f}{share(net)}</b>"
         if position.take_profit:
             sign = 1 if position.side == "long" else -1
             at_tp = sign * (position.take_profit - position.price) * position.size - fees
-            detail += f", tp {position.take_profit:g}:<b>{at_tp:+,.2f}{share(at_tp)}</b>"
+            detail += f",tp{position.take_profit:g}:<b>{at_tp:+,.2f}{share(at_tp)}</b>"
         total += position.unrealised
         total_net += net
         lines.append(f"{head}\n{detail}")
@@ -293,7 +291,7 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
                 pngs.append(png)
     # A total of one position would just repeat its line.
     if len(lines) > 1:
-        lines.append(f"Σ PnL {total:+,.2f} = <b>{total_net:+,.2f}{share(total_net)}</b>")
+        lines.append(f"ΣPnL{total:+,.2f}=<b>{total_net:+,.2f}{share(total_net)}</b>")
     text = "\n".join(lines)
     # Telegram caps a media-group caption at 1024 characters.
     if send_album is not None and pngs and len(text) <= 1024 and await send_album(text, pngs):
@@ -537,9 +535,9 @@ def describe(kind: str, symbol: str, was: Position | None, now: Position | None)
     sym = base_symbol(symbol)
     name = COIN_NAMES.get(sym, sym)
     if kind == "opened" and now is not None:
-        head = f"💰{_arrow(now.side)}{sym} {now.value:,.0f}$ @{now.price:g}"
+        head = f"💰{_arrow(now.side)}{sym} {now.value:,.0f}@{now.price:g}"
         if now.stop_loss:
-            head += f" · sl {now.stop_loss:g}"
+            head += f"·sl{now.stop_loss:g}"
         return head, f"{name} {now.side} opened"
     if kind == "flipped" and now is not None:
         return (
@@ -580,16 +578,16 @@ async def tick(
             depo = await equity(http)
             extras = []
             if fee:
-                extras.append(f"комса {fee:.4g}")
+                extras.append(f"комса{fee:.4g}")
             if now.take_profit is not None:
                 # What reaching the TP pays, net of both fees: the entry fee
                 # just paid and a like-sized one for the exit.
                 target = abs(now.take_profit - now.price) * now.size
                 if fee:
                     target -= 2 * fee
-                extras.append(f"tp {now.take_profit:g}:<b>{target:+,.2f}{share(target, depo)}</b>")
+                extras.append(f"tp{now.take_profit:g}:<b>{target:+,.2f}{share(target, depo)}</b>")
             if extras:
-                line += "\n" + ", ".join(extras)
+                line += "\n" + ",".join(extras)
             for warn in trade_warnings(now, depo):
                 line += f"\n{warn}"
             png = await entry_chart(http, symbol, now, _plain(line))
@@ -599,11 +597,11 @@ async def tick(
                 # Bybit's closedPnl is already net of both fees.
                 pnl = float(record["closedPnl"])
                 depo = await equity(http)
-                line += f": <b>{pnl:+,.2f}{share(pnl, depo)}</b>"
+                line += f":<b>{pnl:+,.2f}{share(pnl, depo)}</b>"
                 opened_fee = float(record.get("openFee") or 0)
                 closed_fee = float(record.get("closeFee") or 0)
                 if opened_fee or closed_fee:
-                    line += f" · комса {opened_fee:.4g}+{closed_fee:.4g}"
+                    line += f"·комса{opened_fee:.4g}+{closed_fee:.4g}"
                 spoken_line += f", {'profit' if pnl >= 0 else 'loss'} {abs(pnl):.0f}"
                 png = await close_chart(http, symbol, was, record, _plain(line))
         if png is None or not await send_photo(line, png):
