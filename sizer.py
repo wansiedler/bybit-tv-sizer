@@ -49,9 +49,15 @@ SETTLE_COIN = os.getenv("SETTLE_COIN", "USDT")
 SETTLE_POLLS = int(os.getenv("SETTLE_POLLS", "2"))
 ACCOUNT_TYPE = os.getenv("ACCOUNT_TYPE", "UNIFIED")
 
+# Warn when a limit order's reward-to-risk sits below this. 0 disables.
+MIN_RR = Decimal(os.getenv("MIN_RR", "2"))
+
 # orderId -> (entry|stop signature, how many passes in a row have seen it)
 _settling: dict[str, tuple[str, int]] = {}
 _instruments: dict[str, dict] = {}
+# orderId -> the entry|stop|tp signature already warned about, so dragging
+# nothing does not repeat the same warning every pass.
+_warned: dict[str, str] = {}
 
 
 def enabled() -> bool:
@@ -173,6 +179,28 @@ def has_settled(order: dict) -> bool:
     return count >= SETTLE_POLLS
 
 
+def rr_warning(order: dict) -> str | None:
+    """A reward-to-risk complaint, when both exits are set and RR falls short.
+
+    An order without a TP or SL cannot be measured and stays silent — the
+    sizing path already reports a missing stop in its own way.
+    """
+    if not MIN_RR:
+        return None
+    entry = Decimal(order["price"])
+    stop_raw = order.get("stopLoss") or ""
+    tp_raw = order.get("takeProfit") or ""
+    if stop_raw in ("", "0") or tp_raw in ("", "0"):
+        return None
+    risk = abs(entry - Decimal(stop_raw))
+    if risk <= 0:
+        return None
+    rr = abs(Decimal(tp_raw) - entry) / risk
+    if rr >= MIN_RR:
+        return None
+    return f"RR {rr:.2f} < {MIN_RR}"
+
+
 async def tick(http: httpx.AsyncClient, send) -> None:
     """One pass: resize every managed, settled order that is the wrong size."""
     open_orders = await get_open_orders(http)
@@ -181,6 +209,7 @@ async def tick(http: httpx.AsyncClient, send) -> None:
     live = {order["orderId"] for order in open_orders}
     for stale in _settling.keys() - live:
         del _settling[stale]
+        _warned.pop(stale, None)
 
     orders = [order for order in open_orders if is_managed(order)]
     # has_settled() advances the counter, so it runs for every managed order
@@ -192,6 +221,13 @@ async def tick(http: httpx.AsyncClient, send) -> None:
     equity = await get_equity(http)
     for order in orders:
         symbol, order_id = order["symbol"], order["orderId"]
+        complaint = rr_warning(order)
+        signature = (
+            f"{order['price']}|{order.get('stopLoss') or ''}|{order.get('takeProfit') or ''}"
+        )
+        if complaint and _warned.get(order_id) != signature:
+            _warned[order_id] = signature
+            await send(f"⚠️ {symbol} {order.get('side', '?')} limit @ {order['price']}: {complaint}")
         want = target_qty(order, equity, await get_instrument(http, symbol))
         if want is None:
             continue

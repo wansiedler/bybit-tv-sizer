@@ -49,6 +49,12 @@ def _api_url() -> str:
 
 API_URL = _api_url()
 POLL = int(os.getenv("BYBIT_POLL", "10"))
+# Money-management checks on a freshly opened position: complain when the
+# reward-to-risk is below MIN_RR (0 disables), or when the actual risk
+# strays more than a quarter away from the RISK_PCT the sizer targets.
+MIN_RR = float(os.getenv("MIN_RR", "2"))
+RISK_TARGET = float(os.getenv("RISK_PCT", "0.5")) / 100
+
 # Kline timeframe for every chart the relay draws, in minutes.
 CHART_INTERVAL = os.getenv("CHART_INTERVAL", "15")
 # How many bars of context a chart shows. Bybit caps one request at 1000
@@ -250,6 +256,28 @@ async def close_chart(
         return None
 
 
+def trade_warnings(position: Position, depo: float | None) -> list[str]:
+    """Money-management complaints about a position that just opened.
+
+    Advisory only: the position is already open, so nothing is touched —
+    the point is to hear about a rule broken while it can still be fixed.
+    """
+    if position.stop_loss is None:
+        return ["⚠️ без стопа"]
+    risk = abs(position.price - position.stop_loss) * position.size
+    warns = []
+    if depo and RISK_TARGET:
+        actual = risk / depo
+        # Within a quarter of the target nobody wants a ping.
+        if abs(actual - RISK_TARGET) > RISK_TARGET * 0.25:
+            warns.append(f"⚠️ риск {actual * 100:.2f}% депо, цель {RISK_TARGET * 100:g}%")
+    if position.take_profit is not None and MIN_RR:
+        rr = abs(position.take_profit - position.price) / abs(position.price - position.stop_loss)
+        if rr < MIN_RR:
+            warns.append(f"⚠️ RR {rr:.2f} < {MIN_RR:g}")
+    return warns
+
+
 async def equity(http: httpx.AsyncClient) -> float | None:
     """Account equity in USDT, best-effort: garnish for the PnL percent."""
     try:
@@ -369,6 +397,8 @@ async def tick(
             fee = await entry_fee(http, symbol)
             if fee:
                 line += f" · fee {fee:.4g} USDT"
+            for warn in trade_warnings(now, await equity(http)):
+                line += f"\n{warn}"
             png = await entry_chart(http, symbol, now)
         elif kind == "closed" and was is not None:
             record = await closed_record(http, symbol)

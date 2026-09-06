@@ -29,6 +29,8 @@ def _default_config(monkeypatch, tmp_path):
     monkeypatch.setattr(bybit_watch, "API_KEY", "")
     monkeypatch.setattr(bybit_watch, "API_SECRET", "")
     monkeypatch.setattr(bybit_watch, "API_URL", "https://api.bybit.com")
+    monkeypatch.setattr(bybit_watch, "RISK_TARGET", 0.005)
+    monkeypatch.setattr(bybit_watch, "MIN_RR", 2.0)
     monkeypatch.setattr(commands, "SOURCE", "source_bot")
     monkeypatch.setattr(commands, "WATCH_USERS", ["some_trader"])
     monkeypatch.setattr(commands, "POLL_TIMEOUT", 25)

@@ -41,11 +41,14 @@ def _isolate(monkeypatch):
     monkeypatch.setattr(sizer, "SYMBOLS", set())
     # Debounce off by default: the settling behaviour has its own tests.
     monkeypatch.setattr(sizer, "SETTLE_POLLS", 1)
+    monkeypatch.setattr(sizer, "MIN_RR", Decimal("2"))
     sizer._settling.clear()
     sizer._instruments.clear()
+    sizer._warned.clear()
     yield
     sizer._settling.clear()
     sizer._instruments.clear()
+    sizer._warned.clear()
 
 
 class FakeResponse:
@@ -319,6 +322,60 @@ def test_tick_skips_an_unsizable_order(monkeypatch):
     run_tick(http, out)
 
     assert http.amended == []
+
+
+# ------------------------------------------------------------------ RR gate
+@pytest.mark.parametrize(
+    ("patch", "expected"),
+    [
+        ({"takeProfit": "61000"}, "RR 1.00 < 2"),  # 1000 up vs 1000 down
+        ({"takeProfit": "63000"}, None),  # RR 3: fine
+        ({"takeProfit": ""}, None),  # no TP: nothing to measure
+        ({"stopLoss": "", "takeProfit": "63000"}, None),  # no SL either
+        ({"stopLoss": "60000", "takeProfit": "61000"}, None),  # zero distance
+    ],
+)
+def test_rr_warning(patch, expected):
+    assert sizer.rr_warning(dict(ORDER, **patch)) == expected
+
+
+def test_rr_warning_can_be_disabled(monkeypatch):
+    monkeypatch.setattr(sizer, "MIN_RR", Decimal("0"))
+
+    assert sizer.rr_warning(dict(ORDER, takeProfit="61000")) is None
+
+
+def test_tick_warns_about_a_thin_rr_once(monkeypatch):
+    http, out = FakeHTTP(), Recorder()
+    http.orders = [dict(ORDER, takeProfit="61000")]
+
+    run_tick(http, out)
+    run_tick(http, out)  # nothing changed: no second ping
+
+    assert out.sent == ["⚠️ BTCUSDT Buy limit @ 60000: RR 1.00 < 2"]
+
+
+def test_tick_warns_again_after_the_order_changes(monkeypatch):
+    http, out = FakeHTTP(), Recorder()
+    http.orders = [dict(ORDER, takeProfit="61000")]
+    run_tick(http, out)
+
+    http.orders = [dict(ORDER, takeProfit="60500")]
+    run_tick(http, out)
+
+    assert len(out.sent) == 2
+    assert "RR 0.50 < 2" in out.sent[1]
+
+
+def test_warned_marker_does_not_outlive_the_order():
+    http, out = FakeHTTP(), Recorder()
+    http.orders = [dict(ORDER, takeProfit="61000")]
+    run_tick(http, out)
+    assert "abc12345" in sizer._warned
+
+    http.orders = []
+    run_tick(http, out)
+    assert sizer._warned == {}
 
 
 # ------------------------------------------------------------------ settling

@@ -217,7 +217,7 @@ def test_tick_announces_an_open(keyed):
 
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == ["💰 FARTCOIN long 18,749 USDT @ 0.1621"]
+    assert out.sent == ["💰 FARTCOIN long 18,749 USDT @ 0.1621\n⚠️ без стопа"]
     assert out.spoken == ["Fartcoin long opened"]
 
 
@@ -225,6 +225,40 @@ KLINES = [
     ["1700000900000", "0.163", "0.170", "0.161", "0.169", "1", "1"],
     ["1700000000000", "0.160", "0.165", "0.158", "0.163", "1", "1"],
 ]
+
+
+WITH_STOP = Position("long", 100.0, 0.16, 16.0, take_profit=0.19, stop_loss=0.15)
+
+
+def test_trade_warnings_flags_a_missing_stop():
+    assert bybit_watch.trade_warnings(LONG, 1000.0) == ["⚠️ без стопа"]
+
+
+def test_trade_warnings_quiet_on_a_disciplined_trade(monkeypatch):
+    # Risk |0.16-0.15|*100 = 1 USDT on a 200 USDT depo = 0.5%, RR 3.
+    assert bybit_watch.trade_warnings(WITH_STOP, 200.0) == []
+
+
+def test_trade_warnings_flags_risk_drift():
+    # 1 USDT of risk on 1000 USDT is 0.1% — far from the 0.5% target.
+    assert bybit_watch.trade_warnings(WITH_STOP, 1000.0) == ["⚠️ риск 0.10% депо, цель 0.5%"]
+
+
+def test_trade_warnings_flags_a_thin_rr():
+    thin = Position("long", 100.0, 0.16, 16.0, take_profit=0.17, stop_loss=0.15)
+
+    assert bybit_watch.trade_warnings(thin, 200.0) == ["⚠️ RR 1.00 < 2"]
+
+
+def test_trade_warnings_skip_without_depo_target_or_tp(monkeypatch):
+    # No equity figure and no TP: nothing measurable, nothing said.
+    no_tp = Position("long", 100.0, 0.16, 16.0, stop_loss=0.15)
+    assert bybit_watch.trade_warnings(no_tp, None) == []
+
+    # Both checks disabled by configuration.
+    monkeypatch.setattr(bybit_watch, "RISK_TARGET", 0.0)
+    monkeypatch.setattr(bybit_watch, "MIN_RR", 0.0)
+    assert bybit_watch.trade_warnings(WITH_STOP, 1000.0) == []
 
 
 def test_klines_pages_past_bybits_request_cap(keyed):
@@ -305,7 +339,7 @@ def test_tick_appends_the_entry_fee_when_fills_are_fresh(keyed):
 
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == ["💰 FARTCOIN long 18,749 USDT @ 0.1621 · fee 0.073 USDT"]
+    assert out.sent == ["💰 FARTCOIN long 18,749 USDT @ 0.1621 · fee 0.073 USDT\n⚠️ без стопа"]
 
 
 def test_entry_fee_swallows_api_errors(keyed, caplog):
@@ -339,8 +373,8 @@ def test_tick_falls_back_to_text_when_telegram_refuses_the_photo(keyed):
 
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
-    assert out.photos == ["💰 FARTCOIN long 18,749 USDT @ 0.1621"]
-    assert out.sent == ["💰 FARTCOIN long 18,749 USDT @ 0.1621"]
+    assert out.photos == ["💰 FARTCOIN long 18,749 USDT @ 0.1621\n⚠️ без стопа"]
+    assert out.sent == ["💰 FARTCOIN long 18,749 USDT @ 0.1621\n⚠️ без стопа"]
 
 
 def test_tick_sends_a_close_chart_with_the_pnl_caption(keyed):
