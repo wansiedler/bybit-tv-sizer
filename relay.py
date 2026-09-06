@@ -77,6 +77,26 @@ def require_config() -> tuple[int, str]:
     return int(api_id), api_hash
 
 
+def _accepted(response, what: str) -> bool:
+    """Whether Telegram actually took the message.
+
+    A 200 is not acceptance: Telegram reports refusals in the body, and
+    treating those as delivered loses the message silently.
+    """
+    if response.status_code != 200:
+        log.error("%s %s: %s", what, response.status_code, response.text)
+        return False
+    try:
+        payload = response.json()
+    except ValueError:
+        log.error("%s returned no JSON: %s", what, response.text[:200])
+        return False
+    if not payload.get("ok"):
+        log.error("%s refused: %s", what, payload)
+        return False
+    return True
+
+
 async def send_via_bot(http: httpx.AsyncClient, text: str) -> bool:
     """Post one line through the bot. Returns True when Telegram accepted it."""
     try:
@@ -89,22 +109,28 @@ async def send_via_bot(http: httpx.AsyncClient, text: str) -> bool:
         log.exception("sendMessage failed")
         return False
 
-    if response.status_code != 200:
-        log.error("sendMessage %s: %s", response.status_code, response.text)
+    if not _accepted(response, "sendMessage"):
         return False
-
-    # A 200 is not acceptance: Telegram reports refusals in the body, and
-    # treating those as delivered loses the message silently.
-    try:
-        payload = response.json()
-    except ValueError:
-        log.error("sendMessage returned no JSON: %s", response.text[:200])
-        return False
-    if not payload.get("ok"):
-        log.error("sendMessage refused: %s", payload)
-        return False
-
     log.info("sent: %s", text)
+    return True
+
+
+async def send_photo_via_bot(http: httpx.AsyncClient, caption: str, png: bytes) -> bool:
+    """Post one picture with a caption. Returns True when Telegram accepted it."""
+    try:
+        response = await http.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+            data={"chat_id": TARGET_CHAT_ID, "caption": caption},
+            files={"photo": ("chart.png", png, "image/png")},
+            timeout=30,
+        )
+    except httpx.HTTPError:
+        log.exception("sendPhoto failed")
+        return False
+
+    if not _accepted(response, "sendPhoto"):
+        return False
+    log.info("sent photo: %s", caption)
     return True
 
 
@@ -290,7 +316,12 @@ async def run() -> None:
             if bybit_watch.enabled():
                 background.add(
                     asyncio.create_task(
-                        bybit_watch.poll(http, lambda text: send_via_bot(http, text), speaker.trade)
+                        bybit_watch.poll(
+                            http,
+                            lambda text: send_via_bot(http, text),
+                            speaker.trade,
+                            lambda caption, png: send_photo_via_bot(http, caption, png),
+                        )
                     )
                 )
             listening = asyncio.create_task(client.run_until_disconnected())

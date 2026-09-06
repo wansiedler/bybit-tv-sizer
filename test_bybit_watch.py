@@ -29,6 +29,7 @@ class FakeHTTP:
     def __init__(self):
         self.position_pages: list[list[dict[str, Any]]] = []
         self.pnl_rows: list[dict[str, Any]] = []
+        self.kline_rows: list[list[str]] = []
         self.requests: list[str] = []
 
     async def get(self, url, headers=None, timeout=None):
@@ -36,11 +37,29 @@ class FakeHTTP:
         if "/v5/position/list" in url:
             rows = self.position_pages.pop(0) if self.position_pages else []
             return FakeResponse({"retCode": 0, "result": {"list": rows}})
+        if "/v5/market/kline" in url:
+            return FakeResponse({"retCode": 0, "result": {"list": self.kline_rows}})
         return FakeResponse({"retCode": 0, "result": {"list": self.pnl_rows}})
 
 
-def row(symbol="FARTCOINUSDT", side="Buy", size="115661.3", price="0.1621", value="18748.7"):
-    return {"symbol": symbol, "side": side, "size": size, "avgPrice": price, "positionValue": value}
+def row(
+    symbol="FARTCOINUSDT",
+    side="Buy",
+    size="115661.3",
+    price="0.1621",
+    value="18748.7",
+    tp="",
+    sl="",
+):
+    return {
+        "symbol": symbol,
+        "side": side,
+        "size": size,
+        "avgPrice": price,
+        "positionValue": value,
+        "takeProfit": tp,
+        "stopLoss": sl,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -160,6 +179,8 @@ class Recorder:
     def __init__(self):
         self.sent: list[str] = []
         self.spoken: list[str] = []
+        self.photos: list[str] = []
+        self.photo_ok = True
 
     async def send(self, text):
         self.sent.append(text)
@@ -168,12 +189,17 @@ class Recorder:
         self.spoken.append(text)
         return True
 
+    async def send_photo(self, caption, png):
+        assert png.startswith(b"\x89PNG")
+        self.photos.append(caption)
+        return self.photo_ok
+
 
 def test_first_tick_primes_silently(keyed):
     http, out = FakeHTTP(), Recorder()
     http.position_pages = [[row()]]
 
-    snapshot = asyncio.run(bybit_watch.tick(http, None, out.send, out.speak))
+    snapshot = asyncio.run(bybit_watch.tick(http, None, out.send, out.speak, out.send_photo))
 
     assert "FARTCOINUSDT" in snapshot
     assert out.sent == []
@@ -183,10 +209,60 @@ def test_tick_announces_an_open(keyed):
     http, out = FakeHTTP(), Recorder()
     http.position_pages = [[row()]]
 
-    asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak))
+    asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
     assert out.sent == ["💰 FARTCOIN long 18,749 USDT @ 0.1621"]
     assert out.spoken == ["Fartcoin long opened"]
+
+
+KLINES = [
+    ["1700000900000", "0.163", "0.170", "0.161", "0.169", "1", "1"],
+    ["1700000000000", "0.160", "0.165", "0.158", "0.163", "1", "1"],
+]
+
+
+def test_tick_sends_an_entry_chart_when_candles_exist(keyed):
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[row(tp="0.19", sl="0.15")]]
+    http.kline_rows = KLINES
+
+    asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
+
+    assert out.photos == ["💰 FARTCOIN long 18,749 USDT @ 0.1621"]
+    assert out.sent == []  # the caption carries the notice
+    assert out.spoken == ["Fartcoin long opened"]
+
+
+def test_tick_falls_back_to_text_when_telegram_refuses_the_photo(keyed):
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[row()]]
+    http.kline_rows = KLINES
+    out.photo_ok = False
+
+    asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
+
+    assert out.photos == ["💰 FARTCOIN long 18,749 USDT @ 0.1621"]
+    assert out.sent == ["💰 FARTCOIN long 18,749 USDT @ 0.1621"]
+
+
+def test_entry_chart_gives_up_quietly_without_candles(keyed, caplog):
+    http = FakeHTTP()
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        png = asyncio.run(bybit_watch.entry_chart(http, "FARTCOINUSDT", LONG))
+
+    assert png is None
+    assert "no chart" in caplog.text
+
+
+def test_positions_reads_tp_and_sl(keyed):
+    http = FakeHTTP()
+    http.position_pages = [[row(tp="0.19", sl="0.15")]]
+
+    got = asyncio.run(bybit_watch.positions(http))
+
+    assert got["FARTCOINUSDT"].take_profit == 0.19
+    assert got["FARTCOINUSDT"].stop_loss == 0.15
 
 
 def test_tick_reports_pnl_on_a_close(keyed):
@@ -194,7 +270,7 @@ def test_tick_reports_pnl_on_a_close(keyed):
     http.position_pages = [[]]
     http.pnl_rows = [{"closedPnl": "512.3"}]
 
-    asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak))
+    asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
     assert out.sent == ["💸 FARTCOIN long closed, PnL +512.30 USDT"]
     assert out.spoken == ["Fartcoin long closed, profit 512"]
@@ -205,7 +281,7 @@ def test_tick_close_survives_a_missing_pnl(keyed):
     http.position_pages = [[]]
     http.pnl_rows = []
 
-    asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak))
+    asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
     assert out.sent == ["💸 FARTCOIN long closed"]
 
@@ -243,7 +319,7 @@ def test_poll_survives_failures_and_keeps_going(keyed, monkeypatch, caplog):
     monkeypatch.setattr(bybit_watch.asyncio, "sleep", fake_sleep)
 
     with caplog.at_level("ERROR", logger="relay.bybit"), pytest.raises(asyncio.CancelledError):
-        asyncio.run(bybit_watch.poll(http, out.send, out.speak))
+        asyncio.run(bybit_watch.poll(http, out.send, out.speak, out.send_photo))
 
     assert "bybit poll failed" in caplog.text
     assert any(seconds >= 30 for seconds in slept)  # backed off after the failure
@@ -260,7 +336,7 @@ def test_poll_lets_cancellation_through(keyed, monkeypatch):
     out = Recorder()
 
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(bybit_watch.poll(Cancelling(), out.send, out.speak))
+        asyncio.run(bybit_watch.poll(Cancelling(), out.send, out.speak, out.send_photo))
 
     assert out.sent == []
 

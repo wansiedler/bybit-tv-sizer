@@ -48,10 +48,10 @@ class FakeHTTP:
     async def __aexit__(self, *exc):
         return False
 
-    async def post(self, url, json=None, timeout=None):
+    async def post(self, url, json=None, data=None, files=None, timeout=None):
         if self._post_error is not None:
             raise self._post_error
-        self.posted.append(json["text"])
+        self.posted.append(json["text"] if json is not None else data["caption"])
         return self._post_response
 
     async def get(self, url, timeout=None):
@@ -226,6 +226,38 @@ def test_send_via_bot_survives_transport_error(config):
 )
 def test_human_uptime(seconds, expected):
     assert relay.human(seconds) == expected
+
+
+# --------------------------------------------------------------------------- #
+#  send_photo_via_bot                                                          #
+# --------------------------------------------------------------------------- #
+def test_send_photo_posts_the_caption_and_accepts(config):
+    http = FakeHTTP()
+
+    ok = asyncio.run(relay.send_photo_via_bot(as_client(http), "💰 entry", b"\x89PNGfake"))
+
+    assert ok is True
+    assert http.posted == ["💰 entry"]
+
+
+def test_send_photo_reports_transport_failure(config, caplog):
+    http = FakeHTTP(post_error=relay.httpx.ConnectError("no route"))
+
+    with caplog.at_level("ERROR", logger="relay"):
+        ok = asyncio.run(relay.send_photo_via_bot(as_client(http), "💰 entry", b"png"))
+
+    assert ok is False
+    assert "sendPhoto failed" in caplog.text
+
+
+def test_send_photo_reports_a_refusal(config, caplog):
+    http = FakeHTTP(post_response=FakeResponse(payload={"ok": False, "description": "too big"}))
+
+    with caplog.at_level("ERROR", logger="relay"):
+        ok = asyncio.run(relay.send_photo_via_bot(as_client(http), "💰 entry", b"png"))
+
+    assert ok is False
+    assert "sendPhoto refused" in caplog.text
 
 
 # --------------------------------------------------------------------------- #
@@ -431,8 +463,8 @@ def test_run_speaks_its_own_lifecycle(config, monkeypatch):
 def test_run_starts_the_bybit_watcher_when_keyed(config, monkeypatch):
     started = []
 
-    async def fake_poll(http, send, speak):
-        started.append((send, speak))
+    async def fake_poll(http, send, speak, send_photo):
+        started.append((send, speak, send_photo))
         await asyncio.sleep(3600)  # runs until the relay cancels it
 
     monkeypatch.setattr(relay.bybit_watch, "enabled", lambda: True)
