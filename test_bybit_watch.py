@@ -147,14 +147,14 @@ def test_diff_quiet_when_nothing_moved():
             "opened",
             None,
             Position("long", 115661.3, 0.1621, 18748.7),
-            "💰📈FARTCOIN 18,749@0.1621",
+            "💰📈FARTCOIN 18,749$ @0.1621",
             "Fartcoin long opened",
         ),
         (
             "opened",
             None,
             Position("short", 100.0, 0.16, 16.0, stop_loss=0.17),
-            "💰📉FARTCOIN 16@0.16 · sl 0.17",
+            "💰📉FARTCOIN 16$ @0.16 · sl 0.17",
             "Fartcoin short opened",
         ),
         ("closed", LONG, None, "💸📈FARTCOIN", "Fartcoin long closed"),
@@ -224,7 +224,7 @@ def test_tick_announces_an_open(keyed):
 
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == ["💰📈FARTCOIN 18,749@0.1621\n⚠️ без стопа"]
+    assert out.sent == ["💰📈FARTCOIN 18,749$ @0.1621\n⚠️ без стопа"]
     assert out.spoken == ["Fartcoin long opened"]
 
 
@@ -473,7 +473,7 @@ def test_positions_report_sends_one_album(keyed):
     assert text == ""  # everything travelled inside the single message
     caption, count = albums[0]
     assert count == 1
-    assert caption.startswith("📈FARTCOIN 18,749@0.1621")
+    assert caption.startswith("📈FARTCOIN 18,749$ @0.1621")
     assert "<b>" in caption
     assert "Σ" not in caption  # one position: no repeating total line
 
@@ -487,7 +487,7 @@ def test_positions_report_falls_back_to_text_without_candles(keyed):
 
     text = asyncio.run(bybit_watch.positions_report(http, send_album))
 
-    assert "📈FARTCOIN 18,749@" in text
+    assert "📈FARTCOIN 18,749$ @" in text
 
 
 def test_positions_report_falls_back_when_telegram_refuses_the_album(keyed):
@@ -500,7 +500,7 @@ def test_positions_report_falls_back_when_telegram_refuses_the_album(keyed):
 
     text = asyncio.run(bybit_watch.positions_report(http, send_album))
 
-    assert "📈FARTCOIN 18,749@" in text  # the text answer still goes out
+    assert "📈FARTCOIN 18,749$ @" in text  # the text answer still goes out
 
 
 def test_positions_report_without_keys(monkeypatch):
@@ -543,11 +543,11 @@ def test_positions_report_lists_positions_with_depo_share(keyed):
     text = asyncio.run(bybit_watch.positions_report(http))
 
     assert text.splitlines() == [
-        "📈FARTCOIN 18,749@0.1621 · sl 0.15",
-        "PnL +512.30 − комса 20.62 = <b>+491.68 (+4.92%)</b>, tp 0.19: <b>+3,206.33 (+32.06%)</b>",
-        "📉OP 12@1.2",
-        "PnL -1.50 − комса 0.01 = <b>-1.51 (-0.02%)</b>",
-        "Σ PnL +510.80 = <b>+490.16 (+4.90%)</b>",
+        "📈FARTCOIN 18,749$ @0.1621 · sl 0.15",
+        "PnL +512.30−комса 20.62 = <b>+491.68(+4.92%)</b>, tp 0.19:<b>+3,206.33(+32.06%)</b>",
+        "📉OP 12$ @1.2",
+        "PnL -1.50−комса 0.01 = <b>-1.51(-0.02%)</b>",
+        "Σ PnL +510.80 = <b>+490.16(+4.90%)</b>",
     ]
 
 
@@ -651,7 +651,7 @@ def test_tick_appends_the_entry_fee_when_fills_are_fresh(keyed):
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
     assert out.sent == [
-        "💰📈FARTCOIN 18,749@0.1621 · sl 0.15\nкомса 0.073, tp 0.2621: <b>+11,565.98</b>"
+        "💰📈FARTCOIN 18,749$ @0.1621 · sl 0.15\nкомса 0.073, tp 0.2621:<b>+11,565.98</b>"
     ]
 
 
@@ -664,7 +664,7 @@ def test_tick_reports_the_take_target_as_a_share_of_equity(keyed):
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
     assert out.sent == [
-        "💰📈FARTCOIN 18,749@0.1621 · sl 0.15\ntp 0.2621: <b>+11,566.13 (+57.83%)</b>"
+        "💰📈FARTCOIN 18,749$ @0.1621 · sl 0.15\ntp 0.2621:<b>+11,566.13(+57.83%)</b>"
         "\n⚠️ риск 7.00% депо, цель 0.5%"
     ]
 
@@ -687,7 +687,7 @@ def test_tick_sends_an_entry_chart_when_candles_exist(keyed):
 
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
-    assert out.photos == ["💰📈FARTCOIN 18,749@0.1621 · sl 0.15\ntp 0.19: <b>+3,226.95</b>"]
+    assert out.photos == ["💰📈FARTCOIN 18,749$ @0.1621 · sl 0.15\ntp 0.19:<b>+3,226.95</b>"]
     assert out.sent == []  # the caption carries the notice
     assert out.spoken == ["Fartcoin long opened"]
 
@@ -700,8 +700,8 @@ def test_tick_falls_back_to_text_when_telegram_refuses_the_photo(keyed):
 
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
-    assert out.photos == ["💰📈FARTCOIN 18,749@0.1621\n⚠️ без стопа"]
-    assert out.sent == ["💰📈FARTCOIN 18,749@0.1621\n⚠️ без стопа"]
+    assert out.photos == ["💰📈FARTCOIN 18,749$ @0.1621\n⚠️ без стопа"]
+    assert out.sent == ["💰📈FARTCOIN 18,749$ @0.1621\n⚠️ без стопа"]
 
 
 def test_tick_sends_a_close_chart_with_the_pnl_caption(keyed):
@@ -811,7 +811,7 @@ def test_tick_close_reports_the_pnl_as_a_share_of_equity(keyed):
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == ["💸📈FARTCOIN: <b>+512.30 (+5.12%)</b> · комса 0.073+0.078"]
+    assert out.sent == ["💸📈FARTCOIN: <b>+512.30(+5.12%)</b> · комса 0.073+0.078"]
 
 
 @pytest.mark.parametrize(

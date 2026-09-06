@@ -262,7 +262,7 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
     depo = await equity(http)
 
     def share(amount: float) -> str:
-        return f" ({amount / depo * 100:+.2f}%)" if depo else ""
+        return f"({amount / depo * 100:+.2f}%)" if depo else ""
 
     lines = []
     pngs = []
@@ -274,16 +274,16 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         # off — the entry already paid, the exit still to come.
         fees = 2 * TAKER_FEE * position.value
         net = position.unrealised - fees
-        head = f"{arrow}{base_symbol(symbol)} {position.value:,.0f}@{position.price:g}"
+        head = f"{arrow}{base_symbol(symbol)} {position.value:,.0f}$ @{position.price:g}"
         if position.stop_loss:
             head += f" · sl {position.stop_loss:g}"
         detail = (
-            f"PnL {position.unrealised:+,.2f} − комса {fees:.2f} = <b>{net:+,.2f}{share(net)}</b>"
+            f"PnL {position.unrealised:+,.2f}−комса {fees:.2f} = <b>{net:+,.2f}{share(net)}</b>"
         )
         if position.take_profit:
             sign = 1 if position.side == "long" else -1
             at_tp = sign * (position.take_profit - position.price) * position.size - fees
-            detail += f", tp {position.take_profit:g}: <b>{at_tp:+,.2f}{share(at_tp)}</b>"
+            detail += f", tp {position.take_profit:g}:<b>{at_tp:+,.2f}{share(at_tp)}</b>"
         total += position.unrealised
         total_net += net
         lines.append(f"{head}\n{detail}")
@@ -537,7 +537,7 @@ def describe(kind: str, symbol: str, was: Position | None, now: Position | None)
     sym = base_symbol(symbol)
     name = COIN_NAMES.get(sym, sym)
     if kind == "opened" and now is not None:
-        head = f"💰{_arrow(now.side)}{sym} {now.value:,.0f}@{now.price:g}"
+        head = f"💰{_arrow(now.side)}{sym} {now.value:,.0f}$ @{now.price:g}"
         if now.stop_loss:
             head += f" · sl {now.stop_loss:g}"
         return head, f"{name} {now.side} opened"
@@ -570,7 +570,7 @@ async def tick(
         return after
 
     def share(amount: float, depo: float | None) -> str:
-        return f" ({amount / depo * 100:+.2f}%)" if depo else ""
+        return f"({amount / depo * 100:+.2f}%)" if depo else ""
 
     for kind, symbol, was, now in diff(before, after):
         line, spoken_line = describe(kind, symbol, was, now)
@@ -587,7 +587,7 @@ async def tick(
                 target = abs(now.take_profit - now.price) * now.size
                 if fee:
                     target -= 2 * fee
-                extras.append(f"tp {now.take_profit:g}: <b>{target:+,.2f}{share(target, depo)}</b>")
+                extras.append(f"tp {now.take_profit:g}:<b>{target:+,.2f}{share(target, depo)}</b>")
             if extras:
                 line += "\n" + ", ".join(extras)
             for warn in trade_warnings(now, depo):
