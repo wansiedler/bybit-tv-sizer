@@ -226,6 +226,30 @@ async def close_chart(
         return None
 
 
+async def entry_fee(http: httpx.AsyncClient, symbol: str) -> float | None:
+    """Fees paid on the fills that just opened the position, best-effort.
+
+    The position list carries no fees; the execution log does, per fill. The
+    watcher notices a position within one poll of its fill, so summing the
+    fees of the last minute's executions covers the entry — a limit order
+    that keeps filling later will simply show the fees paid so far.
+    """
+    try:
+        result = await _get(
+            http, "/v5/execution/list", {"category": "linear", "symbol": symbol, "limit": "50"}
+        )
+        cutoff = time.time() * 1000 - 60_000
+        return sum(
+            float(row.get("execFee") or 0)
+            for row in result.get("list", [])
+            if float(row.get("execTime") or 0) >= cutoff
+        )
+    # Deliberately broad: a fee figure is garnish on the entry notice.
+    except Exception:  # noqa: BLE001
+        log.exception("no entry fee for %s", symbol)
+        return None
+
+
 async def closed_record(http: httpx.AsyncClient, symbol: str) -> dict | None:
     """The most recently closed position's record, best-effort."""
     try:
@@ -299,12 +323,19 @@ async def tick(
         line, spoken_line = describe(kind, symbol, was, now)
         png = None
         if kind in ("opened", "flipped") and now is not None:
+            fee = await entry_fee(http, symbol)
+            if fee:
+                line += f" · fee {fee:.4g} USDT"
             png = await entry_chart(http, symbol, now)
         elif kind == "closed" and was is not None:
             record = await closed_record(http, symbol)
             if record is not None:
                 pnl = float(record["closedPnl"])
                 line += f", PnL {pnl:+,.2f} USDT"
+                opened_fee = float(record.get("openFee") or 0)
+                closed_fee = float(record.get("closeFee") or 0)
+                if opened_fee or closed_fee:
+                    line += f" · fees {opened_fee:.4g} + {closed_fee:.4g} USDT"
                 spoken_line += f", {'profit' if pnl >= 0 else 'loss'} {abs(pnl):.0f}"
                 png = await close_chart(http, symbol, was, record)
         if png is None or not await send_photo(line, png):

@@ -30,6 +30,7 @@ class FakeHTTP:
         self.position_pages: list[list[dict[str, Any]]] = []
         self.pnl_rows: list[dict[str, Any]] = []
         self.kline_rows: list[list[str]] = []
+        self.exec_rows: list[dict[str, Any]] = []
         self.requests: list[str] = []
 
     async def get(self, url, headers=None, timeout=None):
@@ -39,6 +40,8 @@ class FakeHTTP:
             return FakeResponse({"retCode": 0, "result": {"list": rows}})
         if "/v5/market/kline" in url:
             return FakeResponse({"retCode": 0, "result": {"list": self.kline_rows}})
+        if "/v5/execution/list" in url:
+            return FakeResponse({"retCode": 0, "result": {"list": self.exec_rows}})
         return FakeResponse({"retCode": 0, "result": {"list": self.pnl_rows}})
 
 
@@ -221,6 +224,34 @@ KLINES = [
 ]
 
 
+def test_tick_appends_the_entry_fee_when_fills_are_fresh(keyed):
+    import time
+
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[row()]]
+    now_ms = int(time.time() * 1000)
+    http.exec_rows = [
+        {"execFee": "0.05", "execTime": str(now_ms)},
+        {"execFee": "0.023", "execTime": str(now_ms - 1000)},
+        {"execFee": "9.99", "execTime": str(now_ms - 600_000)},  # stale, not the entry
+    ]
+
+    asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
+
+    assert out.sent == ["💰 FARTCOIN long 18,749 USDT @ 0.1621 · fee 0.073 USDT"]
+
+
+def test_entry_fee_swallows_api_errors(keyed, caplog):
+    class Refusing(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise OSError("bybit down")
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        assert asyncio.run(bybit_watch.entry_fee(Refusing(), "FARTCOINUSDT")) is None
+
+    assert "no entry fee" in caplog.text
+
+
 def test_tick_sends_an_entry_chart_when_candles_exist(keyed):
     http, out = FakeHTTP(), Recorder()
     http.position_pages = [[row(tp="0.19", sl="0.15")]]
@@ -253,7 +284,7 @@ def test_tick_sends_a_close_chart_with_the_pnl_caption(keyed):
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
-    assert out.photos == ["💸 FARTCOIN long closed, PnL +512.30 USDT"]
+    assert out.photos == ["💸 FARTCOIN long closed, PnL +512.30 USDT · fees 0.073 + 0.078 USDT"]
     assert out.sent == []
     assert out.spoken == ["Fartcoin long closed, profit 512"]
 
@@ -311,13 +342,15 @@ def test_positions_reads_tp_and_sl(keyed):
     assert got["FARTCOINUSDT"].stop_loss == 0.15
 
 
-def closed(pnl="512.3", entry="0.16", exit_price="0.17"):
+def closed(pnl="512.3", entry="0.16", exit_price="0.17", open_fee="0.073", close_fee="0.078"):
     return {
         "closedPnl": pnl,
         "createdTime": "1700000000000",
         "updatedTime": "1700003600000",
         "avgEntryPrice": entry,
         "avgExitPrice": exit_price,
+        "openFee": open_fee,
+        "closeFee": close_fee,
     }
 
 
@@ -338,8 +371,18 @@ def test_tick_reports_pnl_on_a_close(keyed):
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == ["💸 FARTCOIN long closed, PnL +512.30 USDT"]
+    assert out.sent == ["💸 FARTCOIN long closed, PnL +512.30 USDT · fees 0.073 + 0.078 USDT"]
     assert out.spoken == ["Fartcoin long closed, profit 512"]
+
+
+def test_tick_close_without_fee_fields_stays_plain(keyed):
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[]]
+    http.pnl_rows = [closed(open_fee="", close_fee="")]
+
+    asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
+
+    assert out.sent == ["💸 FARTCOIN long closed, PnL +512.30 USDT"]
 
 
 def test_tick_close_survives_a_missing_pnl(keyed):
