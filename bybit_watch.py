@@ -415,7 +415,10 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
                 symbol,
                 position,
                 entry_note=(
-                    f"PnL {position.unrealised:+,.2f} - fee {fees:.2f} = {net:+,.2f}{share(net)}"
+                    f"{_val(position.value)}$"
+                    + (f" ({position.value / depo * 100:.1f}% depo)" if depo else "")
+                    + f" | PnL {position.unrealised:+,.2f} - fee {fees:.2f}"
+                    + f" = {net:+,.2f}{share(net)}"
                 ),
                 tp_note=f"{at_tp:+,.2f}{share(at_tp)}" if at_tp is not None else "",
                 sl_note=f"{at_sl:+,.2f}{share(at_sl)}" if at_sl is not None else "",
@@ -780,7 +783,11 @@ async def tick(
                 http,
                 symbol,
                 now,
-                entry_note=f"fee {fee:.2f}" if fee else "",
+                entry_note=(
+                    f"{_val(now.value)}$"
+                    + (f" ({now.value / depo * 100:.1f}% depo)" if depo else "")
+                    + (f" | fee {fee:.2f}" if fee else "")
+                ),
                 tp_note=(f"{target:+,.2f}{share(target, depo)}" if target is not None else ""),
                 sl_note=(f"{at_sl:+,.2f}{share(at_sl, depo)}" if at_sl is not None else ""),
             )
