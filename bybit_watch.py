@@ -420,8 +420,16 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
                     + f" | PnL {position.unrealised:+,.2f} - fee {fees:.2f}"
                     + f" = {net:+,.2f}{share(net)}"
                 ),
-                tp_note=f"{at_tp:+,.2f}{share(at_tp)}" if at_tp is not None else "",
-                sl_note=f"{at_sl:+,.2f}{share(at_sl)}" if at_sl is not None else "",
+                tp_note=(
+                    f"{at_tp:+,.2f}{share(at_tp)}" + (f" = {depo + at_tp:,.2f}$" if depo else "")
+                    if at_tp is not None
+                    else ""
+                ),
+                sl_note=(
+                    f"{at_sl:+,.2f}{share(at_sl)}" + (f" = {depo + at_sl:,.2f}$" if depo else "")
+                    if at_sl is not None
+                    else ""
+                ),
             )
             if png is not None:
                 pngs.append(png)
@@ -788,8 +796,18 @@ async def tick(
                     + (f" ({now.value / depo * 100:.1f}% depo)" if depo else "")
                     + (f" | fee {fee:.2f}" if fee else "")
                 ),
-                tp_note=(f"{target:+,.2f}{share(target, depo)}" if target is not None else ""),
-                sl_note=(f"{at_sl:+,.2f}{share(at_sl, depo)}" if at_sl is not None else ""),
+                tp_note=(
+                    f"{target:+,.2f}{share(target, depo)}"
+                    + (f" = {depo + target:,.2f}$" if depo else "")
+                    if target is not None
+                    else ""
+                ),
+                sl_note=(
+                    f"{at_sl:+,.2f}{share(at_sl, depo)}"
+                    + (f" = {depo + at_sl:,.2f}$" if depo else "")
+                    if at_sl is not None
+                    else ""
+                ),
             )
         elif kind == "closed" and was is not None:
             record = await closed_record(http, symbol)
