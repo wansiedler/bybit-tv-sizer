@@ -200,6 +200,14 @@ def equity_curve(daily: list[float], title: str = "PnL · 30d") -> bytes:
     chart_right = WIDTH - PRICE_GUTTER
     step = (chart_right - MARGIN) / len(daily)
 
+    # A money grid with its values, so the curve reads without guessing.
+    span = (highest - lowest) or 1.0
+    for i in range(1, 8):
+        value = lowest + span * i / 8
+        y = to_y(value)
+        draw.line((MARGIN, y, chart_right, y), fill=GRID, width=1)
+        draw.text((chart_right + 8, y - 8), f"{value:+,.2f}", fill=GRID_TEXT, font=LABEL_FONT)
+
     zero = to_y(0.0)
     draw.line((MARGIN, zero, chart_right, zero), fill=GRID_TEXT, width=1)
     draw.text((chart_right + 8, zero - 8), "0", fill=GRID_TEXT, font=LABEL_FONT)

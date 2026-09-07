@@ -411,8 +411,8 @@ def test_status_also_sends_the_market_snapshot(owner):
 def test_statistics_sends_the_report(owner):
     rec = Recorder()
 
-    async def statistics():
-        return "📊 30 дней: сделок 5"
+    async def statistics(arg):
+        return "📊 за 30 дн.: сделок 5"
 
     asyncio.run(
         commands.dispatch(
@@ -430,13 +430,13 @@ def test_statistics_sends_the_report(owner):
         )
     )
 
-    assert rec.sent == ["📊 30 дней: сделок 5"]
+    assert rec.sent == ["📊 за 30 дн.: сделок 5"]
 
 
 def test_statistics_stays_silent_after_the_chart(owner):
     rec = Recorder()
 
-    async def statistics():
+    async def statistics(arg):
         return ""
 
     asyncio.run(

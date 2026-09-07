@@ -362,8 +362,8 @@ async def run() -> None:
                     lambda: bybit_watch.market_report(
                         http, lambda caption, png: send_photo_via_bot(http, caption, png)
                     ),
-                    lambda: bybit_watch.stats_report(
-                        http, lambda caption, png: send_photo_via_bot(http, caption, png)
+                    lambda arg: bybit_watch.stats_report(
+                        http, lambda caption, png: send_photo_via_bot(http, caption, png), arg
                     ),
                 )
             )

@@ -275,18 +275,26 @@ async def closed_history(http: httpx.AsyncClient, days: int = 30) -> list[dict]:
     return rows
 
 
-async def stats_report(http: httpx.AsyncClient, send_photo) -> str:
-    """Thirty rolling days of closed trades: figures plus the equity curve."""
+async def stats_report(http: httpx.AsyncClient, send_photo, arg: str = "") -> str:
+    """Rolling days of closed trades: figures plus the equity curve.
+
+    `arg` is the day count typed after the command — /statistics 7 — with
+    thirty as the default and ninety as the ceiling.
+    """
     if not enabled():
         return "Bybit не подключён: нет API-ключей"
     try:
-        rows = await closed_history(http)
+        days = max(1, min(int(arg), 90)) if arg.strip() else 30
+    except ValueError:
+        return "Сколько дней? Например: /statistics 7"
+    try:
+        rows = await closed_history(http, days)
     # Deliberately broad: a chat command must answer, not crash the poller.
     except Exception:  # noqa: BLE001
         log.exception("stats history failed")
         return "Bybit не ответил, попробуй ещё раз"
     if not rows:
-        return "За 30 дней закрытых сделок нет"
+        return f"За {days} дн. закрытых сделок нет"
     depo = await equity(http)
 
     from datetime import date, datetime, timedelta
@@ -299,10 +307,10 @@ async def stats_report(http: httpx.AsyncClient, send_photo) -> str:
         day = datetime.fromtimestamp(int(r.get("updatedTime") or 0) / 1000).date()
         buckets[day] = buckets.get(day, 0.0) + value
     today = date.today()
-    daily = [buckets.get(today - timedelta(days=i), 0.0) for i in range(29, -1, -1)]
+    daily = [buckets.get(today - timedelta(days=i), 0.0) for i in range(days - 1, -1, -1)]
 
     text = (
-        f"📊 30 дней: сделок {len(pnls)} · win {wins}/loss {len(pnls) - wins}"
+        f"📊 за {days} дн.: сделок {len(pnls)} · win {wins}/loss {len(pnls) - wins}"
         f" ({wins / len(pnls) * 100:.0f}%)\n"
         f"PnL <b>{_usd(total)}"
     )
@@ -311,7 +319,7 @@ async def stats_report(http: httpx.AsyncClient, send_photo) -> str:
     text += f"</b> · лучший {_usd(max(pnls))} · худший {_usd(min(pnls))}"
 
     try:
-        png = chart.equity_curve(daily)
+        png = chart.equity_curve(daily, title=f"PnL · {days}d")
     # Deliberately broad: the curve is garnish on the figures.
     except Exception:  # noqa: BLE001
         log.exception("no equity curve")

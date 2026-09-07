@@ -45,7 +45,7 @@ HELP = (
     "Commands:\n"
     "/status — uptime, counters, speaker\n"
     "/positions — open Bybit positions with uPnL\n"
-    "/statistics — 30-day results with the equity curve\n"
+    "/statistics [дней] — results with the equity curve, default 30\n"
     "/close <ticker> — close one position at market, e.g. /close CL\n"
     "/stopall — close every position at market (asks to confirm)\n"
     "/test — push a sample alert through the whole chain\n"
@@ -168,7 +168,7 @@ async def dispatch(
             await send(report, True)  # our own markup: HTML bold is safe
     elif command in ("statistics", "stats") and statistics is not None:
         # An empty answer means the report already went out with the chart.
-        report = await statistics()
+        report = await statistics(arg)
         if report:
             await send(report, True)
     elif command == "stopall" and stop_all is not None:

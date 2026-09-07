@@ -1101,7 +1101,7 @@ def test_stats_report_sends_the_curve_with_the_figures(keyed, monkeypatch):
     text = asyncio.run(bybit_watch.stats_report(http, send_photo))
 
     assert text == ""
-    assert shots[0].startswith("📊 30 дней: сделок 2 · win 1/loss 1 (50%)")
+    assert shots[0].startswith("📊 за 30 дн.: сделок 2 · win 1/loss 1 (50%)")
     assert "+3.00 (+2.26% депо 133)" in shots[0]
     assert "лучший +5.00 · худший -2.00" in shots[0]
 
@@ -1117,7 +1117,7 @@ def test_stats_report_falls_back_to_text_when_the_photo_fails(keyed, monkeypatch
 
     text = asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo))
 
-    assert text.startswith("📊 30 дней")
+    assert text.startswith("📊 за 30 дн.")
 
 
 def test_stats_report_survives_a_broken_curve(keyed, monkeypatch, caplog):
@@ -1135,5 +1135,23 @@ def test_stats_report_survives_a_broken_curve(keyed, monkeypatch, caplog):
     with caplog.at_level("ERROR", logger="relay.bybit"):
         text = asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo))
 
-    assert text.startswith("📊 30 дней")
+    assert text.startswith("📊 за 30 дн.")
     assert "no equity curve" in caplog.text
+
+
+def test_stats_report_takes_a_day_count(keyed, monkeypatch):
+    seen = []
+
+    async def history(http, days=30):
+        seen.append(days)
+        return []
+
+    monkeypatch.setattr(bybit_watch, "closed_history", history)
+
+    async def send_photo(caption, png):
+        raise AssertionError("nothing to send")
+
+    assert "За 7 дн." in asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo, "7"))
+    assert seen == [7]
+    assert "За 90 дн." in asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo, "500"))
+    assert "Например" in asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo, "неделя"))
