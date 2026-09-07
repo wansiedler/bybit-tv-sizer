@@ -820,6 +820,8 @@ async def tick(
                 closed_fee = float(record.get("closeFee") or 0)
                 if opened_fee or closed_fee:
                     line += f"·комса{opened_fee:.4g}+{closed_fee:.4g}"
+                if depo:
+                    line += f"=<b>деп{depo:,.2f}$</b>"
                 spoken_line += f", {'profit' if pnl >= 0 else 'loss'} {abs(pnl):.0f}"
                 await sheets.log_close(http, {"row": journal_row(symbol, was, record, pnl)})
                 total_fees = opened_fee + closed_fee

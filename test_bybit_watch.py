@@ -859,7 +859,7 @@ def test_tick_close_reports_the_pnl_as_a_share_of_equity(keyed):
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == ["💸📈FARTCOIN:<b>+512.30(+5.12%)</b>·комса0.073+0.078"]
+    assert out.sent == ["💸📈FARTCOIN:<b>+512.30(+5.12%)</b>·комса0.073+0.078=<b>деп10,000.00$</b>"]
 
 
 @pytest.mark.parametrize(
