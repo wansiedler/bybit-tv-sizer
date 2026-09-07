@@ -386,24 +386,28 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         # off — the entry already paid, the exit still to come.
         fees = 2 * TAKER_FEE * position.value
         net = position.unrealised - fees
-        head = f"{arrow}{base_symbol(symbol)} {_val(position.value)}@{position.price:g}"
+        head = f"{arrow}{base_symbol(symbol)} {_val(position.value)}$@{position.price:g}"
+        if position.stop_loss and position.take_profit:
+            rr = abs(position.take_profit - position.price) / abs(
+                position.price - position.stop_loss
+            )
+            head += f" | RR{rr:.2f}"
+        exits = []
+        at_sl = at_tp = None
         if position.stop_loss:
             # What the stop costs if it fires, fees included.
             at_sl = -abs(position.price - position.stop_loss) * position.size - fees
-            head += f" · sl{position.stop_loss:g}:<b>{_usd(at_sl)}{share(at_sl)}</b>"
-            if position.take_profit:
-                rr = abs(position.take_profit - position.price) / abs(
-                    position.price - position.stop_loss
-                )
-                head += f" · RR{rr:.2f}"
-        block = [
-            head,
-            f"PnL{position.unrealised:+,.2f}−комса{fees:.2f}=<b>{net:+,.2f}{share(net)}</b>",
-        ]
+            exits.append(f"sl{position.stop_loss:g}:<b>{_usd(at_sl)}{share(at_sl)}</b>")
         if position.take_profit:
             sign = 1 if position.side == "long" else -1
             at_tp = sign * (position.take_profit - position.price) * position.size - fees
-            block.append(f"tp {position.take_profit:g}:<b>{_usd(at_tp)}{share(at_tp)}</b>")
+            exits.append(f"tp {position.take_profit:g}:<b>{_usd(at_tp)}{share(at_tp)}</b>")
+        block = [head]
+        if exits:
+            block.append(" | ".join(exits))
+        block.append(
+            f"PnL{position.unrealised:+,.2f}−комса{fees:.2f}=<b>{net:+,.2f}{share(net)}</b>"
+        )
         total += position.unrealised
         total_net += net
         lines.append("\n".join(block))

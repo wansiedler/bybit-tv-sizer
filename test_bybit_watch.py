@@ -473,7 +473,7 @@ def test_positions_report_sends_one_album(keyed):
     assert text == ""  # everything travelled inside the single message
     caption, count = albums[0]
     assert count == 1
-    assert caption.startswith("📈FARTCOIN 18,749@0.1621")
+    assert caption.startswith("📈FARTCOIN 18,749$@0.1621")
     assert "<b>" in caption
     assert "Σ" not in caption  # one position: no repeating total line
 
@@ -487,7 +487,7 @@ def test_positions_report_falls_back_to_text_without_candles(keyed):
 
     text = asyncio.run(bybit_watch.positions_report(http, send_album))
 
-    assert "📈FARTCOIN 18,749@" in text
+    assert "📈FARTCOIN 18,749$@" in text
 
 
 def test_positions_report_falls_back_when_telegram_refuses_the_album(keyed):
@@ -500,7 +500,7 @@ def test_positions_report_falls_back_when_telegram_refuses_the_album(keyed):
 
     text = asyncio.run(bybit_watch.positions_report(http, send_album))
 
-    assert "📈FARTCOIN 18,749@" in text  # the text answer still goes out
+    assert "📈FARTCOIN 18,749$@" in text  # the text answer still goes out
 
 
 def test_positions_report_without_keys(monkeypatch):
@@ -543,10 +543,10 @@ def test_positions_report_lists_positions_with_depo_share(keyed):
     text = asyncio.run(bybit_watch.positions_report(http))
 
     assert text.splitlines() == [
-        "📈FARTCOIN 18,749@0.1621 · sl0.15:<b>-1,420.13(-14.20%)</b> · RR2.31",
+        "📈FARTCOIN 18,749$@0.1621 | RR2.31",
+        "sl0.15:<b>-1,420.13(-14.20%)</b> | tp 0.19:<b>+3,206.33(+32.06%)</b>",
         "PnL+512.30−комса20.62=<b>+491.68(+4.92%)</b>",
-        "tp 0.19:<b>+3,206.33(+32.06%)</b>",
-        "📉OP 12@1.2",
+        "📉OP 12$@1.2",
         "PnL-1.50−комса0.01=<b>-1.51(-0.02%)</b>",
         "ΣPnL+510.80=<b>+490.16(+4.90%)</b>",
     ]
