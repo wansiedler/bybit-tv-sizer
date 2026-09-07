@@ -303,7 +303,7 @@ def test_tick_amends_and_announces_when_live(monkeypatch):
     assert http.amended[0]["qty"] == "0.050"
     assert out.sent == [
         "⚖️ BTCUSDT Buy limit @ 60000\n"
-        "stop 59000 → qty 0.001 (60$, 0.6% депо) → 0.050 (3,000$, 30.0% депо)"
+        "stop 59000 (1.67%) → qty 0.001 (60$, 0.6% депо) → 0.050 (3,000$, 30.0% депо)"
     ]
 
 
@@ -603,3 +603,15 @@ def test_poll_announces_a_recovery_relapse(monkeypatch):
         asyncio.run(sizer.poll(Blinking(), out.send))
 
     assert out.sent[1:] == ["⚖️ sizer error: bybit down", "⚖️ sizer error: bybit down"]
+
+
+def test_notice_without_a_stop_price_skips_the_percent(monkeypatch):
+    monkeypatch.setattr(sizer, "DRY_RUN", False)
+    monkeypatch.setattr(sizer, "FALLBACK_SL_PCT", Decimal("0.01"))
+    http, out = FakeHTTP(), Recorder()
+    http.orders = [dict(ORDER, stopLoss="")]
+
+    run_tick(http, out)
+
+    assert "stop ? →" in out.sent[0]
+    assert "%) →" not in out.sent[0].split("\n")[1].split("qty")[0]

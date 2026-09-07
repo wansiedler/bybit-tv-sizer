@@ -294,9 +294,14 @@ async def tick(http: httpx.AsyncClient, send) -> None:
             dollars = f"{value:,.0f}$" if value >= 10 else f"{value:,.2f}$"
             return f"{qty} ({dollars}, {value / equity * 100:.1f}% депо)"
 
+        stop_raw = order.get("stopLoss") or ""
+        stop_text = stop_raw or "?"
+        if stop_raw not in ("", "0"):
+            distance_pct = abs(entry_price - Decimal(stop_raw)) / entry_price * 100
+            stop_text += f" ({distance_pct:.2f}%)"
         await send(
             f"⚖️ {symbol} {order.get('side', '?')} limit @ {order['price']}\n"
-            f"stop {order.get('stopLoss') or '?'} → qty {described(have)} → {described(want)}"
+            f"stop {stop_text} → qty {described(have)} → {described(want)}"
             + (" (урезано по марже — подними плечо инструмента)" if capped else "")
         )
 
