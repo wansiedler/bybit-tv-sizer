@@ -401,7 +401,8 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         if position.take_profit:
             sign = 1 if position.side == "long" else -1
             at_tp = sign * (position.take_profit - position.price) * position.size - fees
-            exits.append(f"tp{position.take_profit:g}:<b>{_usd(at_tp)}{share(at_tp)}</b>")
+            tp_depo = f"=деп{depo + at_tp:,.2f}$" if depo else ""
+            exits.append(f"tp{position.take_profit:g}:<b>{_usd(at_tp)}{share(at_tp)}{tp_depo}</b>")
         block = [head, *exits]
         block.append(
             f"PnL{position.unrealised:+,.2f}−комса{fees:.2f}=<b>{net:+,.2f}{share(net)}</b>"
@@ -780,7 +781,10 @@ async def tick(
                 # What reaching the TP pays, net of both fees: the entry fee
                 # just paid and a like-sized one for the exit.
                 target = abs(now.take_profit - now.price) * now.size - fees
-                exits.append(f"tp{now.take_profit:g}:<b>{_usd(target)}{share(target, depo)}</b>")
+                tp_depo = f"=деп{depo + target:,.2f}$" if depo else ""
+                exits.append(
+                    f"tp{now.take_profit:g}:<b>{_usd(target)}{share(target, depo)}{tp_depo}</b>"
+                )
             if exits:
                 line += "\n" + "\n".join(exits)
             if fee:
