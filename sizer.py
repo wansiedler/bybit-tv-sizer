@@ -287,8 +287,10 @@ async def tick(http: httpx.AsyncClient, send) -> None:
             "%s %s: qty %s -> %s%s", symbol, order_id[:8], have, want, " (capped)" if capped else ""
         )
 
-        def described(qty: Decimal) -> str:
-            value = qty * Decimal(order["price"])
+        entry_price = Decimal(order["price"])
+
+        def described(qty: Decimal, entry: Decimal = entry_price) -> str:
+            value = qty * entry
             dollars = f"{value:,.0f}$" if value >= 10 else f"{value:,.2f}$"
             return f"{qty} ({dollars}, {value / equity * 100:.1f}% депо)"
 
