@@ -301,7 +301,10 @@ def test_tick_amends_and_announces_when_live(monkeypatch):
     run_tick(http, out)
 
     assert http.amended[0]["qty"] == "0.050"
-    assert out.sent == ["⚖️ BTCUSDT Buy limit @ 60000\nstop 59000 → qty 0.001 → 0.050"]
+    assert out.sent == [
+        "⚖️ BTCUSDT Buy limit @ 60000\n"
+        "stop 59000 → qty 0.001 (60$, 0.6% депо) → 0.050 (3,000$, 30.0% депо)"
+    ]
 
 
 def test_tick_leaves_a_correctly_sized_order_alone(monkeypatch):

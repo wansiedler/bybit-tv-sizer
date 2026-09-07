@@ -286,9 +286,15 @@ async def tick(http: httpx.AsyncClient, send) -> None:
         log.info(
             "%s %s: qty %s -> %s%s", symbol, order_id[:8], have, want, " (capped)" if capped else ""
         )
+
+        def described(qty: Decimal) -> str:
+            value = qty * Decimal(order["price"])
+            dollars = f"{value:,.0f}$" if value >= 10 else f"{value:,.2f}$"
+            return f"{qty} ({dollars}, {value / equity * 100:.1f}% депо)"
+
         await send(
             f"⚖️ {symbol} {order.get('side', '?')} limit @ {order['price']}\n"
-            f"stop {order.get('stopLoss') or '?'} → qty {have} → {want}"
+            f"stop {order.get('stopLoss') or '?'} → qty {described(have)} → {described(want)}"
             + (" (урезано по марже — подними плечо инструмента)" if capped else "")
         )
 
