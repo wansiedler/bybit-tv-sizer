@@ -45,6 +45,7 @@ HELP = (
     "Commands:\n"
     "/status — uptime, counters, speaker\n"
     "/positions — open Bybit positions with uPnL\n"
+    "/statistics — 30-day results with the equity curve\n"
     "/close <ticker> — close one position at market, e.g. /close CL\n"
     "/stopall — close every position at market (asks to confirm)\n"
     "/test — push a sample alert through the whole chain\n"
@@ -147,6 +148,7 @@ async def dispatch(
     stop_all=None,
     close_one=None,
     market=None,
+    statistics=None,
 ) -> None:
     """Answer one command. Unknown commands get the help text.
 
@@ -164,6 +166,11 @@ async def dispatch(
         report = await positions()
         if report:
             await send(report, True)  # our own markup: HTML bold is safe
+    elif command in ("statistics", "stats") and statistics is not None:
+        # An empty answer means the report already went out with the chart.
+        report = await statistics()
+        if report:
+            await send(report, True)
     elif command == "stopall" and stop_all is not None:
         await send(await stop_all())
     elif command == "close" and close_one is not None:
@@ -186,6 +193,7 @@ async def poll(
     stop_all=None,
     close_one=None,
     market=None,
+    statistics=None,
 ) -> None:
     """Answer commands until cancelled. Never lets one failure end the loop."""
     offset: int | None = None
@@ -216,6 +224,7 @@ async def poll(
                     stop_all,
                     close_one,
                     market,
+                    statistics,
                 )
             # Deliberately broad: one bad command must not end the loop.
             except Exception:  # noqa: BLE001

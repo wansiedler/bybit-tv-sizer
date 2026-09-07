@@ -406,3 +406,61 @@ def test_status_also_sends_the_market_snapshot(owner):
 
     assert rec.sent[0].startswith("🟢 up")
     assert shots == [True]
+
+
+def test_statistics_sends_the_report(owner):
+    rec = Recorder()
+
+    async def statistics():
+        return "📊 30 дней: сделок 5"
+
+    asyncio.run(
+        commands.dispatch(
+            "statistics",
+            "",
+            commands.Stats(),
+            rec.send,
+            rec.speak,
+            True,
+            None,
+            None,
+            None,
+            None,
+            statistics,
+        )
+    )
+
+    assert rec.sent == ["📊 30 дней: сделок 5"]
+
+
+def test_statistics_stays_silent_after_the_chart(owner):
+    rec = Recorder()
+
+    async def statistics():
+        return ""
+
+    asyncio.run(
+        commands.dispatch(
+            "stats",
+            "",
+            commands.Stats(),
+            rec.send,
+            rec.speak,
+            True,
+            None,
+            None,
+            None,
+            None,
+            statistics,
+        )
+    )
+
+    assert rec.sent == []
+
+
+def test_statistics_without_a_reporter_falls_back_to_help(owner):
+    rec = Recorder()
+
+    asyncio.run(commands.dispatch("statistics", "", commands.Stats(), rec.send, rec.speak, True))
+
+    assert rec.sent == [commands.HELP]

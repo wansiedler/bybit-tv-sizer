@@ -243,6 +243,84 @@ async def close_position(http: httpx.AsyncClient, query: str) -> str:
 TAKER_FEE = float(os.getenv("TAKER_FEE", "0.00055"))
 
 
+async def closed_history(http: httpx.AsyncClient, days: int = 30) -> list[dict]:
+    """Closed-pnl records for the last `days`, paged and chunked.
+
+    Bybit caps the query window, so the span is walked in seven-day chunks,
+    each drained through its cursor.
+    """
+    end = int(time.time() * 1000)
+    start = end - days * 86_400_000
+    window = 7 * 86_400_000
+    rows: list[dict] = []
+    a = start
+    while a < end:
+        b = min(a + window, end)
+        cursor = ""
+        while True:
+            params = {
+                "category": "linear",
+                "startTime": str(a),
+                "endTime": str(b),
+                "limit": "100",
+            }
+            if cursor:
+                params["cursor"] = cursor
+            result = await _get(http, "/v5/position/closed-pnl", params)
+            rows.extend(result.get("list") or [])
+            cursor = result.get("nextPageCursor") or ""
+            if not cursor:
+                break
+        a = b
+    return rows
+
+
+async def stats_report(http: httpx.AsyncClient, send_photo) -> str:
+    """Thirty rolling days of closed trades: figures plus the equity curve."""
+    if not enabled():
+        return "Bybit не подключён: нет API-ключей"
+    try:
+        rows = await closed_history(http)
+    # Deliberately broad: a chat command must answer, not crash the poller.
+    except Exception:  # noqa: BLE001
+        log.exception("stats history failed")
+        return "Bybit не ответил, попробуй ещё раз"
+    if not rows:
+        return "За 30 дней закрытых сделок нет"
+    depo = await equity(http)
+
+    from datetime import date, datetime, timedelta
+
+    pnls = [float(r.get("closedPnl") or 0) for r in rows]
+    wins = sum(1 for value in pnls if value >= 0)
+    total = sum(pnls)
+    buckets: dict[date, float] = {}
+    for r, value in zip(rows, pnls):
+        day = datetime.fromtimestamp(int(r.get("updatedTime") or 0) / 1000).date()
+        buckets[day] = buckets.get(day, 0.0) + value
+    today = date.today()
+    daily = [buckets.get(today - timedelta(days=i), 0.0) for i in range(29, -1, -1)]
+
+    text = (
+        f"📊 30 дней: сделок {len(pnls)} · win {wins}/loss {len(pnls) - wins}"
+        f" ({wins / len(pnls) * 100:.0f}%)\n"
+        f"PnL <b>{_usd(total)}"
+    )
+    if depo:
+        text += f" ({total / depo * 100:+.2f}% депо {depo:,.0f})"
+    text += f"</b> · лучший {_usd(max(pnls))} · худший {_usd(min(pnls))}"
+
+    try:
+        png = chart.equity_curve(daily)
+    # Deliberately broad: the curve is garnish on the figures.
+    except Exception:  # noqa: BLE001
+        log.exception("no equity curve")
+        return text
+    if await send_photo(text, png):
+        return ""
+    return text
+
+
 async def market_report(http: httpx.AsyncClient, send_photo) -> None:
     """BTC and ETH side by side on one 15m picture, for /status."""
     try:

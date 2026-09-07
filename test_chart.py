@@ -151,3 +151,19 @@ def test_side_by_side_pastes_horizontally():
     combined = load(chart.side_by_side([a, b]))
 
     assert combined.size == (chart.WIDTH * 2, chart.HEIGHT)
+
+
+def test_equity_curve_renders():
+    png = chart.equity_curve([1.0, -2.0, 3.0, 0.0] * 8)
+
+    assert png.startswith(b"\x89PNG")
+    assert load(png).size == (chart.WIDTH, chart.HEIGHT)
+
+
+def test_equity_curve_survives_a_flat_month():
+    assert chart.equity_curve([0.0] * 30).startswith(b"\x89PNG")
+
+
+def test_equity_curve_refuses_emptiness():
+    with pytest.raises(ValueError, match="no data"):
+        chart.equity_curve([])

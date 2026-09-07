@@ -1006,3 +1006,134 @@ def test_market_report_survives_a_dead_api(keyed, caplog):
         asyncio.run(bybit_watch.market_report(Refusing(), send_photo))
 
     assert "no market snapshot" in caplog.text
+
+
+# --------------------------------------------------------------------------- #
+#  /statistics                                                                 #
+# --------------------------------------------------------------------------- #
+class HistoryHTTP(FakeHTTP):
+    """Serves closed-pnl pages with one cursor hop on the first window."""
+
+    def __init__(self):
+        super().__init__()
+        self.history_calls = 0
+
+    async def get(self, url, headers=None, timeout=None):
+        if "/v5/position/closed-pnl" in url:
+            self.history_calls += 1
+            if "cursor=" not in url and self.history_calls == 1:
+                return FakeResponse(
+                    {
+                        "retCode": 0,
+                        "result": {"list": [closed()], "nextPageCursor": "abc"},
+                    }
+                )
+            if "cursor=abc" in url:
+                return FakeResponse({"retCode": 0, "result": {"list": [closed(pnl="-3")]}})
+            return FakeResponse({"retCode": 0, "result": {"list": []}})
+        return await super().get(url, headers=headers, timeout=timeout)
+
+
+def test_closed_history_walks_windows_and_cursors(keyed):
+    http = HistoryHTTP()
+
+    rows = asyncio.run(bybit_watch.closed_history(http, days=30))
+
+    assert len(rows) == 2  # the page plus its cursor continuation
+    assert http.history_calls >= 6  # five 7-day windows, one with an extra page
+
+
+def test_stats_report_without_keys(monkeypatch):
+    monkeypatch.setattr(bybit_watch, "API_KEY", "")
+
+    async def send_photo(caption, png):
+        raise AssertionError("nothing to send")
+
+    assert "нет API-ключей" in asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo))
+
+
+def test_stats_report_survives_a_dead_api(keyed, caplog, monkeypatch):
+    async def boom(http, days=30):
+        raise OSError("bybit down")
+
+    monkeypatch.setattr(bybit_watch, "closed_history", boom)
+
+    async def send_photo(caption, png):
+        raise AssertionError("nothing to send")
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        assert "не ответил" in asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo))
+
+
+def test_stats_report_with_no_trades(keyed, monkeypatch):
+    async def empty(http, days=30):
+        return []
+
+    monkeypatch.setattr(bybit_watch, "closed_history", empty)
+
+    async def send_photo(caption, png):
+        raise AssertionError("nothing to send")
+
+    assert "закрытых сделок нет" in asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo))
+
+
+def test_stats_report_sends_the_curve_with_the_figures(keyed, monkeypatch):
+    import time as _time
+
+    now_ms = int(_time.time() * 1000)
+
+    async def history(http, days=30):
+        return [
+            {"closedPnl": "5", "updatedTime": str(now_ms)},
+            {"closedPnl": "-2", "updatedTime": str(now_ms - 86_400_000)},
+        ]
+
+    monkeypatch.setattr(bybit_watch, "closed_history", history)
+    http = FakeHTTP()
+    http.equity_rows = [{"totalEquity": "133"}]
+    shots = []
+
+    async def send_photo(caption, png):
+        assert png.startswith(b"\x89PNG")
+        shots.append(caption)
+        return True
+
+    text = asyncio.run(bybit_watch.stats_report(http, send_photo))
+
+    assert text == ""
+    assert shots[0].startswith("📊 30 дней: сделок 2 · win 1/loss 1 (50%)")
+    assert "+3.00 (+2.26% депо 133)" in shots[0]
+    assert "лучший +5.00 · худший -2.00" in shots[0]
+
+
+def test_stats_report_falls_back_to_text_when_the_photo_fails(keyed, monkeypatch):
+    async def history(http, days=30):
+        return [{"closedPnl": "1", "updatedTime": "0"}]
+
+    monkeypatch.setattr(bybit_watch, "closed_history", history)
+
+    async def send_photo(caption, png):
+        return False
+
+    text = asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo))
+
+    assert text.startswith("📊 30 дней")
+
+
+def test_stats_report_survives_a_broken_curve(keyed, monkeypatch, caplog):
+    async def history(http, days=30):
+        return [{"closedPnl": "1", "updatedTime": "0"}]
+
+    monkeypatch.setattr(bybit_watch, "closed_history", history)
+    monkeypatch.setattr(
+        bybit_watch.chart, "equity_curve", lambda daily: (_ for _ in ()).throw(OSError("boom"))
+    )
+
+    async def send_photo(caption, png):
+        raise AssertionError("no chart to send")
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        text = asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo))
+
+    assert text.startswith("📊 30 дней")
+    assert "no equity curve" in caplog.text

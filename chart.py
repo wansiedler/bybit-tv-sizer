@@ -180,3 +180,46 @@ def side_by_side(pngs: list[bytes]) -> bytes:
     out = BytesIO()
     canvas.save(out, format="PNG")
     return out.getvalue()
+
+
+def equity_curve(daily: list[float], title: str = "PnL · 30d") -> bytes:
+    """Daily PnL bars with the cumulative curve on top, as PNG bytes."""
+    if not daily:
+        raise ValueError("no data")
+    cumulative = []
+    running = 0.0
+    for value in daily:
+        running += value
+        cumulative.append(running)
+    lowest = min(0.0, *daily, *cumulative)
+    highest = max(0.0, *daily, *cumulative)
+    to_y = _scale(lowest, highest)
+
+    image = Image.new("RGB", (WIDTH, HEIGHT), BACKGROUND)
+    draw = ImageDraw.Draw(image, "RGBA")
+    chart_right = WIDTH - PRICE_GUTTER
+    step = (chart_right - MARGIN) / len(daily)
+
+    zero = to_y(0.0)
+    draw.line((MARGIN, zero, chart_right, zero), fill=GRID_TEXT, width=1)
+    draw.text((chart_right + 8, zero - 8), "0", fill=GRID_TEXT, font=LABEL_FONT)
+
+    body = max(2.0, step * 0.6)
+    for i, value in enumerate(daily):
+        x = MARGIN + step * i + step / 2
+        color = UP if value >= 0 else DOWN
+        top, bottom = sorted((zero, to_y(value)))
+        draw.rectangle((x - body / 2, top, x + body / 2, max(bottom, top + 1)), fill=color)
+
+    points = [(MARGIN + step * i + step / 2, to_y(value)) for i, value in enumerate(cumulative)]
+    draw.line(points, fill=ENTRY, width=4)
+    final = cumulative[-1]
+    final_color = UP if final >= 0 else DOWN
+    draw.text(
+        (chart_right + 8, to_y(final) - 8), f"{final:+,.2f}", fill=final_color, font=LABEL_FONT
+    )
+
+    draw.text((MARGIN + 6, MARGIN + 4), title, fill=TEXT, font=TITLE_FONT)
+    out = BytesIO()
+    image.save(out, format="PNG")
+    return out.getvalue()
