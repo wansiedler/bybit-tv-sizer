@@ -146,6 +146,7 @@ async def dispatch(
     positions=None,
     stop_all=None,
     close_one=None,
+    market=None,
 ) -> None:
     """Answer one command. Unknown commands get the help text.
 
@@ -156,6 +157,8 @@ async def dispatch(
         await send("pong")
     elif command == "status":
         await send(status_text(stats, speaking))
+        if market is not None:
+            await market()
     elif command == "positions" and positions is not None:
         # An empty answer means the report already went out as a media group.
         report = await positions()
@@ -182,6 +185,7 @@ async def poll(
     positions=None,
     stop_all=None,
     close_one=None,
+    market=None,
 ) -> None:
     """Answer commands until cancelled. Never lets one failure end the loop."""
     offset: int | None = None
@@ -202,7 +206,16 @@ async def poll(
             log.info("command: /%s %s", command, arg)
             try:
                 await dispatch(
-                    command, arg, stats, send, speak, speaking, positions, stop_all, close_one
+                    command,
+                    arg,
+                    stats,
+                    send,
+                    speak,
+                    speaking,
+                    positions,
+                    stop_all,
+                    close_one,
+                    market,
                 )
             # Deliberately broad: one bad command must not end the loop.
             except Exception:  # noqa: BLE001

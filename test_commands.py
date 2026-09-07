@@ -389,3 +389,20 @@ def test_poll_survives_a_failing_command(owner, monkeypatch, caplog):
         _run_poll(monkeypatch, [[_update("/ping", update_id=1)]], rec)
 
     assert "/ping failed" in caplog.text
+
+
+def test_status_also_sends_the_market_snapshot(owner):
+    rec = Recorder()
+    shots = []
+
+    async def market():
+        shots.append(True)
+
+    asyncio.run(
+        commands.dispatch(
+            "status", "", commands.Stats(), rec.send, rec.speak, True, None, None, None, market
+        )
+    )
+
+    assert rec.sent[0].startswith("🟢 up")
+    assert shots == [True]

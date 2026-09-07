@@ -243,6 +243,31 @@ async def close_position(http: httpx.AsyncClient, query: str) -> str:
 TAKER_FEE = float(os.getenv("TAKER_FEE", "0.00055"))
 
 
+async def market_report(http: httpx.AsyncClient, send_photo) -> None:
+    """BTC and ETH side by side on one 15m picture, for /status."""
+    try:
+        pngs = []
+        closes = []
+        for market in ("BTCUSDT", "ETHUSDT"):
+            _, candles = await _klines(http, market, CHART_INTERVAL, CHART_BARS)
+            closes.append(candles[-1].close)
+            pngs.append(
+                chart.render(
+                    base_symbol(market),
+                    "",
+                    candles,
+                    candles[-1].close,
+                    timeframe=f"{CHART_INTERVAL}m",
+                    plain=True,
+                )
+            )
+        caption = f"BTC {closes[0]:,.0f} · ETH {closes[1]:,.0f} · {CHART_INTERVAL}m"
+        await send_photo(caption, chart.side_by_side(pngs))
+    # Deliberately broad: the market picture is garnish on /status.
+    except Exception:  # noqa: BLE001
+        log.exception("no market snapshot")
+
+
 async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
     """Every open position as one line, for the bot's /positions command.
 

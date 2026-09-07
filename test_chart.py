@@ -136,3 +136,18 @@ def test_render_zones_start_at_the_entry_bar():
 
     assert left == chart.BACKGROUND
     assert right != chart.BACKGROUND
+
+
+def test_plain_render_skips_the_entry_line():
+    png = chart.render("BTC", "", CANDLES, CANDLES[-1].close, timeframe="15m", plain=True)
+
+    assert png.startswith(b"\x89PNG")
+
+
+def test_side_by_side_pastes_horizontally():
+    a = chart.render("BTC", "", CANDLES, CANDLES[-1].close, plain=True)
+    b = chart.render("ETH", "", CANDLES, CANDLES[-1].close, plain=True)
+
+    combined = load(chart.side_by_side([a, b]))
+
+    assert combined.size == (chart.WIDTH * 2, chart.HEIGHT)

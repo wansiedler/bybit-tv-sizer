@@ -975,3 +975,34 @@ def test_closed_record_swallows_api_errors(keyed, caplog):
         assert asyncio.run(bybit_watch.closed_record(Refusing(), "FARTCOINUSDT")) is None
 
     assert "no closed pnl" in caplog.text
+
+
+def test_market_report_sends_btc_and_eth_in_one_shot(keyed):
+    http = FakeHTTP()
+    http.kline_rows = KLINES
+    shots = []
+
+    async def send_photo(caption, png):
+        shots.append((caption, png[:8]))
+        return True
+
+    asyncio.run(bybit_watch.market_report(http, send_photo))
+
+    assert len(shots) == 1
+    caption, magic = shots[0]
+    assert magic == b"\x89PNG\r\n\x1a\n"
+    assert caption.startswith("BTC 0 · ETH 0")  # test candles close at 0.169
+
+
+def test_market_report_survives_a_dead_api(keyed, caplog):
+    class Refusing(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise OSError("bybit down")
+
+    async def send_photo(caption, png):
+        raise AssertionError("nothing should be sent")
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        asyncio.run(bybit_watch.market_report(Refusing(), send_photo))
+
+    assert "no market snapshot" in caplog.text

@@ -359,6 +359,9 @@ async def run() -> None:
                     ),
                     lambda: bybit_watch.close_everything(http),
                     lambda arg: bybit_watch.close_position(http, arg),
+                    lambda: bybit_watch.market_report(
+                        http, lambda caption, png: send_photo_via_bot(http, caption, png)
+                    ),
                 )
             )
             background = {answering}

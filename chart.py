@@ -74,6 +74,7 @@ def render(
     tp_note: str = "",
     sl_note: str = "",
     exit_note: str = "",
+    plain: bool = False,
 ) -> bytes:
     """The chart as PNG bytes. Raises on empty candles: nothing to draw.
 
@@ -148,7 +149,8 @@ def render(
             width = draw.textlength(note, font=LABEL_FONT)
             draw.text((chart_right - width - 12, y - 30), note, fill=color, font=LABEL_FONT)
 
-    level(entry, ENTRY, "in", entry_note)
+    if not plain:
+        level(entry, ENTRY, "in", entry_note)
     if take_profit:
         level(take_profit, UP, "tp", tp_note)
     if stop_loss:
@@ -157,11 +159,24 @@ def render(
         won = (exit_price >= entry) == (side == "long")
         level(exit_price, UP if won else DOWN, "out", exit_note)
 
-    title = f"{symbol} · {side}"
+    title = f"{symbol} · {side}" if side else symbol
     if timeframe:
         title += f" · {timeframe}"
     draw.text((MARGIN + 6, MARGIN + 4), title, fill=TEXT, font=TITLE_FONT)
 
     out = BytesIO()
     image.save(out, format="PNG")
+    return out.getvalue()
+
+
+def side_by_side(pngs: list[bytes]) -> bytes:
+    """Several rendered charts pasted into one wide picture."""
+    images = [Image.open(BytesIO(png)) for png in pngs]
+    canvas = Image.new("RGB", (sum(i.width for i in images), max(i.height for i in images)))
+    x = 0
+    for image in images:
+        canvas.paste(image, (x, 0))
+        x += image.width
+    out = BytesIO()
+    canvas.save(out, format="PNG")
     return out.getvalue()
