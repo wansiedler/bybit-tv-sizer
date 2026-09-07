@@ -275,11 +275,11 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         # off — the entry already paid, the exit still to come.
         fees = 2 * TAKER_FEE * position.value
         net = position.unrealised - fees
-        head = f"{arrow}{base_symbol(symbol)} {position.value:,.0f}@{position.price:g}"
+        head = f"{arrow}{base_symbol(symbol)} {_val(position.value)}@{position.price:g}"
         if position.stop_loss:
             # What the stop costs if it fires, fees included.
             at_sl = -abs(position.price - position.stop_loss) * position.size - fees
-            head += f" · sl{position.stop_loss:g}:<b>{at_sl:+,.2f}{share(at_sl)}</b>"
+            head += f" · sl{position.stop_loss:g}:<b>{_usd(at_sl)}{share(at_sl)}</b>"
             if position.take_profit:
                 rr = abs(position.take_profit - position.price) / abs(
                     position.price - position.stop_loss
@@ -292,7 +292,7 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         if position.take_profit:
             sign = 1 if position.side == "long" else -1
             at_tp = sign * (position.take_profit - position.price) * position.size - fees
-            block.append(f"tp {position.take_profit:g}:<b>{at_tp:+,.2f}{share(at_tp)}</b>")
+            block.append(f"tp {position.take_profit:g}:<b>{_usd(at_tp)}{share(at_tp)}</b>")
         total += position.unrealised
         total_net += net
         lines.append("\n".join(block))
@@ -311,7 +311,7 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
                 pngs.append(png)
     # A total of one position would just repeat its line.
     if len(lines) > 1:
-        lines.append(f"ΣPnL{total:+,.2f}=<b>{total_net:+,.2f}{share(total_net)}</b>")
+        lines.append(f"ΣPnL{_usd(total)}=<b>{_usd(total_net)}{share(total_net)}</b>")
     text = "\n".join(lines)
     # Telegram caps a media-group caption at 1024 characters.
     if send_album is not None and pngs and len(text) <= 1024 and await send_album(text, pngs):
@@ -581,6 +581,16 @@ def diff(
     return changes
 
 
+def _usd(amount: float) -> str:
+    """Signed money: cents normally, four decimals for dust below a dollar."""
+    return f"{amount:+,.2f}" if abs(amount) >= 0.995 else f"{amount:+.4f}"
+
+
+def _val(value: float) -> str:
+    """Unsigned position value: whole dollars, cents when below ten."""
+    return f"{value:,.0f}" if value >= 10 else f"{value:,.2f}"
+
+
 def _arrow(side: str) -> str:
     return "📈" if side == "long" else "📉"
 
@@ -593,7 +603,7 @@ def describe(kind: str, symbol: str, was: Position | None, now: Position | None)
     if kind == "opened" and now is not None:
         # The stop-loss risk annotation is appended by tick(), which knows
         # the deposit share.
-        head = f"💰{_arrow(now.side)}{sym} {now.value:,.0f}@{now.price:g}"
+        head = f"💰{_arrow(now.side)}{sym} {_val(now.value)}@{now.price:g}"
         return head, f"{name} {now.side} opened"
     if kind == "flipped" and now is not None:
         return (
@@ -636,7 +646,7 @@ async def tick(
             if now.stop_loss is not None:
                 # What the stop costs if it fires, fees included.
                 at_sl = -abs(now.price - now.stop_loss) * now.size - fees
-                line += f" · sl{now.stop_loss:g}:<b>{at_sl:+,.2f}{share(at_sl, depo)}</b>"
+                line += f" · sl{now.stop_loss:g}:<b>{_usd(at_sl)}{share(at_sl, depo)}</b>"
                 if now.take_profit is not None:
                     rr = abs(now.take_profit - now.price) / abs(now.price - now.stop_loss)
                     line += f" · RR{rr:.2f}"
@@ -668,7 +678,7 @@ async def tick(
                 # Bybit's closedPnl is already net of both fees.
                 pnl = float(record["closedPnl"])
                 depo = await equity(http)
-                line += f":<b>{pnl:+,.2f}{share(pnl, depo)}</b>"
+                line += f":<b>{_usd(pnl)}{share(pnl, depo)}</b>"
                 opened_fee = float(record.get("openFee") or 0)
                 closed_fee = float(record.get("closeFee") or 0)
                 if opened_fee or closed_fee:
