@@ -319,7 +319,7 @@ async def stats_report(http: httpx.AsyncClient, send_photo, arg: str = "") -> st
     text += f"</b> · лучший {_usd(max(pnls))} · худший {_usd(min(pnls))}"
 
     try:
-        png = chart.equity_curve(daily, title=f"PnL · {days}d")
+        png = chart.equity_curve(daily, title=f"PnL · {days}d", depo=depo)
     # Deliberately broad: the curve is garnish on the figures.
     except Exception:  # noqa: BLE001
         log.exception("no equity curve")

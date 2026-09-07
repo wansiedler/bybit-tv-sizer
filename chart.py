@@ -182,7 +182,7 @@ def side_by_side(pngs: list[bytes]) -> bytes:
     return out.getvalue()
 
 
-def equity_curve(daily: list[float], title: str = "PnL · 30d") -> bytes:
+def equity_curve(daily: list[float], title: str = "PnL · 30d", depo: float | None = None) -> bytes:
     """Daily PnL bars with the period total in the header, as PNG bytes."""
     if not daily:
         raise ValueError("no data")
@@ -218,7 +218,7 @@ def equity_curve(daily: list[float], title: str = "PnL · 30d") -> bytes:
     draw.text((MARGIN + 6, MARGIN + 4), title, fill=TEXT, font=TITLE_FONT)
     draw.text(
         (MARGIN + 6 + draw.textlength(title, font=TITLE_FONT) + 24, MARGIN + 4),
-        f"{total:+,.2f}",
+        f"{total:+,.2f}" + (f" ({total / depo * 100:+.2f}% depo)" if depo else ""),
         fill=UP if total >= 0 else DOWN,
         font=TITLE_FONT,
     )
