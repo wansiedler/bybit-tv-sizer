@@ -714,7 +714,7 @@ def describe(kind: str, symbol: str, was: Position | None, now: Position | None)
     if kind == "opened" and now is not None:
         # The stop-loss risk annotation is appended by tick(), which knows
         # the deposit share.
-        head = f"💰{_arrow(now.side)}{sym} {_val(now.value)}@{now.price:g}"
+        head = f"💰{_arrow(now.side)}{sym} {_val(now.value)}$@{now.price:g}"
         return head, f"{name} {now.side} opened"
     if kind == "flipped" and now is not None:
         return (
@@ -754,23 +754,24 @@ async def tick(
             fee = await entry_fee(http, symbol)
             depo = await equity(http)
             fees = 2 * (fee or TAKER_FEE * now.value)
+            at_sl = target = None
+            if now.stop_loss is not None and now.take_profit is not None:
+                rr = abs(now.take_profit - now.price) / abs(now.price - now.stop_loss)
+                line += f" | RR{rr:.2f}"
+            exits = []
             if now.stop_loss is not None:
                 # What the stop costs if it fires, fees included.
                 at_sl = -abs(now.price - now.stop_loss) * now.size - fees
-                line += f" · sl{now.stop_loss:g}:<b>{_usd(at_sl)}{share(at_sl, depo)}</b>"
-                if now.take_profit is not None:
-                    rr = abs(now.take_profit - now.price) / abs(now.price - now.stop_loss)
-                    line += f" · RR{rr:.2f}"
-            extras = []
-            if fee:
-                extras.append(f"комса{fee:.4g}")
+                exits.append(f"sl{now.stop_loss:g}:<b>{_usd(at_sl)}{share(at_sl, depo)}</b>")
             if now.take_profit is not None:
                 # What reaching the TP pays, net of both fees: the entry fee
                 # just paid and a like-sized one for the exit.
                 target = abs(now.take_profit - now.price) * now.size - fees
-                extras.append(f"tp {now.take_profit:g}:<b>{target:+,.2f}{share(target, depo)}</b>")
-            if extras:
-                line += "\n" + ",".join(extras)
+                exits.append(f"tp {now.take_profit:g}:<b>{_usd(target)}{share(target, depo)}</b>")
+            if exits:
+                line += "\n" + " | ".join(exits)
+            if fee:
+                line += f"\nкомса{fee:.4g}"
             for warn in trade_warnings(now, depo):
                 line += f"\n{warn}"
             png = await entry_chart(
@@ -778,10 +779,8 @@ async def tick(
                 symbol,
                 now,
                 entry_note=f"fee {fee:.2f}" if fee else "",
-                tp_note=(
-                    f"{target:+,.2f}{share(target, depo)}" if now.take_profit is not None else ""
-                ),
-                sl_note=(f"{at_sl:+,.2f}{share(at_sl, depo)}" if now.stop_loss is not None else ""),
+                tp_note=(f"{target:+,.2f}{share(target, depo)}" if target is not None else ""),
+                sl_note=(f"{at_sl:+,.2f}{share(at_sl, depo)}" if at_sl is not None else ""),
             )
         elif kind == "closed" and was is not None:
             record = await closed_record(http, symbol)
