@@ -295,7 +295,7 @@ async def stats_report(http: httpx.AsyncClient, send_photo) -> str:
     wins = sum(1 for value in pnls if value >= 0)
     total = sum(pnls)
     buckets: dict[date, float] = {}
-    for r, value in zip(rows, pnls):
+    for r, value in zip(rows, pnls, strict=True):
         day = datetime.fromtimestamp(int(r.get("updatedTime") or 0) / 1000).date()
         buckets[day] = buckets.get(day, 0.0) + value
     today = date.today()
