@@ -401,10 +401,8 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         if position.take_profit:
             sign = 1 if position.side == "long" else -1
             at_tp = sign * (position.take_profit - position.price) * position.size - fees
-            exits.append(f"tp {position.take_profit:g}:<b>{_usd(at_tp)}{share(at_tp)}</b>")
-        block = [head]
-        if exits:
-            block.append(" | ".join(exits))
+            exits.append(f"tp{position.take_profit:g}:<b>{_usd(at_tp)}{share(at_tp)}</b>")
+        block = [head, *exits]
         block.append(
             f"PnL{position.unrealised:+,.2f}−комса{fees:.2f}=<b>{net:+,.2f}{share(net)}</b>"
         )
@@ -419,8 +417,8 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
                 entry_note=(
                     f"PnL {position.unrealised:+,.2f} - fee {fees:.2f} = {net:+,.2f}{share(net)}"
                 ),
-                tp_note=f"{at_tp:+,.2f}{share(at_tp)}" if position.take_profit else "",
-                sl_note=f"{at_sl:+,.2f}{share(at_sl)}" if position.stop_loss else "",
+                tp_note=f"{at_tp:+,.2f}{share(at_tp)}" if at_tp is not None else "",
+                sl_note=f"{at_sl:+,.2f}{share(at_sl)}" if at_sl is not None else "",
             )
             if png is not None:
                 pngs.append(png)
@@ -771,9 +769,9 @@ async def tick(
                 # What reaching the TP pays, net of both fees: the entry fee
                 # just paid and a like-sized one for the exit.
                 target = abs(now.take_profit - now.price) * now.size - fees
-                exits.append(f"tp {now.take_profit:g}:<b>{_usd(target)}{share(target, depo)}</b>")
+                exits.append(f"tp{now.take_profit:g}:<b>{_usd(target)}{share(target, depo)}</b>")
             if exits:
-                line += "\n" + " | ".join(exits)
+                line += "\n" + "\n".join(exits)
             if fee:
                 line += f"\nкомса{fee:.4g}"
             for warn in trade_warnings(now, depo):

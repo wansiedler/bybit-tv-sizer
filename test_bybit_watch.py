@@ -544,7 +544,8 @@ def test_positions_report_lists_positions_with_depo_share(keyed):
 
     assert text.splitlines() == [
         "📈FARTCOIN 18,749$@0.1621 | RR2.31",
-        "sl0.15:<b>-1,420.13(-14.20%)</b> | tp 0.19:<b>+3,206.33(+32.06%)</b>",
+        "sl0.15:<b>-1,420.13(-14.20%)</b>",
+        "tp0.19:<b>+3,206.33(+32.06%)</b>",
         "PnL+512.30−комса20.62=<b>+491.68(+4.92%)</b>",
         "📉OP 12$@1.2",
         "PnL-1.50−комса0.01=<b>-1.51(-0.02%)</b>",
@@ -673,7 +674,7 @@ def test_tick_appends_the_entry_fee_when_fills_are_fresh(keyed):
 
     assert out.sent == [
         "💰📈FARTCOIN 18,749$@0.1621 | RR8.26\n"
-        "sl0.15:<b>-1,399.65</b> | tp 0.2621:<b>+11,565.98</b>\nкомса0.073"
+        "sl0.15:<b>-1,399.65</b>\ntp0.2621:<b>+11,565.98</b>\nкомса0.073"
     ]
 
 
@@ -687,7 +688,7 @@ def test_tick_reports_the_take_target_as_a_share_of_equity(keyed):
 
     assert out.sent == [
         "💰📈FARTCOIN 18,749$@0.1621 | RR8.26\n"
-        "sl0.15:<b>-1,420.13(-7.10%)</b> | tp 0.2621:<b>+11,545.51(+57.73%)</b>"
+        "sl0.15:<b>-1,420.13(-7.10%)</b>\ntp0.2621:<b>+11,545.51(+57.73%)</b>"
         "\n⚠️ риск 7.00% депо, цель 0.5%"
     ]
 
@@ -711,7 +712,7 @@ def test_tick_sends_an_entry_chart_when_candles_exist(keyed):
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
     assert out.photos == [
-        "💰📈FARTCOIN 18,749$@0.1621 | RR2.31\nsl0.15:<b>-1,420.13</b> | tp 0.19:<b>+3,206.33</b>"
+        "💰📈FARTCOIN 18,749$@0.1621 | RR2.31\nsl0.15:<b>-1,420.13</b>\ntp0.19:<b>+3,206.33</b>"
     ]
     assert out.sent == []  # the caption carries the notice
     assert out.spoken == ["Fartcoin long opened"]
