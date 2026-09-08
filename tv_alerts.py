@@ -27,6 +27,9 @@ load_dotenv()
 
 TV_WEBHOOK_SECRET = os.getenv("TV_WEBHOOK_SECRET", "")
 TV_PORT = int(os.getenv("TV_PORT", "8423"))
+# GET /j answers with a redirect to the trading journal, so the sheet has a
+# short address on the own domain. Empty keeps the path dead silent.
+JOURNAL_URL = os.getenv("JOURNAL_URL", "")
 # TradingView alert messages are short; anything huge is not an alert.
 MAX_BODY = 4096
 
@@ -65,6 +68,11 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's spelling
         """The alive page on the exact secret path; dead silence elsewhere."""
+        if JOURNAL_URL and self.path == "/j":
+            self.send_response(302)
+            self.send_header("Location", JOURNAL_URL)
+            self.end_headers()
+            return
         if self.path != f"/tv/{TV_WEBHOOK_SECRET}":
             self._refuse()
             return

@@ -103,11 +103,38 @@ def test_get_shows_the_alive_page_only_on_the_secret_path():
             assert status == 200
             assert b"lexx-relay" in body
 
-            # Every other path gets no HTTP answer at all.
-            for path in ("/", "/tv/wrong", "/anything"):
+            # Every other path gets no HTTP answer at all — /j included
+            # while no journal address is configured.
+            for path in ("/", "/tv/wrong", "/anything", "/j"):
                 with pytest.raises((ConnectionError, urllib.error.URLError)):
                     await asyncio.to_thread(get, path)
             assert queue.empty()
+        finally:
+            httpd.shutdown()
+
+    asyncio.run(run())
+
+
+def test_get_j_redirects_to_the_journal(monkeypatch):
+    monkeypatch.setattr(tv_alerts, "JOURNAL_URL", "https://example.test/sheet")
+
+    async def run():
+        queue: asyncio.Queue = asyncio.Queue()
+        httpd = tv_alerts.serve(asyncio.get_running_loop(), queue)
+        try:
+            port = httpd.server_address[1]
+
+            def get():
+                import http.client
+
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                conn.request("GET", "/j")
+                response = conn.getresponse()
+                return response.status, response.getheader("Location")
+
+            status, location = await asyncio.to_thread(get)
+            assert status == 302
+            assert location == "https://example.test/sheet"
         finally:
             httpd.shutdown()
 
