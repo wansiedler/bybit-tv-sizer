@@ -56,6 +56,8 @@ def row(
     value="18748.7",
     tp="",
     sl="",
+    leverage="",
+    position_idx="",
 ):
     return {
         "symbol": symbol,
@@ -65,6 +67,8 @@ def row(
         "positionValue": value,
         "takeProfit": tp,
         "stopLoss": sl,
+        "leverage": leverage,
+        "positionIdx": position_idx,
     }
 
 
@@ -103,6 +107,16 @@ def test_positions_drops_zero_sizes(keyed):
     http.position_pages = [[row(size="0")]]
 
     assert asyncio.run(bybit_watch.positions(http)) == {}
+
+
+def test_positions_parses_leverage_and_position_index(keyed):
+    http = FakeHTTP()
+    http.position_pages = [[row(leverage="3", position_idx="1")]]
+
+    got = asyncio.run(bybit_watch.positions(http))
+
+    assert got["FARTCOINUSDT"].leverage == 3.0
+    assert got["FARTCOINUSDT"].position_idx == 1
 
 
 def test_get_raises_on_a_bybit_refusal(keyed):
@@ -315,6 +329,100 @@ class ClosingHTTP(FakeHTTP):
             raise OSError("order rejected")
         self.orders.append(_json.loads(content))
         return FakeResponse({"retCode": 0, "result": {}})
+
+
+# --------------------------------------------------------------------------- #
+#  risk guard                                                                  #
+# --------------------------------------------------------------------------- #
+NAKED = Position("long", 1.4, 91.25, 128.0)
+LEVERED = Position("short", 1.0, 90.0, 90.0, stop_loss=92.0, leverage=3.0)
+COVERED = Position("long", 1.4, 91.25, 128.0, stop_loss=90.0)
+
+
+@pytest.fixture
+def guarding(keyed, monkeypatch):
+    monkeypatch.setattr(bybit_watch, "RISK_GUARD", True)
+
+
+def test_guard_warns_once_and_waits_out_the_grace_window(guarding):
+    http, out = ClosingHTTP(), Recorder()
+
+    asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
+    asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
+
+    assert out.sent == ["🛑 CL: нет стопа — закрою маркетом через 45с"]
+    assert out.spoken == ["CL risk breach"]
+    assert http.orders == []
+
+
+def test_guard_flags_leverage_above_the_cap(guarding):
+    http, out = ClosingHTTP(), Recorder()
+
+    asyncio.run(bybit_watch.guard(http, {"OPUSDT": LEVERED}, out.send, out.speak))
+
+    assert out.sent == ["🛑 OP: плечо 3x > 1x — закрою маркетом через 45с"]
+
+
+def test_guard_market_closes_after_the_grace_window(guarding, monkeypatch):
+    monkeypatch.setattr(bybit_watch, "GUARD_GRACE", 0.0)
+    http, out = ClosingHTTP(), Recorder()
+
+    asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
+    asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
+
+    assert http.orders == [
+        {
+            "category": "linear",
+            "symbol": "CLUSDT",
+            "side": "Sell",
+            "orderType": "Market",
+            "qty": "1.4",
+            "reduceOnly": True,
+            "positionIdx": 0,
+        }
+    ]
+    assert out.sent[-1] == "🛑 CL закрыт маркетом риск-менеджером: нет стопа"
+
+
+def test_guard_forgives_a_fixed_position(guarding):
+    http, out = ClosingHTTP(), Recorder()
+
+    asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
+    asyncio.run(bybit_watch.guard(http, {"CLUSDT": COVERED}, out.send, out.speak))
+    asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
+
+    # Two warnings: the fix in between reset the breach timer.
+    assert len(out.sent) == 2
+    assert http.orders == []
+
+
+def test_guard_forgets_a_position_that_closed_itself(guarding):
+    http, out = ClosingHTTP(), Recorder()
+
+    asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
+    asyncio.run(bybit_watch.guard(http, {}, out.send, out.speak))
+
+    assert bybit_watch._guard_seen == {}
+
+
+def test_guard_reports_a_refused_close(guarding, monkeypatch):
+    monkeypatch.setattr(bybit_watch, "GUARD_GRACE", 0.0)
+    http, out = ClosingHTTP(), Recorder()
+    http.refuse_order = True
+
+    asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
+    asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
+
+    assert "риск-менеджер не смог закрыть" in out.sent[-1]
+
+
+def test_guard_stays_dormant_when_disabled(keyed):
+    http, out = ClosingHTTP(), Recorder()
+
+    asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
+
+    assert out.sent == []
+    assert bybit_watch._guard_seen == {}
 
 
 def test_stopall_arms_first_and_places_nothing(keyed, disarmed):

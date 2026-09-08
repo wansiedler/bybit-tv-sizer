@@ -55,6 +55,12 @@ POLL = float(os.getenv("BYBIT_POLL", "10"))
 # strays more than a quarter away from the RISK_PCT the sizer targets.
 MIN_RR = float(os.getenv("MIN_RR", "2"))
 RISK_TARGET = float(os.getenv("RISK_PCT", "0.5")) / 100
+# The hard risk manager: positions breaking these rules get market-closed.
+# A breach is announced first and enforced only if it survives the grace
+# window — enough time to set a stop or drop the leverage after an entry.
+RISK_GUARD = os.getenv("RISK_GUARD", "1") == "1"
+GUARD_MAX_LEVERAGE = float(os.getenv("MAX_LEVERAGE", "1"))
+GUARD_GRACE = float(os.getenv("GUARD_GRACE_SEC", "45"))
 
 # Kline timeframe for every chart the relay draws, in minutes.
 CHART_INTERVAL = os.getenv("CHART_INTERVAL", "15")
@@ -118,6 +124,8 @@ class Position:
     take_profit: float | None = None
     stop_loss: float | None = None
     unrealised: float = 0.0
+    leverage: float = 0.0
+    position_idx: int = 0
 
 
 async def positions(http: httpx.AsyncClient) -> dict[str, Position]:
@@ -136,6 +144,8 @@ async def positions(http: httpx.AsyncClient) -> dict[str, Position]:
             take_profit=float(row["takeProfit"]) if row.get("takeProfit") else None,
             stop_loss=float(row["stopLoss"]) if row.get("stopLoss") else None,
             unrealised=float(row.get("unrealisedPnl") or 0),
+            leverage=float(row.get("leverage") or 0),
+            position_idx=int(row.get("positionIdx") or 0),
         )
     return open_now
 
@@ -206,6 +216,66 @@ async def _close_market(
             "positionIdx": position_idx,
         },
     )
+
+
+# When each still-open violation was first noticed, by symbol.
+_guard_seen: dict[str, float] = {}
+
+
+def _guard_violation(position: Position) -> str | None:
+    """The rule a position breaks, or None. Leverage 0 means Bybit sent none."""
+    if position.leverage > GUARD_MAX_LEVERAGE:
+        return f"плечо {position.leverage:g}x > {GUARD_MAX_LEVERAGE:g}x"
+    if position.stop_loss is None:
+        return "нет стопа"
+    return None
+
+
+async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, speak) -> None:
+    """The risk manager: warn about a rule breach, then market-close it.
+
+    A breach gets one warning and the grace window to fix itself (set the
+    stop, drop the leverage). If it is still there afterwards the position
+    is closed with a reduce-only market order.
+    """
+    if not RISK_GUARD:
+        return
+    for symbol in list(_guard_seen):
+        fixed = open_now.get(symbol)
+        if fixed is None or _guard_violation(fixed) is None:
+            del _guard_seen[symbol]
+    for symbol, position in open_now.items():
+        reason = _guard_violation(position)
+        if reason is None:
+            continue
+        now = time.monotonic()
+        first = _guard_seen.get(symbol)
+        if first is None:
+            _guard_seen[symbol] = now
+            await send(
+                f"🛑 {base_symbol(symbol)}: {reason} — закрою маркетом через {GUARD_GRACE:.0f}с"
+            )
+            await speak(f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} risk breach")
+            continue
+        if now - first < GUARD_GRACE:
+            continue
+        # Rearm so a refused close retries after another full window instead
+        # of hammering the API every poll.
+        _guard_seen[symbol] = now
+        try:
+            await _close_market(
+                http,
+                symbol,
+                "Buy" if position.side == "long" else "Sell",
+                f"{position.size:g}",
+                position.position_idx,
+            )
+            await send(f"🛑 {base_symbol(symbol)} закрыт маркетом риск-менеджером: {reason}")
+        # Deliberately broad: the guard must keep watching even when one
+        # close is refused (margin mode quirks, min qty, hedged legs).
+        except Exception as exc:  # noqa: BLE001
+            log.exception("guard close failed for %s", symbol)
+            await send(f"❌ {base_symbol(symbol)}: риск-менеджер не смог закрыть ({exc})")
 
 
 async def close_position(http: httpx.AsyncClient, query: str) -> str:
@@ -755,6 +825,7 @@ async def tick(
     a chart with the notice as its caption; everything else stays text.
     """
     after = await positions(http)
+    await guard(http, after, send, speak)
     if before is None:
         return after
 
