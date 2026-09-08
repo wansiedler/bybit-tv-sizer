@@ -213,6 +213,13 @@ def equity_curve(daily: list[float], title: str = "PnL · 30d", depo: float | No
         color = UP if value >= 0 else DOWN
         top, bottom = sorted((zero, to_y(value)))
         draw.rectangle((x - body / 2, top, x + body / 2, max(bottom, top + 1)), fill=color)
+        # The day's figure at the bar's end, when the bars are wide enough
+        # for the labels not to collide.
+        if value and step >= 45:
+            label = f"{value:+.2f}"
+            x_text = x - draw.textlength(label, font=LABEL_FONT) / 2
+            y_text = top - 22 if value > 0 else bottom + 6
+            draw.text((x_text, y_text), label, fill=color, font=LABEL_FONT)
 
     total = sum(daily)
     draw.text((MARGIN + 6, MARGIN + 4), title, fill=TEXT, font=TITLE_FONT)
