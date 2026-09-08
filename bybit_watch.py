@@ -13,6 +13,7 @@ the key should not even be able to.
 """
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
@@ -898,7 +899,6 @@ async def tick(
                 if depo:
                     line += f"=<b>{depo:,.2f}$</b>"
                 spoken_line += f", {'profit' if pnl >= 0 else 'loss'} {abs(pnl):.0f}"
-                await sheets.log_close(http, {"row": journal_row(symbol, was, record, pnl)})
                 total_fees = opened_fee + closed_fee
                 png = await close_chart(
                     http,
@@ -910,6 +910,13 @@ async def tick(
                         f" = {pnl:+,.2f}{share(pnl, depo)}"
                     ),
                 )
+                entry: dict = {"row": journal_row(symbol, was, record, pnl)}
+                if png is not None:
+                    # The Apps Script saves it to Drive and writes the link
+                    # into the «Ссылка» column of the same row.
+                    entry["png"] = base64.b64encode(png).decode()
+                    entry["name"] = f"{base_symbol(symbol)}-{record.get('updatedTime', '')}"
+                await sheets.log_close(http, entry)
         if png is None or not await send_photo(line, png):
             await send(line)
         await speak(spoken_line)
