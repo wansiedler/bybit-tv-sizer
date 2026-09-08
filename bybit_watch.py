@@ -721,8 +721,8 @@ def journal_row(
 ) -> list:
     """One trade as a row of the trading-diary sheet.
 
-    Columns: Дата открытия, Пара, Позиция, Результат, RR, Анализ,
-    Фактический результат, Ссылка, Комментарий, Анализ ошибок, Состояние.
+    Columns: Дата, Пара, Позиция, Результат, RR, Результат (R), Скрин,
+    Объём $, Вход, Выход, PnL, % депо, Комиссии, Деп.
     The result figure is the R multiple — PnL over the risk the stop
     carried; without a stop it falls back to net USDT. Free-text columns
     stay empty for hand-written notes.
@@ -737,8 +737,8 @@ def journal_row(
         rr = f"1к{abs(was.take_profit - entry) / abs(entry - was.stop_loss):.1f}"
     risk = abs(entry - was.stop_loss) * was.size if was.stop_loss else 0.0
     fact: float = round(pnl / risk, 2) if risk else round(pnl, 2)
-    # The diary's own columns stay hand-writable; the full close arithmetic
-    # lives in extra columns to the right of «Состояние».
+    # Columns: Дата, Пара, Позиция, Результат, RR, Результат (R), Скрин,
+    # Объём $, Вход, Выход, PnL, % депо, Комиссии, Деп.
     opened_fee = float(record.get("openFee") or 0)
     closed_fee = float(record.get("closeFee") or 0)
     exit_price = float(record.get("avgExitPrice") or 0)
@@ -748,11 +748,7 @@ def journal_row(
         "Лонг" if was.side == "long" else "Шорт",
         "win" if pnl >= 0 else "stop",
         rr,
-        "",
         fact,
-        "",
-        "",
-        "",
         "",
         round(was.value, 2),
         entry,

@@ -868,11 +868,10 @@ def test_journal_row_matches_the_diary_format():
 
     row = bybit_watch.journal_row("CLUSDT", was, record, -1.19)
 
-    assert row[1:5] == ["CLUSDT", "Шорт", "stop", "1к9.5"]
-    assert row[6] == -1.0  # R multiple: pnl over the stop's risk
+    assert row[1:6] == ["CLUSDT", "Шорт", "stop", "1к9.5", -1.0]
     assert row[0].count("/") == 2  # DD/MM/YYYY
-    assert row[5:11] == ["", -1.0, "", "", "", ""]
-    assert row[11:] == [131.0, 92.04, "", -1.19, "", "", ""]
+    assert row[6] == ""  # the screenshot chip is the script's to fill
+    assert row[7:] == [131.0, 92.04, "", -1.19, "", "", ""]
 
 
 def test_journal_row_extras_carry_the_full_arithmetic():
@@ -886,7 +885,7 @@ def test_journal_row_extras_carry_the_full_arithmetic():
 
     row = bybit_watch.journal_row("CLUSDT", was, record, -1.19, 128.16)
 
-    assert row[11:] == [131.0, 92.04, 91.9, -1.19, -0.93, "0.0199+0.0547", 128.16]
+    assert row[7:] == [131.0, 92.04, 91.9, -1.19, -0.93, "0.0199+0.0547", 128.16]
 
 
 def test_journal_row_without_a_stop_falls_back_to_usdt():
@@ -896,7 +895,7 @@ def test_journal_row_without_a_stop_falls_back_to_usdt():
 
     assert row[0] == "" and row[4] == ""
     assert row[3] == "win"
-    assert row[6] == 5.43  # plain net USDT, no risk to divide by
+    assert row[5] == 5.43  # plain net USDT, no risk to divide by
 
 
 def test_bar_of_clamps_to_the_fetched_range(keyed):
