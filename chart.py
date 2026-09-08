@@ -11,6 +11,7 @@ open (`pad_right` leaves empty future for them to stretch into).
 """
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 from io import BytesIO
 
 from PIL import Image, ImageDraw, ImageFont
@@ -182,7 +183,12 @@ def side_by_side(pngs: list[bytes]) -> bytes:
     return out.getvalue()
 
 
-def equity_curve(daily: list[float], title: str = "PnL · 30d", depo: float | None = None) -> bytes:
+def equity_curve(
+    daily: list[float],
+    title: str = "PnL · 30d",
+    depo: float | None = None,
+    end: date | None = None,
+) -> bytes:
     """Daily PnL bars with the period total in the header, as PNG bytes."""
     if not daily:
         raise ValueError("no data")
@@ -220,6 +226,15 @@ def equity_curve(daily: list[float], title: str = "PnL · 30d", depo: float | No
             x_text = x - draw.textlength(label, font=LABEL_FONT) / 2
             y_text = top - 22 if value > 0 else bottom + 6
             draw.text((x_text, y_text), label, fill=color, font=LABEL_FONT)
+
+    if end is not None:
+        # Around ten date marks along the bottom, denser charts skip days.
+        stride = max(1, (len(daily) + 9) // 10)
+        for i in range(0, len(daily), stride):
+            day = end - timedelta(days=len(daily) - 1 - i)
+            label = day.strftime("%d.%m")
+            x_text = MARGIN + step * i + step / 2 - draw.textlength(label, font=LABEL_FONT) / 2
+            draw.text((x_text, HEIGHT - 26), label, fill=GRID_TEXT, font=LABEL_FONT)
 
     total = sum(daily)
     draw.text((MARGIN + 6, MARGIN + 4), title, fill=TEXT, font=TITLE_FONT)
