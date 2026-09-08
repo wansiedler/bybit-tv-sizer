@@ -141,6 +141,26 @@ def test_ping(owner):
     assert rec.sent == ["pong"]
 
 
+def test_links_answers_with_the_link_list(owner):
+    rec = Recorder()
+
+    asyncio.run(
+        commands.dispatch(
+            "links", "", commands.Stats(), rec.send, rec.speak, True, links="📒 a\n📡 b"
+        )
+    )
+
+    assert rec.sent == ["📒 a\n📡 b"]
+
+
+def test_links_without_links_falls_back_to_help(owner):
+    rec = Recorder()
+
+    asyncio.run(commands.dispatch("links", "", commands.Stats(), rec.send, rec.speak, True))
+
+    assert rec.sent == [commands.HELP]
+
+
 def test_positions_answers_with_the_report(owner):
     rec = Recorder()
 

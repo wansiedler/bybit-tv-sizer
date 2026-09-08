@@ -48,6 +48,7 @@ HELP = (
     "/statistics [дней] — results with the equity curve, default 30\n"
     "/close <ticker> — close one position at market, e.g. /close CL\n"
     "/stopall — close every position at market (asks to confirm)\n"
+    "/links — the journal and the TradingView webhook\n"
     "/test — push a sample alert through the whole chain\n"
     "/ping — answer if alive\n"
     "/help — this list"
@@ -149,6 +150,7 @@ async def dispatch(
     close_one=None,
     market=None,
     statistics=None,
+    links: str = "",
 ) -> None:
     """Answer one command. Unknown commands get the help text.
 
@@ -175,6 +177,8 @@ async def dispatch(
         await send(await stop_all())
     elif command == "close" and close_one is not None:
         await send(await close_one(arg))
+    elif command == "links" and links:
+        await send(links)
     elif command == "test":
         await send(f"{SAMPLE_ALERT} (test)")
         spoke = await speak(SAMPLE_ALERT, stats.relayed + 1)
@@ -194,6 +198,7 @@ async def poll(
     close_one=None,
     market=None,
     statistics=None,
+    links: str = "",
 ) -> None:
     """Answer commands until cancelled. Never lets one failure end the loop."""
     offset: int | None = None
@@ -225,6 +230,7 @@ async def poll(
                     close_one,
                     market,
                     statistics,
+                    links,
                 )
             # Deliberately broad: one bad command must not end the loop.
             except Exception:  # noqa: BLE001

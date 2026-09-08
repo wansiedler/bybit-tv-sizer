@@ -373,6 +373,7 @@ async def run() -> None:
                     lambda arg: bybit_watch.stats_report(
                         http, lambda caption, png: send_photo_via_bot(http, caption, png), arg
                     ),
+                    links.strip(),
                 )
             )
             background = {answering}
