@@ -868,7 +868,7 @@ def test_journal_row_matches_the_diary_format():
 
     row = bybit_watch.journal_row("CLUSDT", was, record, -1.19)
 
-    assert row[1:5] == ["CLUSDT", "Шорт", "stop", "1к9"]
+    assert row[1:5] == ["CLUSDT", "Шорт", "stop", "1к9.5"]
     assert row[6] == -1.0  # R multiple: pnl over the stop's risk
     assert row[0].count("/") == 2  # DD/MM/YYYY
     assert row[5:11] == ["", -1.0, "", "", "", ""]

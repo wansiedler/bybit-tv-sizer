@@ -734,7 +734,7 @@ def journal_row(
     opened = datetime.fromtimestamp(int(opened_ms) / 1000).strftime("%d/%m/%Y") if opened_ms else ""
     rr = ""
     if was.stop_loss and was.take_profit:
-        rr = f"1к{abs(was.take_profit - entry) / abs(entry - was.stop_loss):.0f}"
+        rr = f"1к{abs(was.take_profit - entry) / abs(entry - was.stop_loss):.1f}"
     risk = abs(entry - was.stop_loss) * was.size if was.stop_loss else 0.0
     fact: float = round(pnl / risk, 2) if risk else round(pnl, 2)
     # The diary's own columns stay hand-writable; the full close arithmetic
