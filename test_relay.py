@@ -553,6 +553,24 @@ def test_run_starts_the_sizer_when_opted_in(config, monkeypatch):
     assert len(started) == 1
 
 
+def test_run_starts_the_weekly_journal_when_sheets_are_wired(config, monkeypatch):
+    started = []
+
+    async def fake_weekly(http):
+        started.append(http)
+        await asyncio.sleep(3600)  # runs until the relay cancels it
+
+    monkeypatch.setattr(relay.sheets, "enabled", lambda: True)
+    monkeypatch.setattr(relay.sheets, "weekly", fake_weekly)
+
+    async def disconnect_immediately(client):
+        return None
+
+    _run_relay(monkeypatch, disconnect_immediately)
+
+    assert len(started) == 1
+
+
 def test_run_starts_the_tv_webhook_when_a_secret_is_set(config, monkeypatch):
     stopped = []
 

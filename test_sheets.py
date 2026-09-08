@@ -76,3 +76,66 @@ def test_log_close_survives_transport_errors(caplog):
         assert asyncio.run(sheets.log_close(http, {"symbol": "CL"})) is False
 
     assert "could not journal" in caplog.text
+
+
+def test_seconds_to_sunday_targets_the_coming_sunday_evening():
+    from datetime import datetime, timedelta
+
+    wednesday = datetime(2026, 9, 9, 12, 0)  # a Wednesday noon
+    seconds = sheets.seconds_to_sunday(wednesday)
+
+    assert wednesday + timedelta(seconds=seconds) == datetime(2026, 9, 13, 23, 55)
+
+
+def test_seconds_to_sunday_rolls_over_right_after_the_deadline():
+    from datetime import datetime, timedelta
+
+    late_sunday = datetime(2026, 9, 13, 23, 56)
+    seconds = sheets.seconds_to_sunday(late_sunday)
+
+    assert late_sunday + timedelta(seconds=seconds) == datetime(2026, 9, 20, 23, 55)
+
+
+def test_weekly_posts_the_summary_every_wakeup(monkeypatch):
+    posted = []
+    naps = []
+
+    async def fake_summary(http):
+        posted.append(True)
+        return len(posted) == 1  # first posts fine, second is refused
+
+    async def fake_sleep(seconds):
+        naps.append(seconds)
+        if len(naps) > 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(sheets, "week_summary", fake_summary)
+    monkeypatch.setattr(sheets.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(sheets, "seconds_to_sunday", lambda now: 1.0)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(sheets.weekly(None))
+
+    assert posted == [True, True]
+    assert naps == [1.0, 1.0, 1.0]
+
+
+def test_week_summary_posts_the_flag():
+    import json
+
+    sent = {}
+
+    class FakeHTTP:
+        async def post(self, url, content=None, headers=None, timeout=None, follow_redirects=None):
+            sent.update(json.loads(content))
+
+            class R:
+                status_code = 200
+                text = "ok"
+
+            return R()
+
+    ok = asyncio.run(sheets.week_summary(FakeHTTP()))
+
+    assert ok is True
+    assert sent["week"] is True and "secret" in sent

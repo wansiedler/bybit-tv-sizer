@@ -12,9 +12,11 @@ Both empty disables the journal. Logging is best-effort: a dead sheet must
 never block a close notice.
 """
 
+import asyncio
 import json
 import logging
 import os
+from datetime import datetime, timedelta
 
 import httpx
 from dotenv import load_dotenv
@@ -55,3 +57,25 @@ async def log_close(http: httpx.AsyncClient, entry: dict) -> bool:
         return False
     log.info("journaled: %s", entry.get("symbol"))
     return True
+
+
+async def week_summary(http: httpx.AsyncClient) -> bool:
+    """Ask the sheet to append its weekly-total row. Never raises."""
+    return await log_close(http, {"week": True})
+
+
+def seconds_to_sunday(now: datetime) -> float:
+    """Seconds until the next Sunday 23:55 (local); a week if that just passed."""
+    days_ahead = (6 - now.weekday()) % 7
+    target = (now + timedelta(days=days_ahead)).replace(hour=23, minute=55, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=7)
+    return (target - now).total_seconds()
+
+
+async def weekly(http: httpx.AsyncClient) -> None:
+    """Post the week's total every Sunday evening, container-local time."""
+    while True:
+        await asyncio.sleep(seconds_to_sunday(datetime.now()))
+        if await week_summary(http):
+            log.info("weekly summary posted")

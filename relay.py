@@ -22,6 +22,7 @@ from telethon import TelegramClient, events
 
 import bybit_watch
 import commands
+import sheets
 import sizer
 import speaker
 import tv_alerts
@@ -384,6 +385,8 @@ async def run() -> None:
                 background.add(
                     asyncio.create_task(sizer.poll(http, lambda text: send_via_bot(http, text)))
                 )
+            if sheets.enabled():
+                background.add(asyncio.create_task(sheets.weekly(http)))
             if tv_alerts.enabled():
                 alerts: asyncio.Queue = asyncio.Queue()
                 webhook = tv_alerts.serve(asyncio.get_running_loop(), alerts)
