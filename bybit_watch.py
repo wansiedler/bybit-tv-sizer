@@ -49,7 +49,7 @@ def _api_url() -> str:
 
 
 API_URL = _api_url()
-POLL = int(os.getenv("BYBIT_POLL", "10"))
+POLL = float(os.getenv("BYBIT_POLL", "10"))
 # Money-management checks on a freshly opened position: complain when the
 # reward-to-risk is below MIN_RR (0 disables), or when the actual risk
 # strays more than a quarter away from the RISK_PCT the sizer targets.
