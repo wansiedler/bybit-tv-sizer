@@ -41,6 +41,7 @@ def _default_config(monkeypatch, tmp_path):
     bybit_watch._guard_seen.clear()
     monkeypatch.setattr(tv_alerts, "TV_WEBHOOK_SECRET", "")
     monkeypatch.setattr(tv_alerts, "JOURNAL_URL", "")
+    monkeypatch.setattr(tv_alerts, "TV_PUBLIC_URL", "")
     monkeypatch.setattr(sheets, "SHEETS_URL", "")
     monkeypatch.setattr(sheets, "SHEETS_SECRET", "")
     monkeypatch.setattr(commands, "SOURCE", "source_bot")

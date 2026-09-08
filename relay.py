@@ -344,7 +344,14 @@ async def run() -> None:
                 log.info("speaking hours: %s", speaker.hours_text())
 
             started = time.time()
-            await notify(http, f"🟢 {RELAY_NAME} up — listening {SOURCE} as @{who}{speaking}")
+            links = ""
+            if tv_alerts.JOURNAL_URL:
+                links += f"\n📒 {tv_alerts.JOURNAL_URL}"
+            if tv_alerts.enabled() and tv_alerts.TV_PUBLIC_URL:
+                links += f"\n📡 {tv_alerts.TV_PUBLIC_URL}/tv/{tv_alerts.TV_WEBHOOK_SECRET}"
+            await notify(
+                http, f"🟢 {RELAY_NAME} up — listening {SOURCE} as @{who}{speaking}{links}"
+            )
             if audio is not None:
                 await speaker.lifecycle("Relay up")
 

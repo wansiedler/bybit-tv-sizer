@@ -30,6 +30,8 @@ TV_PORT = int(os.getenv("TV_PORT", "8423"))
 # GET /j answers with a redirect to the trading journal, so the sheet has a
 # short address on the own domain. Empty keeps the path dead silent.
 JOURNAL_URL = os.getenv("JOURNAL_URL", "")
+# The public origin the tunnel exposes this webhook on, for the up notice.
+TV_PUBLIC_URL = os.getenv("TV_PUBLIC_URL", "")
 # TradingView alert messages are short; anything huge is not an alert.
 MAX_BODY = 4096
 

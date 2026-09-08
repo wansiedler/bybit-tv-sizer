@@ -471,6 +471,22 @@ def test_run_reports_up_and_down(config, monkeypatch):
     assert FakeClient.instances[0].disconnected is True
 
 
+def test_run_up_notice_carries_the_journal_and_webhook_links(config, monkeypatch):
+    monkeypatch.setattr(relay.tv_alerts, "JOURNAL_URL", "https://example.test/sheet")
+    monkeypatch.setattr(relay.tv_alerts, "TV_PUBLIC_URL", "https://tv.example.test")
+    monkeypatch.setattr(relay.tv_alerts, "TV_WEBHOOK_SECRET", "s3cret")
+    monkeypatch.setattr(relay.tv_alerts, "TV_PORT", 0)  # ephemeral: no clash
+
+    async def disconnect_immediately(client):
+        return None
+
+    http, _ = _run_relay(monkeypatch, disconnect_immediately)
+
+    up = str(http.posted[0])
+    assert "📒 https://example.test/sheet" in up
+    assert "📡 https://tv.example.test/tv/s3cret" in up
+
+
 def test_run_announces_speaking_hours_with_a_speaker(config, monkeypatch):
     class FakeAudio:
         def shutdown(self):
