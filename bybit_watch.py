@@ -710,7 +710,9 @@ async def entry_fee(http: httpx.AsyncClient, symbol: str) -> float | None:
         return None
 
 
-def journal_row(symbol: str, was: Position, record: dict, pnl: float) -> list:
+def journal_row(
+    symbol: str, was: Position, record: dict, pnl: float, depo: float | None = None
+) -> list:
     """One trade as a row of the trading-diary sheet.
 
     Columns: Дата открытия, Пара, Позиция, Результат, RR, Анализ,
@@ -729,6 +731,20 @@ def journal_row(symbol: str, was: Position, record: dict, pnl: float) -> list:
         rr = f"1к{abs(was.take_profit - entry) / abs(entry - was.stop_loss):.0f}"
     risk = abs(entry - was.stop_loss) * was.size if was.stop_loss else 0.0
     fact: float = round(pnl / risk, 1) if risk else round(pnl, 2)
+    # The comment column carries the close notice's full arithmetic.
+    opened_fee = float(record.get("openFee") or 0)
+    closed_fee = float(record.get("closeFee") or 0)
+    exit_price = float(record.get("avgExitPrice") or 0)
+    comment = f"{_val(was.value)}$@{entry:g}"
+    if exit_price:
+        comment += f"→{exit_price:g}"
+    comment += f" PnL{_usd(pnl)}"
+    if depo:
+        comment += f"({pnl / depo * 100:+.2f}%)"
+    if opened_fee or closed_fee:
+        comment += f"-({opened_fee:.4g}+{closed_fee:.4g})"
+    if depo:
+        comment += f"=деп{depo:,.2f}$"
     return [
         opened,
         symbol,
@@ -738,7 +754,7 @@ def journal_row(symbol: str, was: Position, record: dict, pnl: float) -> list:
         "",
         fact,
         "",
-        "",
+        comment,
         "",
         "",
     ]
@@ -910,7 +926,7 @@ async def tick(
                         f" = {pnl:+,.2f}{share(pnl, depo)}"
                     ),
                 )
-                entry: dict = {"row": journal_row(symbol, was, record, pnl)}
+                entry: dict = {"row": journal_row(symbol, was, record, pnl, depo)}
                 if png is not None:
                     # The Apps Script saves it to Drive and writes the link
                     # into the «Ссылка» column of the same row.

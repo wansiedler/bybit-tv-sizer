@@ -860,7 +860,23 @@ def test_journal_row_matches_the_diary_format():
     assert row[1:5] == ["CLUSDT", "Шорт", "stop", "1к9"]
     assert row[6] == -1.0  # R multiple: pnl over the stop's risk
     assert row[0].count("/") == 2  # DD/MM/YYYY
-    assert row[5] == "" and row[7:] == ["", "", "", ""]
+    assert row[5] == "" and row[7] == ""
+    assert row[8] == "131$@92.04 PnL-1.19"
+    assert row[9:] == ["", ""]
+
+
+def test_journal_row_comment_carries_the_full_arithmetic():
+    was = Position("short", 1.42, 92.0, 131.0, stop_loss=92.88)
+    record = {
+        "avgEntryPrice": "92.04",
+        "avgExitPrice": "91.9",
+        "openFee": "0.0199",
+        "closeFee": "0.0547",
+    }
+
+    row = bybit_watch.journal_row("CLUSDT", was, record, -1.19, 128.16)
+
+    assert row[8] == "131$@92.04→91.9 PnL-1.19(-0.93%)-(0.0199+0.0547)=деп128.16$"
 
 
 def test_journal_row_without_a_stop_falls_back_to_usdt():
