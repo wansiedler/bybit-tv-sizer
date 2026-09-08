@@ -363,11 +363,10 @@ def test_guard_flags_leverage_above_the_cap(guarding):
     assert out.sent == ["🛑 OP: плечо 3x > 1x — закрою маркетом через 45с"]
 
 
-def test_guard_market_closes_after_the_grace_window(guarding, monkeypatch):
+def test_guard_market_closes_instantly_without_a_grace_window(guarding, monkeypatch):
     monkeypatch.setattr(bybit_watch, "GUARD_GRACE", 0.0)
     http, out = ClosingHTTP(), Recorder()
 
-    asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
     asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
 
     assert http.orders == [
@@ -381,6 +380,17 @@ def test_guard_market_closes_after_the_grace_window(guarding, monkeypatch):
             "positionIdx": 0,
         }
     ]
+    assert out.sent[-1] == "🛑 CL закрыт маркетом риск-менеджером: нет стопа"
+
+
+def test_guard_closes_once_the_grace_window_has_passed(guarding):
+    http, out = ClosingHTTP(), Recorder()
+
+    asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
+    bybit_watch._guard_seen["CLUSDT"] -= 60.0  # pretend the window elapsed
+    asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
+
+    assert len(http.orders) == 1
     assert out.sent[-1] == "🛑 CL закрыт маркетом риск-менеджером: нет стопа"
 
 
@@ -405,7 +415,7 @@ def test_guard_forgets_a_position_that_closed_itself(guarding):
     assert bybit_watch._guard_seen == {}
 
 
-def test_guard_reports_a_refused_close(guarding, monkeypatch):
+def test_guard_reports_a_refused_close_and_backs_off(guarding, monkeypatch):
     monkeypatch.setattr(bybit_watch, "GUARD_GRACE", 0.0)
     http, out = ClosingHTTP(), Recorder()
     http.refuse_order = True
@@ -413,7 +423,8 @@ def test_guard_reports_a_refused_close(guarding, monkeypatch):
     asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
     asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
 
-    assert "риск-менеджер не смог закрыть" in out.sent[-1]
+    # One attempt, one complaint: the retry waits out the backoff window.
+    assert out.sent == ["❌ CL: риск-менеджер не смог закрыть (order rejected)"]
 
 
 def test_guard_stays_dormant_when_disabled(keyed):

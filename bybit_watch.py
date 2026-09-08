@@ -253,16 +253,20 @@ async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, sp
         first = _guard_seen.get(symbol)
         if first is None:
             _guard_seen[symbol] = now
-            await send(
-                f"🛑 {base_symbol(symbol)}: {reason} — закрою маркетом через {GUARD_GRACE:.0f}с"
-            )
-            await speak(f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} risk breach")
+            if GUARD_GRACE > 0:
+                await send(
+                    f"🛑 {base_symbol(symbol)}: {reason} — закрою маркетом через {GUARD_GRACE:.0f}с"
+                )
+                await speak(
+                    f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} risk breach"
+                )
+                continue
+        # A refused close retries after a full window (half a minute when the
+        # grace is zero) instead of hammering the API every poll.
+        elif now - first < (GUARD_GRACE or 30.0):
             continue
-        if now - first < GUARD_GRACE:
-            continue
-        # Rearm so a refused close retries after another full window instead
-        # of hammering the API every poll.
-        _guard_seen[symbol] = now
+        else:
+            _guard_seen[symbol] = now
         try:
             await _close_market(
                 http,
