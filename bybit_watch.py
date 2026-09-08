@@ -462,6 +462,7 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         fees = 2 * TAKER_FEE * position.value
         net = position.unrealised - fees
         head = f"{arrow}{base_symbol(symbol)} {_val(position.value)}$@{position.price:g}"
+        rr = None
         if position.stop_loss and position.take_profit:
             rr = abs(position.take_profit - position.price) / abs(
                 position.price - position.stop_loss
@@ -493,6 +494,7 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
                 entry_note=(
                     f"{_val(position.value)}$"
                     + (f" ({position.value / depo * 100:.1f}% depo)" if depo else "")
+                    + (f" | RR {rr:.2f}" if rr is not None else "")
                     + f" | PnL {position.unrealised:+,.2f} - fee {fees:.2f}"
                     + f" = {net:+,.2f}{share(net)}"
                 ),
@@ -858,7 +860,7 @@ async def tick(
             fee = await entry_fee(http, symbol)
             depo = await equity(http)
             fees = 2 * (fee or TAKER_FEE * now.value)
-            at_sl = target = None
+            at_sl = target = rr = None
             if now.stop_loss is not None and now.take_profit is not None:
                 rr = abs(now.take_profit - now.price) / abs(now.price - now.stop_loss)
                 line += f" | RR{rr:.2f}"
@@ -888,6 +890,7 @@ async def tick(
                 entry_note=(
                     f"{_val(now.value)}$"
                     + (f" ({now.value / depo * 100:.1f}% depo)" if depo else "")
+                    + (f" | RR {rr:.2f}" if rr is not None else "")
                     + (f" | fee {fee:.2f}" if fee else "")
                 ),
                 tp_note=(
