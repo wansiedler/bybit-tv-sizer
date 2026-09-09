@@ -43,8 +43,8 @@ SPEAK_LIFECYCLE=1
 # the bot and the speaker. Create the key with the Read permission ONLY —
 # the relay never trades, and the key should not be able to either.
 # Both empty disables the watcher.
-BYBIT_API_KEY=
-BYBIT_API_SECRET=
+BB_A_K=
+BB_A_S=
 # Seconds between polls of the private v5 API.
 BYBIT_POLL=0.5
 # Kline timeframe for every chart screenshot, in minutes.

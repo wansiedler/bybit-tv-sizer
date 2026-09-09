@@ -4,8 +4,8 @@ Polls the private v5 REST API rather than the realtime WebSocket: httpx is
 already a dependency, polling needs no reconnect logic, and a spoken "position
 opened" does not care about a few seconds of latency.
 
-    BYBIT_API_KEY=...       # read-only key: Read permission, nothing else
-    BYBIT_API_SECRET=...
+    BB_A_K=...       # read-only key: Read permission, nothing else
+    BB_A_S=...
     BYBIT_POLL=10           # seconds between polls
 
 The watcher is dormant until both keys are present. It never places orders;
@@ -35,8 +35,8 @@ log = logging.getLogger("relay.bybit")
 # relay.py imports this module before its own load_dotenv, same as speaker.
 load_dotenv("bipboop")
 
-API_KEY = os.getenv("BYBIT_API_KEY", "")
-API_SECRET = os.getenv("BYBIT_API_SECRET", "")
+API_KEY = os.getenv("BB_A_K", "")
+API_SECRET = os.getenv("BB_A_S", "")
 
 
 def _api_url() -> str:
