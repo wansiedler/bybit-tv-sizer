@@ -228,6 +228,54 @@ act -j tests
 The `docker` job is the one to leave to real CI — it needs a daemon inside the
 job container, which is exactly the mount `.actrc` disables.
 
+## Trade journal in Google Sheets
+
+Every closed trade lands as a row in a Google Sheet — pair, side, win/stop,
+RR, the R multiple, full money figures, a screenshot chip on your Drive —
+plus a weekly total row every Sunday at 23:55 and automatic deposit and
+withdrawal rows. One-time setup:
+
+1. **The spreadsheet.** Create one (or copy your diary template) and note its
+   link. The relay writes to the FIRST sheet of it.
+2. **The Apps Script.** In the spreadsheet: Extensions → Apps Script. Paste
+   the `doPost` script (see `docs/sheets-script.js` below), set `SECRET` to a
+   long random string of your own.
+3. **A Google Cloud project** — needed because Google hard-blocks the Drive
+   scope for anonymous scripts:
+   - console.cloud.google.com → New project.
+   - APIs & Services → OAuth consent screen → External, keep it in
+     **Testing**, add your own gmail under **Test users**.
+   - Enable **Google Drive API** and **Google Sheets API** in that project
+     (APIs & Services → Library).
+   - In the Apps Script editor: Project Settings (⚙️) → GCP project →
+     Change project → paste the project number.
+   - In the editor's Services panel (+) add **Google Sheets API** — the
+     screenshot chips go through it.
+4. **Authorize.** Run the `authTest` function once (Run ▶) and allow the
+   permissions — the "unverified" warning is fine, you are the test user.
+5. **Deploy.** Deploy → New deployment → Web app, Execute as **Me**, access
+   **Anyone**. Copy the `/exec` URL.
+6. **Wire the relay.** In `bipboop`:
+
+   ```ini
+   SHEETS_URL=https://script.google.com/macros/s/…/exec
+   SHEETS_SECRET=the same string as in the script
+   JOURNAL_URL=https://docs.google.com/spreadsheets/d/…/edit
+   ```
+
+   Restart the container. `/links` in the bot answers with the journal.
+
+Redeploys of the script must go through Deploy → **Manage deployments** →
+edit → **New version** — a fresh "New deployment" changes the `/exec` URL and
+breaks `SHEETS_URL`.
+
+The script itself lives in the spreadsheet, not in this repo; the reference
+copy is in [docs/sheets-script.js](docs/sheets-script.js). It handles four
+payloads: `{row: [...]}` appends a trade (with an optional base64 `png`
+saved to the Drive folder `trade-screens` and chipped into column G),
+`{week: true}` appends the weekly total, `{headers: [...]}` rewrites row 1,
+`{totals: true}` builds the frozen running-total row 2.
+
 ## Tuning
 
 - `parser.py` → `QUOTES` — quote assets stripped from the pair (`OPUSDT` → `OP`).
