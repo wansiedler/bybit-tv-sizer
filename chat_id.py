@@ -9,7 +9,7 @@ import sys
 import httpx
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv("bipboop")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:

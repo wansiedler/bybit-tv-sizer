@@ -28,7 +28,7 @@ import speaker
 import tv_alerts
 from parser import parse_alert
 
-load_dotenv()
+load_dotenv("bipboop")
 
 API_ID = os.getenv("TG_API_ID")
 API_HASH = os.getenv("TG_API_HASH")
@@ -37,7 +37,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 # People whose messages are relayed verbatim, wherever they post.
 WATCH_USERS = commands.parse_watch_users(os.getenv("WATCH_USERS", "some_trader"))
 TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID")
-# `or` rather than a getenv default: a SESSION_NAME left blank in .env is an
+# `or` rather than a getenv default: a SESSION_NAME left blank in bipboop is an
 # empty string, not a missing key, and an empty session path is nobody's
 # intent.
 SESSION = os.getenv("SESSION_NAME") or "session/lexx_relay"
@@ -71,7 +71,7 @@ def require_config() -> tuple[int, str]:
         if not value
     ]
     if missing:
-        sys.exit(f"Missing in .env: {', '.join(missing)}")
+        sys.exit(f"Missing in bipboop: {', '.join(missing)}")
     # `or ""` is what narrows str | None to str; the list above has already
     # ruled the empty case out, so no unreachable branch is left behind.
     api_id, api_hash = API_ID or "", API_HASH or ""
@@ -392,6 +392,12 @@ async def run() -> None:
             if sizer.enabled():
                 background.add(
                     asyncio.create_task(sizer.poll(http, lambda text: send_via_bot(http, text)))
+                )
+            if bybit_watch.enabled():
+                background.add(
+                    asyncio.create_task(
+                        bybit_watch.money_poll(http, lambda text: send_via_bot(http, text))
+                    )
                 )
             if sheets.enabled():
                 background.add(asyncio.create_task(sheets.weekly(http)))

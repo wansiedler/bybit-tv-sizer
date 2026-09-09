@@ -35,8 +35,8 @@ import bybit_watch
 
 log = logging.getLogger("relay.sizer")
 
-# relay.py imports this module before its own load_dotenv(), same as speaker.
-load_dotenv()
+# relay.py imports this module before its own load_dotenv, same as speaker.
+load_dotenv("bipboop")
 
 DRY_RUN = os.getenv("DRY_RUN", "1").lower() not in ("0", "false", "no", "")
 RISK_PCT = Decimal(os.getenv("RISK_PCT", "0.5")) / Decimal(100)

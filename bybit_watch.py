@@ -32,8 +32,8 @@ from parser import base_symbol
 
 log = logging.getLogger("relay.bybit")
 
-# relay.py imports this module before its own load_dotenv(), same as speaker.
-load_dotenv()
+# relay.py imports this module before its own load_dotenv, same as speaker.
+load_dotenv("bipboop")
 
 API_KEY = os.getenv("BYBIT_API_KEY", "")
 API_SECRET = os.getenv("BYBIT_API_SECRET", "")
@@ -938,6 +938,112 @@ async def tick(
             await send(line)
         await speak(spoken_line)
     return after
+
+
+async def money_moves(http: httpx.AsyncClient) -> list[dict]:
+    """Finished deposits, withdrawals and unified-account transfers, 7 days.
+
+    Each move: an `id` stable across polls, a signed `amount` (into the
+    trading account positive, out of it negative) and the `coin`.
+    """
+    since = str(int((time.time() - 7 * 86400) * 1000))
+    moves: list[dict] = []
+    result = await _get(http, "/v5/asset/deposit/query-record", {"startTime": since, "limit": "50"})
+    for r in result.get("rows", []):
+        if str(r.get("status")) == "3":  # 3 = success
+            moves.append(
+                {
+                    "id": f"dep-{r.get('txID') or r.get('successAt')}",
+                    "amount": float(r.get("amount") or 0),
+                    "coin": r.get("coin", ""),
+                }
+            )
+    result = await _get(
+        http, "/v5/asset/withdraw/query-record", {"startTime": since, "limit": "50"}
+    )
+    for r in result.get("rows", []):
+        if r.get("status") == "success":
+            moves.append(
+                {
+                    "id": f"wd-{r.get('withdrawId')}",
+                    "amount": -float(r.get("amount") or 0),
+                    "coin": r.get("coin", ""),
+                }
+            )
+    result = await _get(http, "/v5/asset/transfer/query-inter-transfer-list", {"limit": "50"})
+    for r in result.get("list", []):
+        into = r.get("toAccountType") == "UNIFIED"
+        out_of = r.get("fromAccountType") == "UNIFIED"
+        # Only finished transfers that cross the trading account's border.
+        if r.get("status") != "SUCCESS" or into == out_of:
+            continue
+        moves.append(
+            {
+                "id": f"tr-{r.get('transferId')}",
+                "amount": float(r.get("amount") or 0) * (1 if into else -1),
+                "coin": r.get("coin", ""),
+            }
+        )
+    return moves
+
+
+async def money_tick(http: httpx.AsyncClient, seen: set[str] | None, send) -> set[str]:
+    """One money poll: announce and journal every move not seen before.
+
+    A `seen` of None primes silently — history that predates the relay's
+    start is not news, exactly like tick() and its first snapshot.
+    """
+    from datetime import datetime
+
+    moves = await money_moves(http)
+    ids = {str(m["id"]) for m in moves}
+    if seen is None:
+        return ids
+    for m in moves:
+        if m["id"] in seen:
+            continue
+        amount = float(m["amount"])
+        word = "завел" if amount > 0 else "вывел"
+        depo = await equity(http)
+        line = f"💵 {word} {amount:+,.2f} {m['coin']}"
+        if depo:
+            line += f" · деп {depo:,.2f}$"
+        await send(line)
+        row = [
+            datetime.now().strftime("%d/%m/%Y"),
+            "перевод",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            round(depo, 2) if depo else "",
+            round(amount, 2),
+        ]
+        await sheets.log_close(http, {"row": row})
+    return seen | ids
+
+
+async def money_poll(http: httpx.AsyncClient, send) -> None:
+    """Watch deposits and withdrawals until cancelled. Failures never end it."""
+    log.info("watching bybit transfers every 60s")
+    seen: set[str] | None = None
+    while True:
+        try:
+            seen = await money_tick(http, seen, send)
+        except asyncio.CancelledError:
+            raise
+        # Deliberately broad: a key without Assets permission answers with an
+        # error forever; the watcher must idle, not crash the relay.
+        except Exception:  # noqa: BLE001
+            log.exception("money poll failed")
+        await asyncio.sleep(60.0)
 
 
 async def poll(http: httpx.AsyncClient, send, speak, send_photo) -> None:

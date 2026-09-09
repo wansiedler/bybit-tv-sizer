@@ -37,14 +37,14 @@ bot for delivery.
 2. Fill the config yourself — no credentials belong in the repo:
 
    ```bash
-   cp .env.example .env
+   cp bipboop.example bipboop
    ```
 
    - `TG_API_ID`, `TG_API_HASH` — from step 1
    - `BOT_TOKEN` — @BotFather → `@your_bot`
    - `TARGET_CHAT_ID` — leave empty for now
 
-3. Send `/start` to `@your_bot`, then read your chat id and put it in `.env`:
+3. Send `/start` to `@your_bot`, then read your chat id and put it in `bipboop`:
 
    ```bash
    .venv/bin/python chat_id.py
@@ -160,7 +160,7 @@ itself. So the relay serves the generated speech over HTTP on the LAN and tells
 the speaker where to look. That is why `TTS_HOST` must be this machine's LAN
 address and never `localhost`: the URL is resolved by the speaker.
 
-Find the speaker, then put both addresses in `.env`:
+Find the speaker, then put both addresses in `bipboop`:
 
 ```bash
 dns-sd -B _googlecast._tcp local
@@ -233,11 +233,11 @@ job container, which is exactly the mount `.actrc` disables.
 - `parser.py` → `QUOTES` — quote assets stripped from the pair (`OPUSDT` → `OP`).
 - `parser.py` → `parse_alert` — a message is relayed only when symbol, trend and
   price are all present.
-- `.env` → `SOURCE_CHAT` — defaults to `source_bot`.
+- `bipboop` → `SOURCE_CHAT` — defaults to `source_bot`.
 
 ## Docker
 
-The image ships the relay only — credentials stay in your local `.env`, and the
+The image ships the relay only — credentials stay in your local `bipboop`, and the
 Telethon session is kept in the `session/` volume so the login survives
 restarts.
 
@@ -258,4 +258,4 @@ docker compose up -d
 docker compose logs -f
 ```
 
-Neither `.env` nor the session file is baked into the image (`.dockerignore`).
+Neither `bipboop` nor the session file is baked into the image (`.dockerignore`).

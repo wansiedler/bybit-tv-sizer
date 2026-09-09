@@ -22,8 +22,8 @@ from dotenv import load_dotenv
 
 log = logging.getLogger("relay.tv")
 
-# relay.py imports this module before its own load_dotenv(), same as speaker.
-load_dotenv()
+# relay.py imports this module before its own load_dotenv, same as speaker.
+load_dotenv("bipboop")
 
 TV_WEBHOOK_SECRET = os.getenv("TV_WEBHOOK_SECRET", "")
 TV_PORT = int(os.getenv("TV_PORT", "8423"))

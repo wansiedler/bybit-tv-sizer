@@ -33,9 +33,9 @@ from coin_names import COIN_NAMES
 
 log = logging.getLogger("relay.speaker")
 
-# Imported by relay.py ahead of its own load_dotenv(), so read the file here
+# Imported by relay.py ahead of its own load_dotenv("bipboop"), so read the file here
 # as well — without it CAST_HOST/TTS_HOST are empty and speaking stays off.
-load_dotenv()
+load_dotenv("bipboop")
 
 CAST_HOST = os.getenv("CAST_HOST", "")
 CAST_PORT = int(os.getenv("CAST_PORT", "8009"))

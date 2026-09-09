@@ -23,8 +23,8 @@ from dotenv import load_dotenv
 
 log = logging.getLogger("relay.sheets")
 
-# relay.py imports this module before its own load_dotenv(), same as speaker.
-load_dotenv()
+# relay.py imports this module before its own load_dotenv, same as speaker.
+load_dotenv("bipboop")
 
 SHEETS_URL = os.getenv("SHEETS_URL", "")
 SHEETS_SECRET = os.getenv("SHEETS_SECRET", "")

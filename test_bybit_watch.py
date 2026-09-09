@@ -32,6 +32,9 @@ class FakeHTTP:
         self.kline_rows: list[list[str]] = []
         self.exec_rows: list[dict[str, Any]] = []
         self.equity_rows: list[dict[str, Any]] = []
+        self.deposit_rows: list[dict[str, Any]] = []
+        self.withdraw_rows: list[dict[str, Any]] = []
+        self.transfer_rows: list[dict[str, Any]] = []
         self.requests: list[str] = []
 
     async def get(self, url, headers=None, timeout=None):
@@ -45,6 +48,12 @@ class FakeHTTP:
             return FakeResponse({"retCode": 0, "result": {"list": self.exec_rows}})
         if "/v5/account/wallet-balance" in url:
             return FakeResponse({"retCode": 0, "result": {"list": self.equity_rows}})
+        if "/v5/asset/deposit/query-record" in url:
+            return FakeResponse({"retCode": 0, "result": {"rows": self.deposit_rows}})
+        if "/v5/asset/withdraw/query-record" in url:
+            return FakeResponse({"retCode": 0, "result": {"rows": self.withdraw_rows}})
+        if "/v5/asset/transfer/query-inter-transfer-list" in url:
+            return FakeResponse({"retCode": 0, "result": {"list": self.transfer_rows}})
         return FakeResponse({"retCode": 0, "result": {"list": self.pnl_rows}})
 
 
@@ -1050,6 +1059,165 @@ def test_tick_close_survives_a_missing_pnl(keyed):
 # --------------------------------------------------------------------------- #
 #  poll                                                                        #
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+#  money moves                                                                 #
+# --------------------------------------------------------------------------- #
+def money_http():
+    http = FakeHTTP()
+    http.deposit_rows = [
+        {"txID": "t1", "amount": "50", "coin": "USDT", "status": "3"},
+        {"txID": "t2", "amount": "10", "coin": "USDT", "status": "1"},  # pending
+    ]
+    http.withdraw_rows = [
+        {"withdrawId": "w1", "amount": "100", "coin": "USDT", "status": "success"},
+        {"withdrawId": "w2", "amount": "5", "coin": "USDT", "status": "Reject"},
+    ]
+    http.transfer_rows = [
+        {
+            "transferId": "a",
+            "amount": "20",
+            "coin": "USDT",
+            "status": "SUCCESS",
+            "fromAccountType": "FUND",
+            "toAccountType": "UNIFIED",
+        },
+        {
+            "transferId": "b",
+            "amount": "30",
+            "coin": "USDT",
+            "status": "SUCCESS",
+            "fromAccountType": "UNIFIED",
+            "toAccountType": "FUND",
+        },
+        {
+            "transferId": "c",
+            "amount": "7",
+            "coin": "USDT",
+            "status": "SUCCESS",
+            "fromAccountType": "FUND",
+            "toAccountType": "SPOT",
+        },  # not ours
+        {
+            "transferId": "d",
+            "amount": "9",
+            "coin": "USDT",
+            "status": "PENDING",
+            "fromAccountType": "FUND",
+            "toAccountType": "UNIFIED",
+        },
+    ]
+    return http
+
+
+def test_money_moves_reads_finished_flows_only(keyed):
+    moves = asyncio.run(bybit_watch.money_moves(money_http()))
+
+    assert {(m["id"], m["amount"]) for m in moves} == {
+        ("dep-t1", 50.0),
+        ("wd-w1", -100.0),
+        ("tr-a", 20.0),
+        ("tr-b", -30.0),
+    }
+
+
+def test_money_tick_primes_silently(keyed):
+    out = Recorder()
+
+    seen = asyncio.run(bybit_watch.money_tick(money_http(), None, out.send))
+
+    assert seen == {"dep-t1", "wd-w1", "tr-a", "tr-b"}
+    assert out.sent == []
+
+
+def test_money_tick_announces_and_journals_new_moves(keyed, monkeypatch):
+    out = Recorder()
+    journaled = []
+
+    async def fake_log_close(http, entry):
+        journaled.append(entry)
+        return True
+
+    monkeypatch.setattr(bybit_watch.sheets, "log_close", fake_log_close)
+    http = money_http()
+    http.equity_rows = [{"totalEquity": "128.0", "totalAvailableBalance": "50"}]
+
+    seen = asyncio.run(bybit_watch.money_tick(http, {"dep-t1", "wd-w1", "tr-b"}, out.send))
+
+    assert out.sent == ["💵 завел +20.00 USDT · деп 128.00$"]
+    assert seen == {"dep-t1", "wd-w1", "tr-a", "tr-b"}
+    row = journaled[0]["row"]
+    assert row[1] == "перевод"
+    assert row[13:] == [128.0, 20.0]
+
+
+def test_money_tick_without_equity_skips_the_depo(keyed, monkeypatch):
+    out = Recorder()
+
+    async def fake_log_close(http, entry):
+        return True
+
+    monkeypatch.setattr(bybit_watch.sheets, "log_close", fake_log_close)
+
+    asyncio.run(bybit_watch.money_tick(money_http(), {"dep-t1", "tr-a", "tr-b"}, out.send))
+
+    assert out.sent == ["💵 вывел -100.00 USDT"]
+
+
+def test_money_poll_survives_failures(keyed, monkeypatch, caplog):
+    class Refusing(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise OSError("no assets permission")
+
+    naps = []
+
+    async def fake_sleep(seconds):
+        naps.append(seconds)
+        if len(naps) >= 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(bybit_watch.asyncio, "sleep", fake_sleep)
+    out = Recorder()
+
+    with caplog.at_level("ERROR", logger="relay.bybit"), pytest.raises(asyncio.CancelledError):
+        asyncio.run(bybit_watch.money_poll(Refusing(), out.send))
+
+    assert "money poll failed" in caplog.text
+    assert out.sent == []
+
+
+def test_money_poll_lets_cancellation_through(keyed):
+    class Cancelling(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise asyncio.CancelledError
+
+    out = Recorder()
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(bybit_watch.money_poll(Cancelling(), out.send))
+
+    assert out.sent == []
+
+
+def test_money_poll_hands_ticks_through(keyed, monkeypatch):
+    ticks = []
+
+    async def fake_tick(http, seen, send):
+        ticks.append(seen)
+        return {"x"}
+
+    async def fake_sleep(seconds):
+        if len(ticks) >= 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(bybit_watch, "money_tick", fake_tick)
+    monkeypatch.setattr(bybit_watch.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(bybit_watch.money_poll(FakeHTTP(), Recorder().send))
+
+    assert ticks == [None, {"x"}]
+
+
 def test_poll_survives_failures_and_keeps_going(keyed, monkeypatch, caplog):
     """One bad poll must not end the loop, and must not wipe the snapshot."""
     out = Recorder()

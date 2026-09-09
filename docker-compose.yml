@@ -6,7 +6,7 @@ services:
     restart: unless-stopped
     # SIGTERM -> relay posts its shutdown notice before exiting.
     stop_grace_period: 30s
-    env_file: .env
+    env_file: bipboop
     environment:
       SESSION_NAME: /app/session/lexx_relay
       # SPEAK_HOURS is wall-clock time; without this the container sits in

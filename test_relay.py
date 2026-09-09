@@ -539,8 +539,15 @@ def test_run_starts_the_bybit_watcher_when_keyed(config, monkeypatch):
         started.append((send, speak, send_photo))
         await asyncio.sleep(3600)  # runs until the relay cancels it
 
+    money_started = []
+
+    async def fake_money_poll(http, send):
+        money_started.append(send)
+        await asyncio.sleep(3600)
+
     monkeypatch.setattr(relay.bybit_watch, "enabled", lambda: True)
     monkeypatch.setattr(relay.bybit_watch, "poll", fake_poll)
+    monkeypatch.setattr(relay.bybit_watch, "money_poll", fake_money_poll)
 
     async def disconnect_immediately(client):
         return None
@@ -549,6 +556,7 @@ def test_run_starts_the_bybit_watcher_when_keyed(config, monkeypatch):
 
     assert len(started) == 1
     assert started[0][1] is relay.speaker.trade
+    assert len(money_started) == 1
 
 
 def test_run_starts_the_sizer_when_opted_in(config, monkeypatch):
