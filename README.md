@@ -228,6 +228,12 @@ act -j tests
 The `docker` job is the one to leave to real CI — it needs a daemon inside the
 job container, which is exactly the mount `.actrc` disables.
 
+## VPS tunnel
+
+The bot egresses through a fixed-IP VPS so the Bybit key can be
+IP-whitelisted — setup, configs and debugging in
+[docs/vps-tunnel.md](docs/vps-tunnel.md).
+
 ## Trade journal in Google Sheets
 
 Every closed trade lands as a row in a Google Sheet — pair, side, win/stop,

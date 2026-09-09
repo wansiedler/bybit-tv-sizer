@@ -104,5 +104,8 @@ JOURNAL_URL=
 TV_PUBLIC_URL=
 
 # Alert when the external IP changes (Bybit whitelist would break).
+# The same loop knocks on HTTPS_PROXY and shouts when the tunnel every
+# Bybit call rides through stops answering.
 IP_WATCH=1
 IP_POLL_SEC=60
+TUNNEL_TIMEOUT=5

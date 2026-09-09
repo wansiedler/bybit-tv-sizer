@@ -46,6 +46,9 @@ def _default_config(monkeypatch, tmp_path):
     monkeypatch.setattr(sheets, "SHEETS_URL", "")
     monkeypatch.setattr(sheets, "SHEETS_SECRET", "")
     monkeypatch.setattr(ip_watch, "ENABLED", False)
+    # The developer's HTTPS_PROXY points at a real WireGuard peer; the
+    # suite must never dial it.
+    monkeypatch.setattr(ip_watch, "PROXY", "")
     monkeypatch.setattr(commands, "SOURCE", "source_bot")
     monkeypatch.setattr(commands, "WATCH_USERS", ["some_trader"])
     monkeypatch.setattr(commands, "POLL_TIMEOUT", 25)
