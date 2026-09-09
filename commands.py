@@ -151,6 +151,7 @@ async def dispatch(
     market=None,
     statistics=None,
     links: str = "",
+    ip=None,
 ) -> None:
     """Answer one command. Unknown commands get the help text.
 
@@ -160,7 +161,14 @@ async def dispatch(
     if command == "ping":
         await send("pong")
     elif command == "status":
-        await send(status_text(stats, speaking))
+        text = status_text(stats, speaking)
+        if ip is not None:
+            try:
+                text += f"\n🌐 {await ip()}"
+            # Deliberately broad: a flaky IP lookup must not eat /status.
+            except Exception:  # noqa: BLE001
+                text += "\n🌐 IP недоступен"
+        await send(text)
         if market is not None:
             await market()
     elif command == "positions" and positions is not None:
@@ -199,6 +207,7 @@ async def poll(
     market=None,
     statistics=None,
     links: str = "",
+    ip=None,
 ) -> None:
     """Answer commands until cancelled. Never lets one failure end the loop."""
     offset: int | None = None
@@ -231,6 +240,7 @@ async def poll(
                     market,
                     statistics,
                     links,
+                    ip,
                 )
             # Deliberately broad: one bad command must not end the loop.
             except Exception:  # noqa: BLE001

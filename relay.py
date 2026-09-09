@@ -345,13 +345,19 @@ async def run() -> None:
                 log.info("speaking hours: %s", speaker.hours_text())
 
             started = time.time()
+            try:
+                ip = await ip_watch.current(http)
+            # Deliberately broad: no IP answer must not delay the start.
+            except Exception:  # noqa: BLE001
+                ip = ""
+            net = f" · 🌐 {ip}" if ip else ""
             links = ""
             if tv_alerts.JOURNAL_URL:
                 links += f"\n📒 {tv_alerts.JOURNAL_URL}"
             if tv_alerts.enabled() and tv_alerts.TV_PUBLIC_URL:
                 links += f"\n📡 {tv_alerts.TV_PUBLIC_URL}/tv/{tv_alerts.TV_WEBHOOK_SECRET}"
             await notify(
-                http, f"🟢 {RELAY_NAME} up — listening {SOURCE} as @{who}{speaking}{links}"
+                http, f"🟢 {RELAY_NAME} up — listening {SOURCE} as @{who}{speaking}{net}{links}"
             )
             if audio is not None:
                 await speaker.lifecycle("Relay up")
@@ -375,6 +381,7 @@ async def run() -> None:
                         http, lambda caption, png: send_photo_via_bot(http, caption, png), arg
                     ),
                     links.strip(),
+                    lambda: ip_watch.current(http),
                 )
             )
             background = {answering}

@@ -870,3 +870,31 @@ def test_main_check_flag_runs_the_check(monkeypatch):
     relay.main()
 
     assert called == ["check"]
+
+
+def test_run_up_notice_carries_the_external_ip(config, monkeypatch):
+    async def fake_current(http):
+        return "<VPS_IP>"
+
+    monkeypatch.setattr(relay.ip_watch, "current", fake_current)
+
+    async def disconnect_immediately(client):
+        return None
+
+    http, _ = _run_relay(monkeypatch, disconnect_immediately)
+
+    assert "🌐 <VPS_IP>" in str(http.posted[0])
+
+
+def test_run_up_notice_skips_an_unanswerable_ip(config, monkeypatch):
+    async def broken_current(http):
+        raise OSError("no network")
+
+    monkeypatch.setattr(relay.ip_watch, "current", broken_current)
+
+    async def disconnect_immediately(client):
+        return None
+
+    http, _ = _run_relay(monkeypatch, disconnect_immediately)
+
+    assert "🌐" not in str(http.posted[0])

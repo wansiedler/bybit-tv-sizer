@@ -484,3 +484,25 @@ def test_statistics_without_a_reporter_falls_back_to_help(owner):
     asyncio.run(commands.dispatch("statistics", "", commands.Stats(), rec.send, rec.speak, True))
 
     assert rec.sent == [commands.HELP]
+
+
+def test_status_appends_the_external_ip(owner):
+    rec = Recorder()
+
+    async def ip():
+        return "<VPS_IP>"
+
+    asyncio.run(commands.dispatch("status", "", commands.Stats(), rec.send, rec.speak, True, ip=ip))
+
+    assert rec.sent[0].endswith("🌐 <VPS_IP>")
+
+
+def test_status_survives_a_failed_ip_lookup(owner):
+    rec = Recorder()
+
+    async def ip():
+        raise OSError("down")
+
+    asyncio.run(commands.dispatch("status", "", commands.Stats(), rec.send, rec.speak, True, ip=ip))
+
+    assert rec.sent[0].endswith("🌐 IP недоступен")
