@@ -20,7 +20,7 @@ RUN pip install --no-cache-dir --require-hashes --only-binary :all: --no-binary 
         -r requirements.lock \
     && pip uninstall -y pip
 
-COPY parser.py relay.py speaker.py commands.py chat_id.py setup_env.py coin_names.py bybit_watch.py chart.py sizer.py tv_alerts.py sheets.py ./
+COPY parser.py relay.py speaker.py commands.py chat_id.py setup_env.py coin_names.py bybit_watch.py chart.py sizer.py tv_alerts.py sheets.py ip_watch.py ./
 
 # The Telethon session lives here so the login survives container restarts.
 VOLUME ["/app/session"]

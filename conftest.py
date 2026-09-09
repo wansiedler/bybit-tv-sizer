@@ -17,6 +17,7 @@ import pytest
 
 import bybit_watch
 import commands
+import ip_watch
 import sheets
 import speaker
 import tv_alerts
@@ -44,6 +45,7 @@ def _default_config(monkeypatch, tmp_path):
     monkeypatch.setattr(tv_alerts, "TV_PUBLIC_URL", "")
     monkeypatch.setattr(sheets, "SHEETS_URL", "")
     monkeypatch.setattr(sheets, "SHEETS_SECRET", "")
+    monkeypatch.setattr(ip_watch, "ENABLED", False)
     monkeypatch.setattr(commands, "SOURCE", "source_bot")
     monkeypatch.setattr(commands, "WATCH_USERS", ["some_trader"])
     monkeypatch.setattr(commands, "POLL_TIMEOUT", 25)

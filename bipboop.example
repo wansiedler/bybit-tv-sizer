@@ -102,3 +102,7 @@ SHEETS_SECRET=
 JOURNAL_URL=
 # Public origin of the TV webhook (for the startup notice links).
 TV_PUBLIC_URL=
+
+# Alert when the external IP changes (Bybit whitelist would break).
+IP_WATCH=1
+IP_POLL_SEC=60

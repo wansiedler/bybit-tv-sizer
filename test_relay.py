@@ -577,6 +577,24 @@ def test_run_starts_the_sizer_when_opted_in(config, monkeypatch):
     assert len(started) == 1
 
 
+def test_run_starts_the_ip_watcher_when_enabled(config, monkeypatch):
+    started = []
+
+    async def fake_poll(http, send, speak):
+        started.append(speak)
+        await asyncio.sleep(3600)  # runs until the relay cancels it
+
+    monkeypatch.setattr(relay.ip_watch, "enabled", lambda: True)
+    monkeypatch.setattr(relay.ip_watch, "poll", fake_poll)
+
+    async def disconnect_immediately(client):
+        return None
+
+    _run_relay(monkeypatch, disconnect_immediately)
+
+    assert started == [relay.speaker.trade]
+
+
 def test_run_starts_the_weekly_journal_when_sheets_are_wired(config, monkeypatch):
     started = []
 
