@@ -330,7 +330,10 @@ async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, sp
                 position.position_idx,
             )
             _guard_closed[symbol] = reason
-            await send(f"🛑 {base_symbol(symbol)} закрыт маркетом риск-менеджером: {reason}")
+            note = ""
+            if reason.startswith("плечо") and await _cap_leverage(http, symbol) == "done":
+                note = " · плечо сброшено на 1x"
+            await send(f"🛑 {base_symbol(symbol)} закрыт маркетом риск-менеджером: {reason}{note}")
         # Deliberately broad: the guard must keep watching even when one
         # close is refused (margin mode quirks, min qty, hedged legs).
         except Exception as exc:  # noqa: BLE001

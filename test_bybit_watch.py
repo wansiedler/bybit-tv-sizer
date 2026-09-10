@@ -464,6 +464,35 @@ def test_guard_reports_a_refused_close_and_backs_off(guarding, monkeypatch):
     assert out.sent == ["❌ CL: риск-менеджер не смог закрыть (order rejected)"]
 
 
+def test_guard_resets_leverage_after_a_leverage_close(guarding, monkeypatch):
+    monkeypatch.setattr(bybit_watch, "GUARD_GRACE", 0.0)
+    http, out = ClosingHTTP(), Recorder()
+
+    asyncio.run(bybit_watch.guard(http, {"OPUSDT": LEVERED}, out.send, out.speak))
+
+    assert out.sent == [
+        "🛑 OP закрыт маркетом риск-менеджером: плечо 3x > 1x · плечо сброшено на 1x"
+    ]
+    kinds = [(o.get("orderType"), o.get("buyLeverage")) for o in http.orders]
+    assert kinds == [("Market", None), (None, "1")]  # the close, then the reset
+
+
+def test_guard_close_note_absent_when_the_reset_is_refused(guarding, monkeypatch):
+    monkeypatch.setattr(bybit_watch, "GUARD_GRACE", 0.0)
+
+    class NoReset(ClosingHTTP):
+        async def post(self, url, content=None, headers=None, timeout=None):
+            if "set-leverage" in url:
+                raise OSError("margin mode conflict")
+            return await super().post(url, content=content, headers=headers, timeout=timeout)
+
+    http, out = NoReset(), Recorder()
+
+    asyncio.run(bybit_watch.guard(http, {"OPUSDT": LEVERED}, out.send, out.speak))
+
+    assert out.sent == ["🛑 OP закрыт маркетом риск-менеджером: плечо 3x > 1x"]
+
+
 def naked_order(order_id="n1", symbol="CLUSDT", **extra):
     return {"orderId": order_id, "symbol": symbol, "stopLoss": "", **extra}
 
