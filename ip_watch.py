@@ -71,7 +71,8 @@ async def reachable(host: str, port: int) -> bool:
 async def current(http: httpx.AsyncClient) -> str:
     """The external IPv4 as the world sees it."""
     response = await http.get(URL, timeout=10)
-    return response.text.strip()
+    text: str = response.text
+    return text.strip()
 
 
 async def poll(http: httpx.AsyncClient, send, speak) -> None:

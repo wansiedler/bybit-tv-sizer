@@ -1,14 +1,21 @@
 """Tests for the external-IP watcher. HTTP is faked wholesale."""
 
 import asyncio
+from typing import cast
 
+import httpx
 import pytest
 
 import ip_watch
 
 
+def as_client(fake: object) -> httpx.AsyncClient:
+    """The fakes implement only what the watcher calls; that is enough."""
+    return cast(httpx.AsyncClient, fake)
+
+
 class FakeHTTP:
-    def __init__(self, answers: list[str]):
+    def __init__(self, answers: list[str | Exception]):
         self.answers = answers
 
     async def get(self, url, timeout=None):
@@ -43,7 +50,7 @@ def run_poll(http, out, monkeypatch, naps):
 
     monkeypatch.setattr(ip_watch.asyncio, "sleep", fake_sleep)
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(ip_watch.poll(http, out.send, out.speak))
+        asyncio.run(ip_watch.poll(as_client(http), out.send, out.speak))
 
 
 def test_enabled_follows_the_flag(monkeypatch):
@@ -54,11 +61,11 @@ def test_enabled_follows_the_flag(monkeypatch):
 
 
 def test_current_strips_the_answer():
-    assert asyncio.run(ip_watch.current(FakeHTTP(["1.2.3.4\n"]))) == "1.2.3.4"
+    assert asyncio.run(ip_watch.current(as_client(FakeHTTP(["1.2.3.4\n"])))) == "1.2.3.4"
 
 
 def test_poll_stays_quiet_while_the_ip_holds(monkeypatch):
-    out, naps = Recorder(), []
+    out, naps = Recorder(), list[float]()
 
     run_poll(FakeHTTP(["1.2.3.4", "1.2.3.4"]), out, monkeypatch, naps)
 
@@ -66,7 +73,7 @@ def test_poll_stays_quiet_while_the_ip_holds(monkeypatch):
 
 
 def test_poll_shouts_on_a_change(monkeypatch):
-    out, naps = Recorder(), []
+    out, naps = Recorder(), list[float]()
 
     run_poll(FakeHTTP(["1.2.3.4", "5.6.7.8"]), out, monkeypatch, naps)
 
@@ -78,7 +85,7 @@ def test_poll_shouts_on_a_change(monkeypatch):
 
 
 def test_poll_survives_a_failed_check(monkeypatch, caplog):
-    out, naps = Recorder(), []
+    out, naps = Recorder(), list[float]()
 
     with caplog.at_level("ERROR", logger="relay.ip"):
         run_poll(FakeHTTP(["1.2.3.4", OSError("down"), "1.2.3.4"]), out, monkeypatch, naps)
@@ -95,7 +102,7 @@ def test_poll_lets_cancellation_through():
     out = Recorder()
 
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(ip_watch.poll(Cancelling(), out.send, out.speak))
+        asyncio.run(ip_watch.poll(as_client(Cancelling()), out.send, out.speak))
 
     assert out.sent == []
 
@@ -111,7 +118,7 @@ def run_rounds(http, out, monkeypatch, rounds):
 
     monkeypatch.setattr(ip_watch.asyncio, "sleep", fake_sleep)
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(ip_watch.poll(http, out.send, out.speak))
+        asyncio.run(ip_watch.poll(as_client(http), out.send, out.speak))
 
 
 def test_proxy_endpoint_reads_the_variable(monkeypatch):
@@ -177,7 +184,7 @@ def _tunnel(monkeypatch, *states):
 
 
 def test_poll_stays_quiet_while_the_tunnel_holds(monkeypatch):
-    out, naps = Recorder(), []
+    out, naps = Recorder(), list[float]()
     _tunnel(monkeypatch, True)
 
     run_poll(FakeHTTP(["1.2.3.4", "1.2.3.4"]), out, monkeypatch, naps)
