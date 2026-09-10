@@ -70,6 +70,10 @@ CHART_INTERVAL = os.getenv("CHART_INTERVAL", "15")
 CHART_BARS = min(int(os.getenv("CHART_BARS", "1800")), 3000)
 RECV_WINDOW = "5000"
 
+_POSITIONS = "/v5/position/list"
+_NO_KEYS = "Bybit не подключён: нет API-ключей"
+_NO_ANSWER = "Bybit не ответил, попробуй ещё раз"
+
 
 def enabled() -> bool:
     return bool(API_KEY and API_SECRET)
@@ -131,7 +135,7 @@ class Position:
 
 async def positions(http: httpx.AsyncClient) -> dict[str, Position]:
     """Open USDT-perpetual positions, keyed by symbol. Zero sizes dropped."""
-    result = await _get(http, "/v5/position/list", {"category": "linear", "settleCoin": "USDT"})
+    result = await _get(http, _POSITIONS, {"category": "linear", "settleCoin": "USDT"})
     open_now: dict[str, Position] = {}
     for row in result.get("list", []):
         size = float(row.get("size") or 0)
@@ -162,14 +166,14 @@ async def close_everything(http: httpx.AsyncClient) -> str:
     """Close every open position at market, reduce-only. Two-step confirm."""
     global _stopall_armed
     if not enabled():
-        return "Bybit не подключён: нет API-ключей"
+        return _NO_KEYS
     try:
-        result = await _get(http, "/v5/position/list", {"category": "linear", "settleCoin": "USDT"})
+        result = await _get(http, _POSITIONS, {"category": "linear", "settleCoin": "USDT"})
         rows = [r for r in result.get("list", []) if float(r.get("size") or 0) != 0]
     # Deliberately broad: a chat command must answer, not crash the poller.
     except Exception:  # noqa: BLE001
         log.exception("stopall listing failed")
-        return "Bybit не ответил, попробуй ещё раз"
+        return _NO_ANSWER
     if not rows:
         _stopall_armed = 0.0
         return "Открытых позиций нет — закрывать нечего"
@@ -361,7 +365,7 @@ async def price_before(http: httpx.AsyncClient, symbol: str) -> float | None:
 async def _active_symbols(http: httpx.AsyncClient) -> set[str]:
     """Symbols with an open position or a live order."""
     symbols: set[str] = set()
-    result = await _get(http, "/v5/position/list", {"category": "linear", "settleCoin": "USDT"})
+    result = await _get(http, _POSITIONS, {"category": "linear", "settleCoin": "USDT"})
     symbols |= {r["symbol"] for r in result.get("list", []) if float(r.get("size") or 0) != 0}
     result = await _get(http, "/v5/order/realtime", {"category": "linear", "settleCoin": "USDT"})
     symbols |= {r["symbol"] for r in result.get("list", [])}
@@ -414,7 +418,7 @@ async def force_leverage_one(http: httpx.AsyncClient, query: str = "") -> str:
     before the first order ever touches it.
     """
     if not enabled():
-        return "Bybit не подключён: нет API-ключей"
+        return _NO_KEYS
     query = query.strip()
     if query and query.lower() not in ("all", "все", "всё"):
         wanted = query.upper()
@@ -428,7 +432,7 @@ async def force_leverage_one(http: httpx.AsyncClient, query: str = "") -> str:
         # Deliberately broad: a chat command must answer, not crash the poller.
         except Exception:  # noqa: BLE001
             log.exception("lev1 listing failed")
-            return "Bybit не ответил, попробуй ещё раз"
+            return _NO_ANSWER
     lines = []
     for symbol in active:
         verdict = await _cap_leverage(http, symbol)
@@ -460,17 +464,17 @@ async def close_position(http: httpx.AsyncClient, query: str) -> str:
     """Close one position by ticker, for /close CL. No confirm: the typed
     argument is the confirmation."""
     if not enabled():
-        return "Bybit не подключён: нет API-ключей"
+        return _NO_KEYS
     if not query.strip():
         return "Какую позицию? Например: /close CL"
     wanted = query.strip().upper()
     try:
-        result = await _get(http, "/v5/position/list", {"category": "linear", "settleCoin": "USDT"})
+        result = await _get(http, _POSITIONS, {"category": "linear", "settleCoin": "USDT"})
         rows = [r for r in result.get("list", []) if float(r.get("size") or 0) != 0]
     # Deliberately broad: a chat command must answer, not crash the poller.
     except Exception:  # noqa: BLE001
         log.exception("close listing failed")
-        return "Bybit не ответил, попробуй ещё раз"
+        return _NO_ANSWER
     matches = [r for r in rows if wanted in (r["symbol"].upper(), base_symbol(r["symbol"]).upper())]
     if not matches:
         names = ", ".join(base_symbol(r["symbol"]) for r in rows) or "—"
@@ -530,7 +534,7 @@ async def stats_report(http: httpx.AsyncClient, send_photo, arg: str = "") -> st
     thirty as the default and ninety as the ceiling.
     """
     if not enabled():
-        return "Bybit не подключён: нет API-ключей"
+        return _NO_KEYS
     try:
         days = max(1, min(int(arg), 90)) if arg.strip() else 30
     except ValueError:
@@ -540,7 +544,7 @@ async def stats_report(http: httpx.AsyncClient, send_photo, arg: str = "") -> st
     # Deliberately broad: a chat command must answer, not crash the poller.
     except Exception:  # noqa: BLE001
         log.exception("stats history failed")
-        return "Bybit не ответил, попробуй ещё раз"
+        return _NO_ANSWER
     if not rows:
         return f"За {days} дн. закрытых сделок нет"
     depo = await equity(http)
@@ -610,13 +614,13 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
     function then returns "" so the caller has nothing left to send.
     """
     if not enabled():
-        return "Bybit не подключён: нет API-ключей"
+        return _NO_KEYS
     try:
         open_now = await positions(http)
     # Deliberately broad: a chat command must answer, not crash the poller.
     except Exception:  # noqa: BLE001
         log.exception("positions report failed")
-        return "Bybit не ответил, попробуй ещё раз"
+        return _NO_ANSWER
     if not open_now:
         return "Открытых позиций нет"
     depo = await equity(http)
@@ -660,6 +664,15 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         total_net += net
         lines.append("\n".join(block))
         if send_album is not None:
+            tp_note = sl_note = ""
+            if at_tp is not None:
+                tp_note = f"{at_tp:+,.2f}{share(at_tp)}"
+                if depo:
+                    tp_note += f" = {depo + at_tp:,.2f}$"
+            if at_sl is not None:
+                sl_note = f"{at_sl:+,.2f}{share(at_sl)}"
+                if depo:
+                    sl_note += f" = {depo + at_sl:,.2f}$"
             png = await entry_chart(
                 http,
                 symbol,
@@ -671,16 +684,8 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
                     + f" | PnL {position.unrealised:+,.2f} - fee {fees:.2f}"
                     + f" = {net:+,.2f}{share(net)}"
                 ),
-                tp_note=(
-                    f"{at_tp:+,.2f}{share(at_tp)}" + (f" = {depo + at_tp:,.2f}$" if depo else "")
-                    if at_tp is not None
-                    else ""
-                ),
-                sl_note=(
-                    f"{at_sl:+,.2f}{share(at_sl)}" + (f" = {depo + at_sl:,.2f}$" if depo else "")
-                    if at_sl is not None
-                    else ""
-                ),
+                tp_note=tp_note,
+                sl_note=sl_note,
             )
             if png is not None:
                 pngs.append(png)
@@ -1113,6 +1118,15 @@ async def tick(
                 line += f"\nкомса{fee:.4g}"
             for warn in trade_warnings(now, depo):
                 line += f"\n{warn}"
+            tp_note = sl_note = ""
+            if target is not None:
+                tp_note = f"{target:+,.2f}{share(target, depo)}"
+                if depo:
+                    tp_note += f" = {depo + target:,.2f}$"
+            if at_sl is not None:
+                sl_note = f"{at_sl:+,.2f}{share(at_sl, depo)}"
+                if depo:
+                    sl_note += f" = {depo + at_sl:,.2f}$"
             png = await entry_chart(
                 http,
                 symbol,
@@ -1123,18 +1137,8 @@ async def tick(
                     + (f" | RR {rr:.2f}" if rr is not None else "")
                     + (f" | fee {fee:.2f}" if fee else "")
                 ),
-                tp_note=(
-                    f"{target:+,.2f}{share(target, depo)}"
-                    + (f" = {depo + target:,.2f}$" if depo else "")
-                    if target is not None
-                    else ""
-                ),
-                sl_note=(
-                    f"{at_sl:+,.2f}{share(at_sl, depo)}"
-                    + (f" = {depo + at_sl:,.2f}$" if depo else "")
-                    if at_sl is not None
-                    else ""
-                ),
+                tp_note=tp_note,
+                sl_note=sl_note,
             )
         elif kind == "closed" and was is not None:
             record = await closed_record(http, symbol)

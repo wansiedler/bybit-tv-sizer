@@ -854,6 +854,23 @@ def test_close_reports_a_refusal(keyed, caplog):
 # --------------------------------------------------------------------------- #
 #  /positions report                                                           #
 # --------------------------------------------------------------------------- #
+def test_positions_report_album_notes_carry_the_deposit(keyed):
+    http = ClosingHTTP()
+    http.position_pages = [[dict(row(tp="0.19", sl="0.15"), unrealisedPnl="512.3")]]
+    http.kline_rows = KLINES
+    http.equity_rows = [{"totalEquity": "10000"}]
+    albums = []
+
+    async def send_album(caption, pngs):
+        albums.append(caption)
+        return True
+
+    text = asyncio.run(bybit_watch.positions_report(http, send_album))
+
+    assert text == ""
+    assert "=деп" in albums[0]  # the tp line carries the resulting deposit
+
+
 def test_positions_report_sends_one_album(keyed):
     http = ClosingHTTP()
     http.position_pages = [[dict(row(tp="0.19", sl="0.15"), unrealisedPnl="512.3")]]

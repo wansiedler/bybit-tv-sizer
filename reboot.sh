@@ -16,7 +16,7 @@ export DOCKER_HOST="unix:///Users/me/.colima/default/docker.sock"
     'import asyncio, speaker; asyncio.run(speaker.say("Rebooting", "reboot.mp3"))' \
     && sleep 2
 
-if [ "$(id -u)" -eq 0 ]; then
+if [[ "$(id -u)" -eq 0 ]]; then
     exec /sbin/reboot
 fi
 exec sudo /sbin/reboot

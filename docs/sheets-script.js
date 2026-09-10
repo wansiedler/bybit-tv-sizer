@@ -69,7 +69,7 @@ function weekSummary_(sheet) {
   const a = sheet.getRange(3, 1, last - 2, 1).getValues();
   let start = 3;
   for (let i = 0; i < a.length; i++) {
-    if (String(a[i][0]).indexOf("ИТОГ НЕДЕЛИ") === 0) start = i + 4;
+    if (String(a[i][0]).startsWith("ИТОГ НЕДЕЛИ")) start = i + 4;
   }
   if (start > last) return;
   const rows = sheet.getRange(start, 1, last - start + 1, 6).getValues();
