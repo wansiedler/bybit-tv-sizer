@@ -996,7 +996,7 @@ async def closed_record(http: httpx.AsyncClient, symbol: str) -> dict | None:
         except Exception:  # noqa: BLE001
             log.exception("no closed pnl for %s", symbol)
             return None
-        rows = result.get("list", [])
+        rows: list[dict] = result.get("list", [])
         if rows:
             age = time.time() - int(rows[0].get("updatedTime") or 0) / 1000
             if age < PNL_FRESH_SEC:
