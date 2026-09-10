@@ -236,18 +236,69 @@ def _guard_violation(position: Position) -> str | None:
 
 
 async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, speak) -> None:
-    """The risk manager: warn about a rule breach, then market-close it.
+    """The risk manager: warn about a rule breach, then enforce it.
 
     A breach gets one warning and the grace window to fix itself (set the
-    stop, drop the leverage). If it is still there afterwards the position
-    is closed with a reduce-only market order.
+    stop, drop the leverage). Afterwards a stopless position is closed with
+    a reduce-only market order, and a stopless entry order is cancelled.
     """
     if not RISK_GUARD:
         return
-    for symbol in list(_guard_seen):
-        fixed = open_now.get(symbol)
-        if fixed is None or _guard_violation(fixed) is None:
-            del _guard_seen[symbol]
+    # Naked limit orders: an entry with no stop attached gets cancelled the
+    # same way a stopless position gets closed. Exits are left alone —
+    # reduce-only and conditional (stop/take) orders carry no stopLoss by
+    # nature.
+    naked: dict[str, dict] = {}
+    try:
+        result = await _get(
+            http, "/v5/order/realtime", {"category": "linear", "settleCoin": "USDT"}
+        )
+        for r in result.get("list") or []:
+            if r.get("reduceOnly") or r.get("stopOrderType") or r.get("closeOnTrigger"):
+                continue
+            if r.get("stopLoss"):
+                continue
+            naked[f"order:{r['orderId']}"] = r
+    # Deliberately broad: no order answer must not stop the position rules.
+    except Exception:  # noqa: BLE001
+        log.exception("guard order listing failed")
+    for key in list(_guard_seen):
+        if key.startswith("order:"):
+            if key not in naked:
+                del _guard_seen[key]
+        else:
+            fixed = open_now.get(key)
+            if fixed is None or _guard_violation(fixed) is None:
+                del _guard_seen[key]
+    for key, order in naked.items():
+        symbol = order["symbol"]
+        now = time.monotonic()
+        first = _guard_seen.get(key)
+        if first is None:
+            _guard_seen[key] = now
+            if GUARD_GRACE > 0:
+                await send(
+                    f"🛑 {base_symbol(symbol)}: лимитка без стопа — отменю через {GUARD_GRACE:.0f}с"
+                )
+                await speak(
+                    f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} naked order"
+                )
+                continue
+        elif now - first < (GUARD_GRACE or 30.0):
+            continue
+        else:
+            _guard_seen[key] = now
+        try:
+            await _post(
+                http,
+                "/v5/order/cancel",
+                {"category": "linear", "symbol": symbol, "orderId": order["orderId"]},
+            )
+            await send(f"🛑 {base_symbol(symbol)}: лимитка без стопа отменена риск-менеджером")
+        # Deliberately broad: one refused cancel must not strand the rest.
+        except Exception as exc:  # noqa: BLE001
+            log.exception("guard cancel failed for %s", symbol)
+            await send(f"❌ {base_symbol(symbol)}: не смог отменить лимитку ({exc})")
     for symbol, position in open_now.items():
         reason = _guard_violation(position)
         if reason is None:

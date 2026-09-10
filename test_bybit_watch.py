@@ -464,6 +464,112 @@ def test_guard_reports_a_refused_close_and_backs_off(guarding, monkeypatch):
     assert out.sent == ["❌ CL: риск-менеджер не смог закрыть (order rejected)"]
 
 
+def naked_order(order_id="n1", symbol="CLUSDT", **extra):
+    return {"orderId": order_id, "symbol": symbol, "stopLoss": "", **extra}
+
+
+def test_guard_cancels_a_naked_limit_instantly_without_grace(guarding, monkeypatch):
+    monkeypatch.setattr(bybit_watch, "GUARD_GRACE", 0.0)
+    http, out = ClosingHTTP(), Recorder()
+    http.order_rows = [naked_order()]
+
+    asyncio.run(bybit_watch.guard(http, {}, out.send, out.speak))
+
+    assert http.orders == [{"category": "linear", "symbol": "CLUSDT", "orderId": "n1"}]
+    assert out.sent == ["🛑 CL: лимитка без стопа отменена риск-менеджером"]
+
+
+def test_guard_warns_about_a_naked_limit_inside_the_grace(guarding):
+    http, out = ClosingHTTP(), Recorder()
+    http.order_rows = [naked_order()]
+
+    asyncio.run(bybit_watch.guard(http, {}, out.send, out.speak))
+
+    assert out.sent == ["🛑 CL: лимитка без стопа — отменю через 45с"]
+    assert out.spoken == ["CL naked order"]
+    assert http.orders == []
+
+
+def test_guard_cancels_once_the_order_grace_passed(guarding):
+    http, out = ClosingHTTP(), Recorder()
+    http.order_rows = [naked_order()]
+
+    asyncio.run(bybit_watch.guard(http, {}, out.send, out.speak))
+    bybit_watch._guard_seen["order:n1"] -= 60.0
+    http.order_rows = [naked_order()]
+    asyncio.run(bybit_watch.guard(http, {}, out.send, out.speak))
+
+    assert len(http.orders) == 1
+    assert out.sent[-1] == "🛑 CL: лимитка без стопа отменена риск-менеджером"
+
+
+def test_guard_waits_out_the_order_grace(guarding):
+    http, out = ClosingHTTP(), Recorder()
+    http.order_rows = [naked_order()]
+
+    asyncio.run(bybit_watch.guard(http, {}, out.send, out.speak))
+    asyncio.run(bybit_watch.guard(http, {}, out.send, out.speak))
+
+    assert len(out.sent) == 1  # one warning, no cancel yet
+    assert http.orders == []
+
+
+def test_guard_leaves_exits_and_stopped_orders_alone(guarding, monkeypatch):
+    monkeypatch.setattr(bybit_watch, "GUARD_GRACE", 0.0)
+    http, out = ClosingHTTP(), Recorder()
+    http.order_rows = [
+        naked_order("r1", reduceOnly=True),
+        naked_order("c1", closeOnTrigger=True),
+        naked_order("s1", stopOrderType="StopLoss"),
+        naked_order("ok1", stopLoss="91.0"),
+    ]
+
+    asyncio.run(bybit_watch.guard(http, {}, out.send, out.speak))
+
+    assert out.sent == []
+    assert http.orders == []
+
+
+def test_guard_forgets_a_cancelled_or_fixed_order(guarding):
+    http, out = ClosingHTTP(), Recorder()
+    http.order_rows = [naked_order()]
+
+    asyncio.run(bybit_watch.guard(http, {}, out.send, out.speak))
+    http.order_rows = []
+    asyncio.run(bybit_watch.guard(http, {}, out.send, out.speak))
+
+    assert "order:n1" not in bybit_watch._guard_seen
+
+
+def test_guard_reports_a_refused_cancel(guarding, monkeypatch):
+    monkeypatch.setattr(bybit_watch, "GUARD_GRACE", 0.0)
+    http, out = ClosingHTTP(), Recorder()
+    http.order_rows = [naked_order()]
+    http.refuse_order = True
+
+    asyncio.run(bybit_watch.guard(http, {}, out.send, out.speak))
+
+    assert out.sent == ["❌ CL: не смог отменить лимитку (order rejected)"]
+
+
+def test_guard_position_rules_survive_a_dead_order_listing(guarding, monkeypatch, caplog):
+    monkeypatch.setattr(bybit_watch, "GUARD_GRACE", 0.0)
+
+    class NoOrders(ClosingHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            if "/v5/order/realtime" in url:
+                raise OSError("down")
+            return await super().get(url, headers=headers, timeout=timeout)
+
+    http, out = NoOrders(), Recorder()
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
+
+    assert "guard order listing failed" in caplog.text
+    assert out.sent[-1] == "🛑 CL закрыт маркетом риск-менеджером: нет стопа"
+
+
 def test_guard_stays_dormant_when_disabled(keyed):
     http, out = ClosingHTTP(), Recorder()
 
