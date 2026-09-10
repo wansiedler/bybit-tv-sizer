@@ -41,6 +41,9 @@ def _default_config(monkeypatch, tmp_path):
     monkeypatch.setattr(bybit_watch, "GUARD_GRACE", 45.0)
     bybit_watch._guard_seen.clear()
     bybit_watch._guard_closed.clear()
+    # One attempt, no waiting: the retry loop is exercised by its own tests.
+    monkeypatch.setattr(bybit_watch, "PNL_RETRIES", 1)
+    monkeypatch.setattr(bybit_watch, "PNL_RETRY_SEC", 0.0)
     monkeypatch.setattr(tv_alerts, "TV_WEBHOOK_SECRET", "")
     monkeypatch.setattr(tv_alerts, "JOURNAL_URL", "")
     monkeypatch.setattr(tv_alerts, "TV_PUBLIC_URL", "")

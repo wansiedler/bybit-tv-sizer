@@ -968,18 +968,41 @@ async def close_kind(http: httpx.AsyncClient, record: dict) -> str:
         return ""
 
 
+# Bybit writes the closed-pnl row moments AFTER the position disappears;
+# at a half-second poll the close is usually seen first. So the record is
+# asked for a few times, and one older than this many seconds is somebody
+# else's trade, not the close that just happened.
+PNL_RETRIES = 6
+PNL_RETRY_SEC = 1.0
+PNL_FRESH_SEC = 300.0
+
+
 async def closed_record(http: httpx.AsyncClient, symbol: str) -> dict | None:
-    """The most recently closed position's record, best-effort."""
-    try:
-        result = await _get(
-            http, "/v5/position/closed-pnl", {"category": "linear", "symbol": symbol, "limit": "1"}
-        )
+    """The record of the close that just happened, best-effort.
+
+    Retries while Bybit is still writing it, and refuses a stale record —
+    answering with the previous trade's figures would be worse than none.
+    """
+    for attempt in range(PNL_RETRIES):
+        if attempt:
+            await asyncio.sleep(PNL_RETRY_SEC)
+        try:
+            result = await _get(
+                http,
+                "/v5/position/closed-pnl",
+                {"category": "linear", "symbol": symbol, "limit": "1"},
+            )
+        # Deliberately broad: the close notice must go out even without a figure.
+        except Exception:  # noqa: BLE001
+            log.exception("no closed pnl for %s", symbol)
+            return None
         rows = result.get("list", [])
-        return rows[0] if rows else None
-    # Deliberately broad: the close notice must go out even without a figure.
-    except Exception:  # noqa: BLE001
-        log.exception("no closed pnl for %s", symbol)
-        return None
+        if rows:
+            age = time.time() - int(rows[0].get("updatedTime") or 0) / 1000
+            if age < PNL_FRESH_SEC:
+                return rows[0]
+    log.warning("closed pnl for %s never appeared", symbol)
+    return None
 
 
 def diff(

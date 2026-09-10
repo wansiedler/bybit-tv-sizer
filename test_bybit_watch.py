@@ -1238,15 +1238,53 @@ def test_positions_reads_tp_and_sl(keyed):
 
 
 def closed(pnl="512.3", entry="0.16", exit_price="0.17", open_fee="0.073", close_fee="0.078"):
+    import time as _time
+
     return {
         "closedPnl": pnl,
         "createdTime": "1700000000000",
-        "updatedTime": "1700003600000",
+        "updatedTime": str(int(_time.time() * 1000)),  # written just now
         "avgEntryPrice": entry,
         "avgExitPrice": exit_price,
         "openFee": open_fee,
         "closeFee": close_fee,
     }
+
+
+def test_closed_record_retries_until_bybit_writes_it(keyed, monkeypatch):
+    monkeypatch.setattr(bybit_watch, "PNL_RETRIES", 3)
+    monkeypatch.setattr(bybit_watch, "PNL_RETRY_SEC", 0.0)
+
+    class Late(FakeHTTP):
+        def __init__(self):
+            super().__init__()
+            self.asked = 0
+
+        async def get(self, url, headers=None, timeout=None):
+            if "/v5/position/closed-pnl" in url:
+                self.asked += 1
+                if self.asked < 3:
+                    return FakeResponse({"retCode": 0, "result": {"list": []}})
+            return await super().get(url, headers=headers, timeout=timeout)
+
+    http = Late()
+    http.pnl_rows = [closed()]
+
+    record = asyncio.run(bybit_watch.closed_record(http, "FARTCOINUSDT"))
+
+    assert record is not None and record["closedPnl"] == "512.3"
+    assert http.asked == 3
+
+
+def test_closed_record_refuses_a_stale_record(keyed, monkeypatch):
+    monkeypatch.setattr(bybit_watch, "PNL_RETRIES", 2)
+    monkeypatch.setattr(bybit_watch, "PNL_RETRY_SEC", 0.0)
+    http = FakeHTTP()
+    stale = closed()
+    stale["updatedTime"] = "1700003600000"  # somebody else's old trade
+    http.pnl_rows = [stale]
+
+    assert asyncio.run(bybit_watch.closed_record(http, "FARTCOINUSDT")) is None
 
 
 def test_tick_reports_a_resize_as_plain_text(keyed):
