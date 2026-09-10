@@ -266,7 +266,7 @@ async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, sp
     # Deliberately broad: no order answer must not stop the position rules.
     except Exception:  # noqa: BLE001
         log.exception("guard order listing failed")
-    # A list copy on purpose: the dict shrinks inside the loop. NOSONAR
+    # A list copy on purpose: the dict shrinks inside the loop.
     for key in list(_guard_seen):  # NOSONAR
         if key.startswith("order:"):
             if key not in naked:

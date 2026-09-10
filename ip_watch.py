@@ -46,7 +46,9 @@ def proxy_endpoint() -> tuple[str, int] | None:
         return None
     # A bare "host:port" is a legal value for the variable, and urlparse
     # needs a scheme before it will look for a netloc at all.
-    parsed = urlparse(PROXY if "://" in PROXY else f"http://{PROXY}")
+    # The scheme is a parsing crutch, not a request: urlparse needs one
+    # before it will look for a netloc at all.
+    parsed = urlparse(PROXY if "://" in PROXY else f"http://{PROXY}")  # NOSONAR
     if not parsed.hostname:
         return None
     return parsed.hostname, parsed.port or 80

@@ -18,7 +18,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 # The bundled scalable font: no system fonts to rely on in a slim image, and
 # no glyphs outside basic latin — so labels stick to plain words, no arrows.
-# NOSONAR on both: Pillow >= 9.2 accepts a size; Sonar's stub predates it.
+# Suppressed on both lines: Pillow >= 9.2 accepts a size; Sonar's stub predates it.
 TITLE_FONT = ImageFont.load_default(30)  # NOSONAR
 LABEL_FONT = ImageFont.load_default(20)  # NOSONAR
 

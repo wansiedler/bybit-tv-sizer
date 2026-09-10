@@ -212,7 +212,7 @@ def _resumable(cast) -> tuple[str, str, float] | None:
     content = status.content_id or ""
     if status.player_state != "PLAYING" or not content.startswith(("http://", "https://")):
         return None
-    if content.startswith(f"http://{TTS_HOST}:{TTS_PORT}/"):
+    if content.startswith(f"http://{TTS_HOST}:{TTS_PORT}/"):  # NOSONAR
         return None
     return content, status.content_type or "audio/mpeg", status.current_time or 0.0
 
@@ -288,7 +288,9 @@ async def say(text: str, name: str) -> bool:
         return False
     try:
         await asyncio.to_thread(write_speech, text, name)
-        await asyncio.to_thread(cast_url, f"http://{TTS_HOST}:{TTS_PORT}/{name}")
+        # Plain HTTP on purpose: the speaker fetches from this host on the
+        # LAN, and a Cast device cannot validate a self-signed certificate.
+        await asyncio.to_thread(cast_url, f"http://{TTS_HOST}:{TTS_PORT}/{name}")  # NOSONAR
     # Deliberately broad: speaking is best-effort and must never propagate.
     except Exception:  # noqa: BLE001
         log.exception("could not speak %r", text)
