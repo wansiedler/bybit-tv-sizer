@@ -1,4 +1,4 @@
-# lexx-relay
+# Bybit-TV-sizer
 
 **A risk-manager watchdog bot for the owner's Bybit account.**
 
