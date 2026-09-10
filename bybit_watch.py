@@ -842,6 +842,7 @@ def journal_row(
     pnl: float,
     depo: float | None = None,
     forced: str = "",
+    kind: str = "",
 ) -> list:
     """One trade as a row of the trading-diary sheet.
 
@@ -881,7 +882,39 @@ def journal_row(
         round(pnl / depo * 100, 2) if depo else "",
         f"{opened_fee:.4g}+{closed_fee:.4g}" if opened_fee or closed_fee else "",
         round(depo, 2) if depo else "",
+        "",  # O: Вывел/Завел — the money watcher's column
+        kind,
     ]
+
+
+async def close_kind(http: httpx.AsyncClient, record: dict) -> str:
+    """How the closing order came to be: стоп, тейк or руками.
+
+    Bybit's order history carries `createType` — CreateByStopLoss and
+    CreateByTakeProfit mean the exchange fired a level, CreateByUser means a
+    hand on the button. Empty when history has no answer.
+    """
+    order_id = record.get("orderId") or ""
+    if not order_id:
+        return ""
+    try:
+        result = await _get(http, "/v5/order/history", {"category": "linear", "orderId": order_id})
+        rows = result.get("list") or []
+        if not rows:
+            return ""
+        create = rows[0].get("createType") or ""
+        stop_type = rows[0].get("stopOrderType") or ""
+        if "StopLoss" in create or stop_type in ("StopLoss", "Stop"):
+            return "стоп"
+        if "TakeProfit" in create or stop_type == "TakeProfit":
+            return "тейк"
+        if create in ("CreateByUser", "CreateByClosing"):
+            return "руками"
+        return ""
+    # Deliberately broad: the notice must go out with or without the detail.
+    except Exception:  # noqa: BLE001
+        log.exception("no close kind for %s", order_id)
+        return ""
 
 
 async def closed_record(http: httpx.AsyncClient, symbol: str) -> dict | None:
@@ -1052,7 +1085,10 @@ async def tick(
                     ),
                 )
                 forced = _guard_closed.pop(symbol, "")
-                entry: dict = {"row": journal_row(symbol, was, record, pnl, depo, forced)}
+                kind = "риск-гард" if forced else await close_kind(http, record)
+                if kind:
+                    line += f"·{kind}"
+                entry: dict = {"row": journal_row(symbol, was, record, pnl, depo, forced, kind)}
                 if png is not None:
                     # The Apps Script saves it to Drive and writes the link
                     # into the «Ссылка» column of the same row.

@@ -38,6 +38,7 @@ class FakeHTTP:
         self.order_rows: list[dict[str, Any]] = []
         self.instrument_pages: list[dict[str, Any]] = []
         self.ticker_rows: list[dict[str, Any]] = []
+        self.history_rows: list[dict[str, Any]] = []
         self.requests: list[str] = []
 
     async def get(self, url, headers=None, timeout=None):
@@ -51,6 +52,8 @@ class FakeHTTP:
             return FakeResponse({"retCode": 0, "result": {"list": self.exec_rows}})
         if "/v5/account/wallet-balance" in url:
             return FakeResponse({"retCode": 0, "result": {"list": self.equity_rows}})
+        if "/v5/order/history" in url:
+            return FakeResponse({"retCode": 0, "result": {"list": self.history_rows}})
         if "/v5/market/tickers" in url:
             return FakeResponse({"retCode": 0, "result": {"list": self.ticker_rows}})
         if "/v5/market/instruments-info" in url:
@@ -1011,7 +1014,36 @@ def test_journal_row_matches_the_diary_format():
     assert row[1:6] == ["CLUSDT", "Шорт", "stop", "1к9.5", -1.0]
     assert row[0].count("/") == 2  # DD/MM/YYYY
     assert row[6] == ""  # the screenshot chip is the script's to fill
-    assert row[7:] == [131.0, 92.04, "", -1.19, "", "", ""]
+    assert row[7:] == [131.0, 92.04, "", -1.19, "", "", "", "", ""]
+
+
+@pytest.mark.parametrize(
+    ("history", "expected"),
+    [
+        ([{"createType": "CreateByStopLoss", "stopOrderType": "StopLoss"}], "стоп"),
+        ([{"createType": "CreateByTakeProfit", "stopOrderType": "TakeProfit"}], "тейк"),
+        ([{"createType": "CreateByUser", "stopOrderType": ""}], "руками"),
+        ([{"createType": "CreateByAdl", "stopOrderType": ""}], ""),
+        ([], ""),
+    ],
+)
+def test_close_kind_reads_the_creating_order(keyed, history, expected):
+    http = FakeHTTP()
+    http.history_rows = history
+
+    assert asyncio.run(bybit_watch.close_kind(http, {"orderId": "x1"})) == expected
+
+
+def test_close_kind_without_an_order_id(keyed):
+    assert asyncio.run(bybit_watch.close_kind(FakeHTTP(), {})) == ""
+
+
+def test_close_kind_survives_a_refusal(keyed):
+    class Refusing(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise OSError("down")
+
+    assert asyncio.run(bybit_watch.close_kind(Refusing(), {"orderId": "x1"})) == ""
 
 
 def test_journal_row_marks_a_guard_close():
@@ -1031,9 +1063,9 @@ def test_journal_row_extras_carry_the_full_arithmetic():
         "closeFee": "0.0547",
     }
 
-    row = bybit_watch.journal_row("CLUSDT", was, record, -1.19, 128.16)
+    row = bybit_watch.journal_row("CLUSDT", was, record, -1.19, 128.16, kind="руками")
 
-    assert row[7:] == [131.0, 92.04, 91.9, -1.19, -0.93, "0.0199+0.0547", 128.16]
+    assert row[7:] == [131.0, 92.04, 91.9, -1.19, -0.93, "0.0199+0.0547", 128.16, "", "руками"]
 
 
 def test_journal_row_without_a_stop_falls_back_to_usdt():
@@ -1135,12 +1167,13 @@ def test_tick_reports_pnl_on_a_close(keyed):
 def test_tick_close_reports_the_pnl_as_a_share_of_equity(keyed):
     http, out = FakeHTTP(), Recorder()
     http.position_pages = [[]]
-    http.pnl_rows = [closed()]
+    http.pnl_rows = [closed() | {"orderId": "o1"}]
     http.equity_rows = [{"totalEquity": "10000"}]
+    http.history_rows = [{"createType": "CreateByUser", "stopOrderType": ""}]
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == ["💸📈FARTCOIN<b>+512.30(+5.12%)</b>-(0.073+0.078)=<b>10,000.00$</b>"]
+    assert out.sent == ["💸📈FARTCOIN<b>+512.30(+5.12%)</b>-(0.073+0.078)=<b>10,000.00$</b>·руками"]
 
 
 @pytest.mark.parametrize(
