@@ -24,6 +24,38 @@ same bot, prefixed with who wrote it and where:
 сетку ставим на OP
 ```
 
+## The risk-manager watchdog
+
+Beyond relaying, the bot polices the owner's own Bybit account. Every half
+second it checks three rules:
+
+1. **A position with no stop-loss** → instant reduce-only market close.
+2. **A position leveraged above the limit** (`MAX_LEVERAGE=1` — configurable,
+   but 1x is how this account trades for now) → instant market close.
+3. **An entry limit order with no stop** → the order is cancelled. Reduce-only
+   exits, conditional stop/take orders and limit orders that do carry a stop
+   are left alone.
+
+With `GUARD_GRACE_SEC` above zero the guard warns first and gives the breach
+that many seconds to be fixed; at zero it acts immediately. A forced close is
+labelled everywhere — in Telegram, and in the journal as «принудительно
+остановлено» with the broken rule.
+
+The bot works in tandem with TradingView's long/short position tool and keeps
+every trade risking exactly `RISK_PCT` (1%) of the deposit: draw a long with
+an entry, stop and take sized at $100 but a 2% stop, and the sizer amends the
+entry limit down to $50 on its own — so the stop always costs the same slice
+of the account.
+
+Around that core it does the rest of the assistant work:
+
+- receives native TradingView alerts over a webhook, announces them on the
+  speaker and in Telegram in a compact form (`ETH 📉 2,440.85, TV`);
+- reports every entry and exit to the owner's Telegram with a chart
+  screenshot and the full arithmetic — PnL, both fees, the deposit after;
+- fills the Google Sheets trade journal automatically: one row per closed
+  trade with a screenshot on Drive, weekly totals, deposits and withdrawals.
+
 ## Why a user account is involved
 
 A Telegram bot never receives messages sent by another bot — not in private
