@@ -287,6 +287,13 @@ async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, sp
             await send(f"❌ {base_symbol(symbol)}: риск-менеджер не смог закрыть ({exc})")
 
 
+async def last_price(http: httpx.AsyncClient, symbol: str) -> float | None:
+    """The instrument's last traded price, or None when Bybit lists none."""
+    result = await _get(http, "/v5/market/tickers", {"category": "linear", "symbol": symbol})
+    rows = result.get("list") or []
+    return float(rows[0]["lastPrice"]) if rows else None
+
+
 async def _active_symbols(http: httpx.AsyncClient) -> set[str]:
     """Symbols with an open position or a live order."""
     symbols: set[str] = set()

@@ -37,6 +37,7 @@ class FakeHTTP:
         self.transfer_rows: list[dict[str, Any]] = []
         self.order_rows: list[dict[str, Any]] = []
         self.instrument_pages: list[dict[str, Any]] = []
+        self.ticker_rows: list[dict[str, Any]] = []
         self.requests: list[str] = []
 
     async def get(self, url, headers=None, timeout=None):
@@ -50,6 +51,8 @@ class FakeHTTP:
             return FakeResponse({"retCode": 0, "result": {"list": self.exec_rows}})
         if "/v5/account/wallet-balance" in url:
             return FakeResponse({"retCode": 0, "result": {"list": self.equity_rows}})
+        if "/v5/market/tickers" in url:
+            return FakeResponse({"retCode": 0, "result": {"list": self.ticker_rows}})
         if "/v5/market/instruments-info" in url:
             page = self.instrument_pages.pop(0) if self.instrument_pages else {"list": []}
             return FakeResponse({"retCode": 0, "result": page})
@@ -133,6 +136,17 @@ def test_positions_parses_leverage_and_position_index(keyed):
 
     assert got["FARTCOINUSDT"].leverage == 3.0
     assert got["FARTCOINUSDT"].position_idx == 1
+
+
+def test_last_price_reads_the_ticker(keyed):
+    http = FakeHTTP()
+    http.ticker_rows = [{"lastPrice": "2400.5"}]
+
+    assert asyncio.run(bybit_watch.last_price(http, "ETHUSDT")) == 2400.5
+
+
+def test_last_price_is_none_for_an_unknown_symbol(keyed):
+    assert asyncio.run(bybit_watch.last_price(FakeHTTP(), "NOPEUSDT")) is None
 
 
 def test_get_raises_on_a_bybit_refusal(keyed):

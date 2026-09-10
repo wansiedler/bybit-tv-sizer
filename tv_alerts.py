@@ -15,6 +15,7 @@ Tailscale Funnel) or a router port-forward in front of TV_PORT.
 import asyncio
 import logging
 import os
+import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -101,13 +102,58 @@ def serve(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue) -> ThreadingHTT
     return httpd
 
 
-async def pump(queue: asyncio.Queue, send, speak) -> None:
-    """Announce queued alerts until cancelled. One bad alert never ends it."""
+# "ETHUSDT.P Crossing 2,440.85" and friends, with an optional direction word.
+_CROSSING = re.compile(
+    r"^(?P<symbol>[A-Z0-9]+?)(?:USDT)?(?:\.P)?\s+Crossing(?:\s+(?P<dir>Up|Down))?"
+    r"\s+(?P<level>[\d,]+(?:\.\d+)?)\s*$",
+    re.IGNORECASE,
+)
+
+
+def format_alert(text: str, price: float | None = None) -> tuple[str, str]:
+    """The (sent, spoken) pair for one alert.
+
+    A TradingView crossing becomes the relay's own compact shape —
+    "ETH 📉 2,440.85, TV". The direction comes from the alert when it names
+    one, else from where the market trades now relative to the level; with
+    neither the arrow is dropped. Anything unrecognised passes through raw.
+    """
+    match = _CROSSING.match(text.strip())
+    if match is None:
+        return f"🔔 TV: {text[:1000]}", text[:200]
+    symbol = match["symbol"].upper()
+    level = match["level"]
+    arrow = ""
+    if match["dir"]:
+        arrow = "📈" if match["dir"].lower() == "up" else "📉"
+    elif price is not None:
+        arrow = "📈" if price > float(level.replace(",", "")) else "📉"
+    middle = f" {arrow} " if arrow else " "
+    spoken_dir = {"📈": "up", "📉": "down"}.get(arrow, "")
+    spoken = f"{symbol}{f' {spoken_dir}' if spoken_dir else ''}, {level}, TV"
+    return f"{symbol}{middle}{level}, TV", spoken
+
+
+async def pump(queue: asyncio.Queue, send, speak, price_of=None) -> None:
+    """Announce queued alerts until cancelled. One bad alert never ends it.
+
+    `price_of` (async, symbol -> float | None) supplies the market price
+    that orients the arrow when the alert itself names no direction.
+    """
     while True:
         text = await queue.get()
         try:
-            await send(f"🔔 TV: {text[:1000]}")
-            await speak(text[:200])
+            price = None
+            match = _CROSSING.match(text.strip())
+            if price_of is not None and match is not None and not match["dir"]:
+                try:
+                    price = await price_of(f"{match['symbol'].upper()}USDT")
+                # Deliberately broad: no price just means no arrow.
+                except Exception:  # noqa: BLE001
+                    log.exception("price lookup failed")
+            line, spoken = format_alert(text, price)
+            await send(line)
+            await speak(spoken)
         except asyncio.CancelledError:
             raise
         # Deliberately broad: announcing is best-effort, the queue must live.

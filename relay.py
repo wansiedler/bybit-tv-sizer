@@ -421,7 +421,12 @@ async def run() -> None:
                 webhook = tv_alerts.serve(asyncio.get_running_loop(), alerts)
                 background.add(
                     asyncio.create_task(
-                        tv_alerts.pump(alerts, lambda text: send_via_bot(http, text), speaker.trade)
+                        tv_alerts.pump(
+                            alerts,
+                            lambda text: send_via_bot(http, text),
+                            speaker.trade,
+                            lambda symbol: bybit_watch.last_price(http, symbol),
+                        )
                     )
                 )
             listening = asyncio.create_task(client.run_until_disconnected())

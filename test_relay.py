@@ -626,7 +626,7 @@ def test_run_starts_the_tv_webhook_when_a_secret_is_set(config, monkeypatch):
         started.append(queue)
         return FakeWebhook()
 
-    async def fake_pump(queue, send, speak):
+    async def fake_pump(queue, send, speak, price_of=None):
         await asyncio.sleep(3600)  # runs until the relay cancels it
 
     monkeypatch.setattr(relay.tv_alerts, "enabled", lambda: True)

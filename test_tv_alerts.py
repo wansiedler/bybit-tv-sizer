@@ -221,3 +221,73 @@ def test_pump_lets_cancellation_through():
             await tv_alerts.pump(queue, Cancelling().send, Cancelling().speak)
 
     asyncio.run(run())
+
+
+# --------------------------------------------------------------------------- #
+#  format_alert                                                                #
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    ("text", "price", "line", "spoken"),
+    [
+        ("ETHUSDT.P Crossing 2,440.85", 2400.0, "ETH 📉 2,440.85, TV", "ETH down, 2,440.85, TV"),
+        ("ETHUSDT.P Crossing 2,440.85", 2500.0, "ETH 📈 2,440.85, TV", "ETH up, 2,440.85, TV"),
+        ("ETHUSDT.P Crossing 2,440.85", None, "ETH 2,440.85, TV", "ETH, 2,440.85, TV"),
+        ("BTCUSDT Crossing Up 76,893.7", None, "BTC 📈 76,893.7, TV", "BTC up, 76,893.7, TV"),
+        ("op Crossing down 0.1027", None, "OP 📉 0.1027, TV", "OP down, 0.1027, TV"),
+    ],
+)
+def test_format_alert_compacts_crossings(text, price, line, spoken):
+    assert tv_alerts.format_alert(text, price) == (line, spoken)
+
+
+def test_format_alert_passes_unknown_shapes_through():
+    line, spoken = tv_alerts.format_alert("strategy fired on something")
+
+    assert line == "🔔 TV: strategy fired on something"
+    assert spoken == "strategy fired on something"
+
+
+def test_pump_orients_the_arrow_by_market_price():
+    async def run():
+        queue: asyncio.Queue = asyncio.Queue()
+        out = Recorder()
+        asked = []
+
+        async def price_of(symbol):
+            asked.append(symbol)
+            return 2400.0
+
+        task = asyncio.create_task(tv_alerts.pump(queue, out.send, out.speak, price_of))
+        await queue.put("ETHUSDT.P Crossing 2,440.85")
+        while not out.sent:
+            await asyncio.sleep(0)
+        task.cancel()
+        return asked, out
+
+    asked, out = asyncio.run(run())
+
+    assert asked == ["ETHUSDT"]
+    assert out.sent == ["ETH 📉 2,440.85, TV"]
+    assert out.spoken == ["ETH down, 2,440.85, TV"]
+
+
+def test_pump_survives_a_failing_price_lookup(caplog):
+    async def run():
+        queue: asyncio.Queue = asyncio.Queue()
+        out = Recorder()
+
+        async def price_of(symbol):
+            raise OSError("tickers down")
+
+        task = asyncio.create_task(tv_alerts.pump(queue, out.send, out.speak, price_of))
+        await queue.put("ETHUSDT.P Crossing 2,440.85")
+        while not out.sent:
+            await asyncio.sleep(0)
+        task.cancel()
+        return out
+
+    with caplog.at_level("ERROR", logger="relay.tv"):
+        out = asyncio.run(run())
+
+    assert out.sent == ["ETH 2,440.85, TV"]  # no arrow, alert still delivered
+    assert "price lookup failed" in caplog.text
