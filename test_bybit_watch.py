@@ -36,6 +36,7 @@ class FakeHTTP:
         self.withdraw_rows: list[dict[str, Any]] = []
         self.transfer_rows: list[dict[str, Any]] = []
         self.order_rows: list[dict[str, Any]] = []
+        self.instrument_pages: list[dict[str, Any]] = []
         self.requests: list[str] = []
 
     async def get(self, url, headers=None, timeout=None):
@@ -49,6 +50,9 @@ class FakeHTTP:
             return FakeResponse({"retCode": 0, "result": {"list": self.exec_rows}})
         if "/v5/account/wallet-balance" in url:
             return FakeResponse({"retCode": 0, "result": {"list": self.equity_rows}})
+        if "/v5/market/instruments-info" in url:
+            page = self.instrument_pages.pop(0) if self.instrument_pages else {"list": []}
+            return FakeResponse({"retCode": 0, "result": page})
         if "/v5/order/realtime" in url:
             return FakeResponse({"retCode": 0, "result": {"list": self.order_rows}})
         if "/v5/asset/deposit/query-record" in url:
@@ -469,6 +473,42 @@ def test_lev1_caps_positions_and_orders(keyed):
     assert text == "✅ FARTCOIN → 1x\n✅ OP → 1x"
     assert [o["symbol"] for o in http.orders] == ["FARTCOINUSDT", "OPUSDT"]
     assert http.orders[0]["buyLeverage"] == "1" and http.orders[0]["sellLeverage"] == "1"
+
+
+def test_lev1_sweeps_the_rest_of_the_exchange_after_the_actives(keyed):
+    class Mixed(ClosingHTTP):
+        async def post(self, url, content=None, headers=None, timeout=None):
+            import json as _json
+
+            body = _json.loads(content)
+            if body["symbol"] == "AUSDT":
+                raise RuntimeError("110043 leverage not modified")
+            if body["symbol"] == "BUSDT":
+                raise OSError("margin mode conflict")
+            return await super().post(url, content=content, headers=headers, timeout=timeout)
+
+    http = Mixed()
+    http.position_pages = [[row()]]
+    http.order_rows = []
+    http.instrument_pages = [
+        {
+            "list": [{"symbol": "AUSDT", "settleCoin": "USDT", "status": "Trading"}],
+            "nextPageCursor": "page2",
+        },
+        {
+            "list": [
+                {"symbol": "BUSDT", "settleCoin": "USDT", "status": "Trading"},
+                {"symbol": "CUSDT", "settleCoin": "USDT", "status": "Trading"},
+                {"symbol": "DUSDC", "settleCoin": "USDC", "status": "Trading"},
+                {"symbol": "EUSDT", "settleCoin": "USDT", "status": "Closed"},
+                {"symbol": "FARTCOINUSDT", "settleCoin": "USDT", "status": "Trading"},
+            ],
+        },
+    ]
+
+    text = asyncio.run(bybit_watch.force_leverage_one(http))
+
+    assert text == ("✅ FARTCOIN → 1x\nОстальные 3 инструментов: ✅ 1 · уже 1x 1 · ❌ 1")
 
 
 def test_lev1_takes_a_bare_ticker(keyed):

@@ -287,53 +287,101 @@ async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, sp
             await send(f"❌ {base_symbol(symbol)}: риск-менеджер не смог закрыть ({exc})")
 
 
-async def force_leverage_one(http: httpx.AsyncClient, query: str = "") -> str:
-    """Set 1x leverage, for /lev1 [ticker].
+async def _active_symbols(http: httpx.AsyncClient) -> set[str]:
+    """Symbols with an open position or a live order."""
+    symbols: set[str] = set()
+    result = await _get(http, "/v5/position/list", {"category": "linear", "settleCoin": "USDT"})
+    symbols |= {r["symbol"] for r in result.get("list", []) if float(r.get("size") or 0) != 0}
+    result = await _get(http, "/v5/order/realtime", {"category": "linear", "settleCoin": "USDT"})
+    symbols |= {r["symbol"] for r in result.get("list", [])}
+    return symbols
 
-    Without a ticker every symbol with an open position or a live order gets
-    the cap; with one — that instrument alone (CL → CLUSDT).
+
+async def _all_symbols(http: httpx.AsyncClient) -> set[str]:
+    """Every trading USDT perpetual on the exchange."""
+    symbols: set[str] = set()
+    cursor = ""
+    while True:
+        params = {"category": "linear", "limit": "1000"}
+        if cursor:
+            params["cursor"] = cursor
+        result = await _get(http, "/v5/market/instruments-info", params)
+        symbols |= {
+            r["symbol"]
+            for r in result.get("list", [])
+            if r.get("settleCoin") == "USDT" and r.get("status") == "Trading"
+        }
+        cursor = result.get("nextPageCursor") or ""
+        if not cursor:
+            return symbols
+
+
+async def _cap_leverage(http: httpx.AsyncClient, symbol: str) -> str:
+    """One set-leverage call: 'done', 'already' or the refusal text."""
+    try:
+        await _post(
+            http,
+            "/v5/position/set-leverage",
+            {"category": "linear", "symbol": symbol, "buyLeverage": "1", "sellLeverage": "1"},
+        )
+        return "done"
+    # Deliberately broad: one refused symbol must not strand the rest.
+    except Exception as exc:  # noqa: BLE001
+        # 110043: leverage not modified — it already stands at 1x.
+        if "110043" in str(exc):
+            return "already"
+        log.exception("could not set leverage on %s", symbol)
+        return str(exc)
+
+
+async def force_leverage_one(http: httpx.AsyncClient, query: str = "") -> str:
+    """Force 1x leverage, for /lev1 [ticker].
+
+    With a ticker — that instrument alone (CL → CLUSDT). Without one the
+    symbols with open positions and live orders go first, then every other
+    USDT perpetual on the exchange, so a fresh instrument is already capped
+    before the first order ever touches it.
     """
     if not enabled():
         return "Bybit не подключён: нет API-ключей"
-    symbols: set[str] = set()
-    if query.strip():
-        wanted = query.strip().upper()
-        symbols = {wanted if wanted.endswith("USDT") else f"{wanted}USDT"}
+    query = query.strip()
+    if query and query.lower() not in ("all", "все", "всё"):
+        wanted = query.upper()
+        active = [wanted if wanted.endswith("USDT") else f"{wanted}USDT"]
+        rest: list[str] = []
     else:
         try:
-            result = await _get(
-                http, "/v5/position/list", {"category": "linear", "settleCoin": "USDT"}
-            )
-            symbols |= {
-                r["symbol"] for r in result.get("list", []) if float(r.get("size") or 0) != 0
-            }
-            result = await _get(
-                http, "/v5/order/realtime", {"category": "linear", "settleCoin": "USDT"}
-            )
-            symbols |= {r["symbol"] for r in result.get("list", [])}
+            open_now = await _active_symbols(http)
+            active = sorted(open_now)
+            rest = sorted(await _all_symbols(http) - open_now)
         # Deliberately broad: a chat command must answer, not crash the poller.
         except Exception:  # noqa: BLE001
             log.exception("lev1 listing failed")
             return "Bybit не ответил, попробуй ещё раз"
-        if not symbols:
-            return "Нет открытых позиций и ордеров — плечо ставить некому"
     lines = []
-    for symbol in sorted(symbols):
-        try:
-            await _post(
-                http,
-                "/v5/position/set-leverage",
-                {"category": "linear", "symbol": symbol, "buyLeverage": "1", "sellLeverage": "1"},
-            )
+    for symbol in active:
+        verdict = await _cap_leverage(http, symbol)
+        if verdict == "done":
             lines.append(f"✅ {base_symbol(symbol)} → 1x")
-        # Deliberately broad: one refused symbol must not strand the rest.
-        except Exception as exc:  # noqa: BLE001
-            # 110043: leverage not modified — it already stands at 1x.
-            if "110043" in str(exc):
-                lines.append(f"· {base_symbol(symbol)} уже 1x")
+        elif verdict == "already":
+            lines.append(f"· {base_symbol(symbol)} уже 1x")
+        else:
+            lines.append(f"❌ {base_symbol(symbol)}: {verdict}")
+    if not active and not rest:
+        return "Нет открытых позиций и ордеров — плечо ставить некому"
+    if rest:
+        done = already = failed = 0
+        for symbol in rest:
+            verdict = await _cap_leverage(http, symbol)
+            if verdict == "done":
+                done += 1
+            elif verdict == "already":
+                already += 1
             else:
-                log.exception("could not set leverage on %s", symbol)
-                lines.append(f"❌ {base_symbol(symbol)}: {exc}")
+                failed += 1
+        lines.append(
+            f"Остальные {len(rest)} инструментов: ✅ {done} · уже 1x {already} · ❌ {failed}"
+        )
     return "\n".join(lines)
 
 
