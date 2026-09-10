@@ -88,7 +88,7 @@ jobs:
           echo "## ✅ Diff gate: clean" >> "$GITHUB_STEP_SUMMARY"
 
       # ---- whole-tree pass: informational ----
-      - name: Full-tree hooks (informational)
+      - name: Full-tree hooks (blocking)
         if: ${{ !cancelled() }}
         env:
           SKIP: no-commit-to-branch
@@ -99,18 +99,17 @@ jobs:
           set -e
           echo "$out"
           if [ "$rc" -ne 0 ]; then
-            echo "::warning::whole-tree hook findings present (non-blocking)"
             findings=$(grep -vE "Passed$|Skipped$" <<< "$out" || true)
             {
-              echo "## ⚠️ Full-tree hooks (informational)"
+              echo "## ❌ Full-tree hooks"
               echo ""
               echo '```'
               head -n 120 <<< "$findings"
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "## ✅ Full-tree hooks: clean" >> "$GITHUB_STEP_SUMMARY"
+            exit "$rc"
           fi
+          echo "## ✅ Full-tree hooks: clean" >> "$GITHUB_STEP_SUMMARY"
 
   # ------------------------------------------------------------------ #
   #  Tests: the parser is the part with logic worth pinning down        #
