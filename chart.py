@@ -18,8 +18,9 @@ from PIL import Image, ImageDraw, ImageFont
 
 # The bundled scalable font: no system fonts to rely on in a slim image, and
 # no glyphs outside basic latin — so labels stick to plain words, no arrows.
-TITLE_FONT = ImageFont.load_default(30)
-LABEL_FONT = ImageFont.load_default(20)
+# NOSONAR on both: Pillow >= 9.2 accepts a size; Sonar's stub predates it.
+TITLE_FONT = ImageFont.load_default(30)  # NOSONAR
+LABEL_FONT = ImageFont.load_default(20)  # NOSONAR
 
 # TradingView-like proportions: tall enough that candles keep their shape
 # even when a distant TP or SL stretches the price scale.
