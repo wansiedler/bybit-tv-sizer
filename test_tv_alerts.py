@@ -229,8 +229,8 @@ def test_pump_lets_cancellation_through():
 @pytest.mark.parametrize(
     ("text", "price", "line", "spoken"),
     [
-        ("ETHUSDT.P Crossing 2,440.85", 2400.0, "ETH 📉 2,440.85, TV", "ETH down, 2,440.85, TV"),
-        ("ETHUSDT.P Crossing 2,440.85", 2500.0, "ETH 📈 2,440.85, TV", "ETH up, 2,440.85, TV"),
+        ("ETHUSDT.P Crossing 2,440.85", 2500.0, "ETH 📉 2,440.85, TV", "ETH down, 2,440.85, TV"),
+        ("ETHUSDT.P Crossing 2,440.85", 2400.0, "ETH 📈 2,440.85, TV", "ETH up, 2,440.85, TV"),
         ("ETHUSDT.P Crossing 2,440.85", None, "ETH 2,440.85, TV", "ETH, 2,440.85, TV"),
         ("BTCUSDT Crossing Up 76,893.7", None, "BTC 📈 76,893.7, TV", "BTC up, 76,893.7, TV"),
         ("op Crossing down 0.1027", None, "OP 📉 0.1027, TV", "OP down, 0.1027, TV"),
@@ -255,7 +255,7 @@ def test_pump_orients_the_arrow_by_market_price():
 
         async def price_of(symbol):
             asked.append(symbol)
-            return 2400.0
+            return 2500.0  # the market came from above: a downward cross
 
         task = asyncio.create_task(tv_alerts.pump(queue, out.send, out.speak, price_of))
         await queue.put("ETHUSDT.P Crossing 2,440.85")

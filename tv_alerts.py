@@ -110,13 +110,14 @@ _CROSSING = re.compile(
 )
 
 
-def format_alert(text: str, price: float | None = None) -> tuple[str, str]:
+def format_alert(text: str, came_from: float | None = None) -> tuple[str, str]:
     """The (sent, spoken) pair for one alert.
 
     A TradingView crossing becomes the relay's own compact shape —
     "ETH 📉 2,440.85, TV". The direction comes from the alert when it names
-    one, else from where the market trades now relative to the level; with
-    neither the arrow is dropped. Anything unrecognised passes through raw.
+    one, else from `came_from` — where the market was just before the cross:
+    arriving from above means it crossed downward. With neither the arrow is
+    dropped. Anything unrecognised passes through raw.
     """
     match = _CROSSING.match(text.strip())
     if match is None:
@@ -126,8 +127,8 @@ def format_alert(text: str, price: float | None = None) -> tuple[str, str]:
     arrow = ""
     if match["dir"]:
         arrow = "📈" if match["dir"].lower() == "up" else "📉"
-    elif price is not None:
-        arrow = "📈" if price > float(level.replace(",", "")) else "📉"
+    elif came_from is not None:
+        arrow = "📉" if came_from > float(level.replace(",", "")) else "📈"
     middle = f" {arrow} " if arrow else " "
     spoken_dir = {"📈": "up", "📉": "down"}.get(arrow, "")
     spoken = f"{symbol}{f' {spoken_dir}' if spoken_dir else ''}, {level}, TV"
@@ -137,7 +138,7 @@ def format_alert(text: str, price: float | None = None) -> tuple[str, str]:
 async def pump(queue: asyncio.Queue, send, speak, price_of=None) -> None:
     """Announce queued alerts until cancelled. One bad alert never ends it.
 
-    `price_of` (async, symbol -> float | None) supplies the market price
+    `price_of` (async, symbol -> float | None) supplies the pre-cross price
     that orients the arrow when the alert itself names no direction.
     """
     while True:

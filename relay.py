@@ -425,7 +425,7 @@ async def run() -> None:
                             alerts,
                             lambda text: send_via_bot(http, text),
                             speaker.trade,
-                            lambda symbol: bybit_watch.last_price(http, symbol),
+                            lambda symbol: bybit_watch.price_before(http, symbol),
                         )
                     )
                 )

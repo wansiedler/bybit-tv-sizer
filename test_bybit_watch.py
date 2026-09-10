@@ -138,15 +138,18 @@ def test_positions_parses_leverage_and_position_index(keyed):
     assert got["FARTCOINUSDT"].position_idx == 1
 
 
-def test_last_price_reads_the_ticker(keyed):
+def test_price_before_reads_the_previous_minute_close(keyed):
     http = FakeHTTP()
-    http.ticker_rows = [{"lastPrice": "2400.5"}]
+    http.kline_rows = [
+        ["1700000060000", "2440", "2450", "2430", "2431", "1", "1"],  # forming
+        ["1700000000000", "2500", "2510", "2490", "2500.5", "1", "1"],  # done
+    ]
 
-    assert asyncio.run(bybit_watch.last_price(http, "ETHUSDT")) == 2400.5
+    assert asyncio.run(bybit_watch.price_before(http, "ETHUSDT")) == 2500.5
 
 
-def test_last_price_is_none_for_an_unknown_symbol(keyed):
-    assert asyncio.run(bybit_watch.last_price(FakeHTTP(), "NOPEUSDT")) is None
+def test_price_before_is_none_without_history(keyed):
+    assert asyncio.run(bybit_watch.price_before(FakeHTTP(), "NOPEUSDT")) is None
 
 
 def test_get_raises_on_a_bybit_refusal(keyed):

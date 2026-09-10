@@ -287,11 +287,21 @@ async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, sp
             await send(f"❌ {base_symbol(symbol)}: риск-менеджер не смог закрыть ({exc})")
 
 
-async def last_price(http: httpx.AsyncClient, symbol: str) -> float | None:
-    """The instrument's last traded price, or None when Bybit lists none."""
-    result = await _get(http, "/v5/market/tickers", {"category": "linear", "symbol": symbol})
+async def price_before(http: httpx.AsyncClient, symbol: str) -> float | None:
+    """Where the market was a minute ago: the previous 1m candle's close.
+
+    An alert level is crossed FROM somewhere; the price after the cross has
+    often bounced right back over the line, so the arrow must come from the
+    side the market arrived from, not where it sits now.
+    """
+    result = await _get(
+        http,
+        "/v5/market/kline",
+        {"category": "linear", "symbol": symbol, "interval": "1", "limit": "2"},
+    )
     rows = result.get("list") or []
-    return float(rows[0]["lastPrice"]) if rows else None
+    # Newest first; rows[1] is the last completed minute, close at index 4.
+    return float(rows[1][4]) if len(rows) > 1 else None
 
 
 async def _active_symbols(http: httpx.AsyncClient) -> set[str]:
