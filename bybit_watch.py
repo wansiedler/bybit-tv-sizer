@@ -915,7 +915,7 @@ def journal_row(
 
     entry = float(record.get("avgEntryPrice") or was.price)
     opened_ms = record.get("createdTime")
-    opened = datetime.fromtimestamp(int(opened_ms) / 1000).strftime("%d/%m/%Y") if opened_ms else ""
+    opened = datetime.fromtimestamp(int(opened_ms) / 1000).strftime("%d.%m.%y") if opened_ms else ""
     rr = f"принудительно остановлено: {forced}" if forced else ""
     if was.stop_loss and was.take_profit:
         rr = f"1к{abs(was.take_profit - entry) / abs(entry - was.stop_loss):.1f}"
@@ -1252,7 +1252,7 @@ async def money_tick(http: httpx.AsyncClient, seen: set[str] | None, send) -> se
             line += f" · деп {depo:,.2f}$"
         await send(line)
         row = [
-            datetime.now().strftime("%d/%m/%Y"),
+            datetime.now().strftime("%d.%m.%y"),
             "перевод",
             "",
             "",
