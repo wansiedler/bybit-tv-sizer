@@ -401,6 +401,7 @@ def test_guard_closes_once_the_grace_window_has_passed(guarding):
 
     assert len(http.orders) == 1
     assert out.sent[-1] == "🛑 CL закрыт маркетом риск-менеджером: нет стопа"
+    assert "CLUSDT" in bybit_watch._guard_closed
 
 
 def test_guard_forgives_a_fixed_position(guarding):
@@ -881,6 +882,14 @@ def test_journal_row_matches_the_diary_format():
     assert row[0].count("/") == 2  # DD/MM/YYYY
     assert row[6] == ""  # the screenshot chip is the script's to fill
     assert row[7:] == [131.0, 92.04, "", -1.19, "", "", ""]
+
+
+def test_journal_row_marks_a_guard_close():
+    was = Position("long", 1.0, 199.12, 44.0)
+
+    row = bybit_watch.journal_row("SAMSUNGUSDT", was, {}, -0.04, forced=True)
+
+    assert row[4] == "принудительно остановлено"
 
 
 def test_journal_row_extras_carry_the_full_arithmetic():

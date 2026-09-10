@@ -221,6 +221,8 @@ async def _close_market(
 
 # When each still-open violation was first noticed, by symbol.
 _guard_seen: dict[str, float] = {}
+# Symbols the guard itself market-closed: their journal rows say so.
+_guard_closed: set[str] = set()
 
 
 def _guard_violation(position: Position) -> str | None:
@@ -275,6 +277,7 @@ async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, sp
                 f"{position.size:g}",
                 position.position_idx,
             )
+            _guard_closed.add(symbol)
             await send(f"🛑 {base_symbol(symbol)} закрыт маркетом риск-менеджером: {reason}")
         # Deliberately broad: the guard must keep watching even when one
         # close is refused (margin mode quirks, min qty, hedged legs).
@@ -717,7 +720,12 @@ async def entry_fee(http: httpx.AsyncClient, symbol: str) -> float | None:
 
 
 def journal_row(
-    symbol: str, was: Position, record: dict, pnl: float, depo: float | None = None
+    symbol: str,
+    was: Position,
+    record: dict,
+    pnl: float,
+    depo: float | None = None,
+    forced: bool = False,
 ) -> list:
     """One trade as a row of the trading-diary sheet.
 
@@ -732,7 +740,7 @@ def journal_row(
     entry = float(record.get("avgEntryPrice") or was.price)
     opened_ms = record.get("createdTime")
     opened = datetime.fromtimestamp(int(opened_ms) / 1000).strftime("%d/%m/%Y") if opened_ms else ""
-    rr = ""
+    rr = "принудительно остановлено" if forced else ""
     if was.stop_loss and was.take_profit:
         rr = f"1к{abs(was.take_profit - entry) / abs(entry - was.stop_loss):.1f}"
     risk = abs(entry - was.stop_loss) * was.size if was.stop_loss else 0.0
@@ -927,7 +935,9 @@ async def tick(
                         f" = {pnl:+,.2f}{share(pnl, depo)}"
                     ),
                 )
-                entry: dict = {"row": journal_row(symbol, was, record, pnl, depo)}
+                forced = symbol in _guard_closed
+                _guard_closed.discard(symbol)
+                entry: dict = {"row": journal_row(symbol, was, record, pnl, depo, forced)}
                 if png is not None:
                     # The Apps Script saves it to Drive and writes the link
                     # into the «Ссылка» column of the same row.

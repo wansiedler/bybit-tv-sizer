@@ -40,6 +40,7 @@ def _default_config(monkeypatch, tmp_path):
     monkeypatch.setattr(bybit_watch, "GUARD_MAX_LEVERAGE", 1.0)
     monkeypatch.setattr(bybit_watch, "GUARD_GRACE", 45.0)
     bybit_watch._guard_seen.clear()
+    bybit_watch._guard_closed.clear()
     monkeypatch.setattr(tv_alerts, "TV_WEBHOOK_SECRET", "")
     monkeypatch.setattr(tv_alerts, "JOURNAL_URL", "")
     monkeypatch.setattr(tv_alerts, "TV_PUBLIC_URL", "")
