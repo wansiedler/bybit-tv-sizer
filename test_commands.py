@@ -516,11 +516,11 @@ def test_status_appends_the_external_ip(owner):
     rec = Recorder()
 
     async def ip():
-        return "<VPS_IP>"
+        return "203.0.113.7"
 
     asyncio.run(commands.dispatch("status", "", commands.Stats(), rec.send, rec.speak, True, ip=ip))
 
-    assert rec.sent[0].endswith("🌐 <VPS_IP>")
+    assert rec.sent[0].endswith("🌐 203.0.113.7")
 
 
 def test_status_survives_a_failed_ip_lookup(owner):

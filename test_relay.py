@@ -874,7 +874,7 @@ def test_main_check_flag_runs_the_check(monkeypatch):
 
 def test_run_up_notice_carries_the_external_ip(config, monkeypatch):
     async def fake_current(http):
-        return "<VPS_IP>"
+        return "203.0.113.7"
 
     monkeypatch.setattr(relay.ip_watch, "current", fake_current)
 
@@ -883,7 +883,7 @@ def test_run_up_notice_carries_the_external_ip(config, monkeypatch):
 
     http, _ = _run_relay(monkeypatch, disconnect_immediately)
 
-    assert "🌐 <VPS_IP>" in str(http.posted[0])
+    assert "🌐 203.0.113.7" in str(http.posted[0])
 
 
 def test_run_up_notice_skips_an_unanswerable_ip(config, monkeypatch):
