@@ -167,7 +167,7 @@ async def send_photo_via_bot(http: httpx.AsyncClient, caption: str, png: bytes) 
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
             data={"chat_id": TARGET_CHAT_ID, "caption": caption, "parse_mode": "HTML"},
             files={"photo": ("chart.png", png, "image/png")},
-            timeout=30,
+            timeout=60,
         )
     except httpx.HTTPError:
         log.exception("sendPhoto failed")

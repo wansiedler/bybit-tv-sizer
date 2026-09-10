@@ -109,3 +109,5 @@ TV_PUBLIC_URL=
 IP_WATCH=1
 IP_POLL_SEC=60
 TUNNEL_TIMEOUT=5
+# Telegram goes direct — only Bybit needs the fixed-IP tunnel.
+NO_PROXY=api.telegram.org
