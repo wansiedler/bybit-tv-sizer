@@ -161,7 +161,7 @@ def is_managed(order: dict) -> bool:
         return False
     if order.get("triggerPrice") not in ("", None):  # conditional order
         return False
-    return not Decimal(order.get("cumExecQty") or 0) > 0
+    return Decimal(order.get("cumExecQty") or 0) <= 0
 
 
 def has_settled(order: dict) -> bool:

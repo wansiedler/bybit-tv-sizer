@@ -266,7 +266,8 @@ async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, sp
     # Deliberately broad: no order answer must not stop the position rules.
     except Exception:  # noqa: BLE001
         log.exception("guard order listing failed")
-    for key in list(_guard_seen):
+    # A list copy on purpose: the dict shrinks inside the loop. NOSONAR
+    for key in list(_guard_seen):  # NOSONAR
         if key.startswith("order:"):
             if key not in naked:
                 del _guard_seen[key]
@@ -1192,7 +1193,7 @@ async def money_moves(http: httpx.AsyncClient) -> list[dict]:
     moves: list[dict] = []
     result = await _get(http, "/v5/asset/deposit/query-record", {"startTime": since, "limit": "50"})
     for r in result.get("rows", []):
-        if str(r.get("status")) == "3":  # 3 = success
+        if str(r.get("status")) == "3":  # status three means success
             moves.append(
                 {
                     "id": f"dep-{r.get('txID') or r.get('successAt')}",
