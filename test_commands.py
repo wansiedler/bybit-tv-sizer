@@ -161,6 +161,32 @@ def test_links_without_links_falls_back_to_help(owner):
     assert rec.sent == [commands.HELP]
 
 
+def test_lev1_passes_the_ticker(owner):
+    rec = Recorder()
+    seen = []
+
+    async def lev_one(arg):
+        seen.append(arg)
+        return "✅ CL → 1x"
+
+    asyncio.run(
+        commands.dispatch(
+            "lev1", "CL", commands.Stats(), rec.send, rec.speak, True, lev_one=lev_one
+        )
+    )
+
+    assert seen == ["CL"]
+    assert rec.sent == ["✅ CL → 1x"]
+
+
+def test_lev1_without_a_handler_falls_back_to_help(owner):
+    rec = Recorder()
+
+    asyncio.run(commands.dispatch("lev1", "", commands.Stats(), rec.send, rec.speak, True))
+
+    assert rec.sent == [commands.HELP]
+
+
 def test_positions_answers_with_the_report(owner):
     rec = Recorder()
 

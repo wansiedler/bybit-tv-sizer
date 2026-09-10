@@ -287,6 +287,56 @@ async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, sp
             await send(f"❌ {base_symbol(symbol)}: риск-менеджер не смог закрыть ({exc})")
 
 
+async def force_leverage_one(http: httpx.AsyncClient, query: str = "") -> str:
+    """Set 1x leverage, for /lev1 [ticker].
+
+    Without a ticker every symbol with an open position or a live order gets
+    the cap; with one — that instrument alone (CL → CLUSDT).
+    """
+    if not enabled():
+        return "Bybit не подключён: нет API-ключей"
+    symbols: set[str] = set()
+    if query.strip():
+        wanted = query.strip().upper()
+        symbols = {wanted if wanted.endswith("USDT") else f"{wanted}USDT"}
+    else:
+        try:
+            result = await _get(
+                http, "/v5/position/list", {"category": "linear", "settleCoin": "USDT"}
+            )
+            symbols |= {
+                r["symbol"] for r in result.get("list", []) if float(r.get("size") or 0) != 0
+            }
+            result = await _get(
+                http, "/v5/order/realtime", {"category": "linear", "settleCoin": "USDT"}
+            )
+            symbols |= {r["symbol"] for r in result.get("list", [])}
+        # Deliberately broad: a chat command must answer, not crash the poller.
+        except Exception:  # noqa: BLE001
+            log.exception("lev1 listing failed")
+            return "Bybit не ответил, попробуй ещё раз"
+        if not symbols:
+            return "Нет открытых позиций и ордеров — плечо ставить некому"
+    lines = []
+    for symbol in sorted(symbols):
+        try:
+            await _post(
+                http,
+                "/v5/position/set-leverage",
+                {"category": "linear", "symbol": symbol, "buyLeverage": "1", "sellLeverage": "1"},
+            )
+            lines.append(f"✅ {base_symbol(symbol)} → 1x")
+        # Deliberately broad: one refused symbol must not strand the rest.
+        except Exception as exc:  # noqa: BLE001
+            # 110043: leverage not modified — it already stands at 1x.
+            if "110043" in str(exc):
+                lines.append(f"· {base_symbol(symbol)} уже 1x")
+            else:
+                log.exception("could not set leverage on %s", symbol)
+                lines.append(f"❌ {base_symbol(symbol)}: {exc}")
+    return "\n".join(lines)
+
+
 async def close_position(http: httpx.AsyncClient, query: str) -> str:
     """Close one position by ticker, for /close CL. No confirm: the typed
     argument is the confirmation."""

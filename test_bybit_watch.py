@@ -35,6 +35,7 @@ class FakeHTTP:
         self.deposit_rows: list[dict[str, Any]] = []
         self.withdraw_rows: list[dict[str, Any]] = []
         self.transfer_rows: list[dict[str, Any]] = []
+        self.order_rows: list[dict[str, Any]] = []
         self.requests: list[str] = []
 
     async def get(self, url, headers=None, timeout=None):
@@ -48,6 +49,8 @@ class FakeHTTP:
             return FakeResponse({"retCode": 0, "result": {"list": self.exec_rows}})
         if "/v5/account/wallet-balance" in url:
             return FakeResponse({"retCode": 0, "result": {"list": self.equity_rows}})
+        if "/v5/order/realtime" in url:
+            return FakeResponse({"retCode": 0, "result": {"list": self.order_rows}})
         if "/v5/asset/deposit/query-record" in url:
             return FakeResponse({"retCode": 0, "result": {"rows": self.deposit_rows}})
         if "/v5/asset/withdraw/query-record" in url:
@@ -444,6 +447,76 @@ def test_guard_stays_dormant_when_disabled(keyed):
 
     assert out.sent == []
     assert bybit_watch._guard_seen == {}
+
+
+# --------------------------------------------------------------------------- #
+#  force leverage 1x                                                           #
+# --------------------------------------------------------------------------- #
+def test_lev1_needs_keys():
+    assert (
+        asyncio.run(bybit_watch.force_leverage_one(FakeHTTP()))
+        == "Bybit не подключён: нет API-ключей"
+    )
+
+
+def test_lev1_caps_positions_and_orders(keyed):
+    http = ClosingHTTP()
+    http.position_pages = [[row()]]
+    http.order_rows = [{"symbol": "OPUSDT"}]
+
+    text = asyncio.run(bybit_watch.force_leverage_one(http))
+
+    assert text == "✅ FARTCOIN → 1x\n✅ OP → 1x"
+    assert [o["symbol"] for o in http.orders] == ["FARTCOINUSDT", "OPUSDT"]
+    assert http.orders[0]["buyLeverage"] == "1" and http.orders[0]["sellLeverage"] == "1"
+
+
+def test_lev1_takes_a_bare_ticker(keyed):
+    http = ClosingHTTP()
+
+    text = asyncio.run(bybit_watch.force_leverage_one(http, "cl"))
+
+    assert text == "✅ CL → 1x"
+    assert http.orders[0]["symbol"] == "CLUSDT"
+
+
+def test_lev1_reports_an_already_capped_symbol(keyed):
+    class Already(ClosingHTTP):
+        async def post(self, url, content=None, headers=None, timeout=None):
+            raise RuntimeError("bybit /v5/position/set-leverage: 110043 leverage not modified")
+
+    text = asyncio.run(bybit_watch.force_leverage_one(Already(), "CLUSDT"))
+
+    assert text == "· CL уже 1x"
+
+
+def test_lev1_reports_a_refusal(keyed):
+    http = ClosingHTTP()
+    http.refuse_order = True
+
+    text = asyncio.run(bybit_watch.force_leverage_one(http, "CL"))
+
+    assert text.startswith("❌ CL:")
+
+
+def test_lev1_with_nothing_open_says_so(keyed):
+    http = ClosingHTTP()
+    http.position_pages = [[]]
+
+    text = asyncio.run(bybit_watch.force_leverage_one(http))
+
+    assert "некому" in text
+    assert http.orders == []
+
+
+def test_lev1_survives_a_listing_failure(keyed):
+    class Refusing(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise OSError("down")
+
+    text = asyncio.run(bybit_watch.force_leverage_one(Refusing()))
+
+    assert text == "Bybit не ответил, попробуй ещё раз"
 
 
 def test_stopall_arms_first_and_places_nothing(keyed, disarmed):

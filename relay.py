@@ -382,6 +382,7 @@ async def run() -> None:
                     ),
                     links.strip(),
                     lambda: ip_watch.current(http),
+                    lambda arg: bybit_watch.force_leverage_one(http, arg),
                 )
             )
             background = {answering}
