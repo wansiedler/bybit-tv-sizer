@@ -285,9 +285,16 @@ withdrawal rows. One-time setup:
 
 1. **The spreadsheet.** Create one (or copy your diary template) and note its
    link. The relay writes to the FIRST sheet of it.
-2. **The Apps Script.** In the spreadsheet: Extensions → Apps Script. Paste
-   the `doPost` script (see `docs/sheets-script.js` below), set `SECRET` to a
-   long random string of your own.
+2. **The Apps Script — where the function lives.** The receiving function is
+   not part of this repo's runtime: it lives *inside the spreadsheet*. Open
+   the sheet → **Extensions → Apps Script** — an editor opens with a single
+   `Code.gs` file bound to that spreadsheet. Replace its whole content with
+   the `doPost` script from [docs/sheets-script.js](docs/sheets-script.js),
+   set `SECRET` in its first line to a long random string of your own (the
+   same one goes into `SHEETS_SECRET` later) and save with Cmd/Ctrl+S. Any
+   later change to the function is made in this same editor — followed by
+   Deploy → Manage deployments → edit → **New version**, never a fresh
+   deployment (see below).
 3. **A Google Cloud project** — needed because Google hard-blocks the Drive
    scope for anonymous scripts:
    - console.cloud.google.com → New project.
