@@ -939,9 +939,9 @@ def journal_row(
         round(was.value, 2),
         entry,
         exit_price or "",
-        round(pnl, 4),
+        float(_sig2(pnl)),
         round(pnl / depo * 100, 2) if depo else "",
-        f"{opened_fee:.4g}+{closed_fee:.4g}" if opened_fee or closed_fee else "",
+        f"{_sig2(opened_fee)}+{_sig2(closed_fee)}" if opened_fee or closed_fee else "",
         round(depo, 2) if depo else "",
         "",  # O: Вывел/Завел — the money watcher's column
         kind,
@@ -1127,7 +1127,7 @@ async def tick(
             if exits:
                 line += "\n" + "\n".join(exits)
             if fee:
-                line += f"\nкомса{fee:.4g}"
+                line += f"\nкомса{_sig2(fee)}"
             for warn in trade_warnings(now, depo):
                 line += f"\n{warn}"
             tp_note = sl_note = ""

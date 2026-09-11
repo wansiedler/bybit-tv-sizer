@@ -1217,7 +1217,7 @@ def test_journal_row_extras_carry_the_full_arithmetic():
 
     row = bybit_watch.journal_row("CLUSDT", was, record, -1.19, 128.16, kind="руками")
 
-    assert row[7:] == [131.0, 92.04, 91.9, -1.19, -0.93, "0.0199+0.0547", 128.16, "", "руками"]
+    assert row[7:] == [131.0, 92.04, 91.9, -1.19, -0.93, "0.020+0.055", 128.16, "", "руками"]
 
 
 def test_journal_row_without_a_stop_falls_back_to_usdt():
