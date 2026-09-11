@@ -61,11 +61,11 @@ RISK_TARGET = float(os.getenv("RISK_PCT", "0.5")) / 100
 # A breach is announced first and enforced only if it survives the grace
 # window — enough time to set a stop or drop the leverage after an entry.
 RISK_GUARD = os.getenv("RISK_GUARD", "1") == "1"
-# The trimmer: a position whose stop-distance risk overshoots the target by
-# more than the tolerance is cut back down with a reduce-only market order —
-# the market entry that filled worse than the sized limit gets reshaped.
+# The trimmer: a position whose stop-distance risk overshoots the target
+# is cut back down to it with a reduce-only market order — the market entry
+# that filled worse than the sized limit gets reshaped. No tolerance: the
+# only slack is the exchange's lot step, below which nothing can be cut.
 RISK_TRIM = os.getenv("RISK_TRIM", "1") == "1"
-TRIM_TOLERANCE = float(os.getenv("RISK_TRIM_TOLERANCE", "1.25"))
 GUARD_MAX_LEVERAGE = float(os.getenv("MAX_LEVERAGE", "1"))
 GUARD_GRACE = float(os.getenv("GUARD_GRACE_SEC", "45"))
 
@@ -287,7 +287,7 @@ async def trim(http: httpx.AsyncClient, open_now: dict[str, Position], send, spe
             return
         risk = per_unit * position.size
         target = depo * RISK_TARGET
-        if risk <= target * TRIM_TOLERANCE:
+        if risk <= target:
             continue
         step, min_qty = await _lot(http, symbol)
         if step <= 0:

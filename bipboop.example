@@ -111,7 +111,6 @@ IP_POLL_SEC=60
 TUNNEL_TIMEOUT=5
 # Telegram goes direct — only Bybit needs the fixed-IP tunnel.
 NO_PROXY=api.telegram.org
-# Cut a position whose stop-risk overshoots RISK_PCT by more than the
-# tolerance back down with a reduce-only market order. 1 = on.
+# Cut a position whose stop-risk overshoots RISK_PCT back down to it with
+# a reduce-only market order. Exact: the only slack is the lot step. 1 = on.
 RISK_TRIM=1
-RISK_TRIM_TOLERANCE=1.25

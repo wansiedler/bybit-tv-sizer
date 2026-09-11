@@ -1961,11 +1961,33 @@ def test_trim_cuts_back_to_the_target_risk(trimming):
     assert out.spoken == ["CL trimmed"]
 
 
-def test_trim_leaves_a_tolerable_overshoot_alone(trimming):
+def test_trim_cuts_even_a_small_overshoot(trimming):
+    """No tolerance band: 6$ of risk against a 5$ target loses the sixth."""
     http, out = trim_http(), Recorder()
-    fine = Position("long", 6.0, 100.0, 600.0, stop_loss=99.0)  # 6$ vs 5$ target
+    slightly = Position("long", 6.0, 100.0, 600.0, stop_loss=99.0)
 
-    asyncio.run(bybit_watch.trim(http, {"CLUSDT": fine}, out.send, out.speak))
+    asyncio.run(bybit_watch.trim(http, {"CLUSDT": slightly}, out.send, out.speak))
+
+    assert [o["qty"] for o in http.orders] == ["1"]
+    assert out.sent == ["✂️ CL: риск 0.60% депо при цели 0.50% — режу 6→5"]
+
+
+def test_trim_leaves_an_exact_position_alone(trimming):
+    http, out = trim_http(), Recorder()
+    exact = Position("long", 5.0, 100.0, 500.0, stop_loss=99.0)  # 5$ = target
+
+    asyncio.run(bybit_watch.trim(http, {"CLUSDT": exact}, out.send, out.speak))
+
+    assert http.orders == []
+    assert out.sent == []
+
+
+def test_trim_cannot_cut_below_one_lot_step(trimming):
+    """An overshoot smaller than the exchange step has nothing to sell."""
+    http, out = trim_http(), Recorder()
+    hair = Position("long", 5.05, 100.0, 505.0, stop_loss=99.0)  # 5.05$ vs 5$
+
+    asyncio.run(bybit_watch.trim(http, {"CLUSDT": hair}, out.send, out.speak))
 
     assert http.orders == []
     assert out.sent == []
