@@ -48,6 +48,11 @@ class Candle:
     close: float
 
 
+def _price(price: float) -> str:
+    """A gutter price: plain thousands for big numbers, 4 digits for dust."""
+    return f"{price:,.0f}" if price >= 1000 else f"{price:.4g}"
+
+
 def _scale(low: float, high: float):
     """Map price -> y pixel, with a little headroom above and below."""
     pad = (high - low) * 0.06 or high * 0.001 or 1.0
@@ -106,7 +111,7 @@ def render(
         price = lowest + span * i / 8
         y = to_y(price)
         draw.line((MARGIN, y, chart_right, y), fill=GRID, width=1)
-        draw.text((chart_right + 8, y - 8), f"{price:.4g}", fill=GRID_TEXT, font=LABEL_FONT)
+        draw.text((chart_right + 8, y - 8), _price(price), fill=GRID_TEXT, font=LABEL_FONT)
 
     def x_of(index: int) -> float:
         return MARGIN + step * index + step / 2
@@ -142,9 +147,14 @@ def render(
 
     def level(price: float, color: tuple[int, int, int], tag: str, note: str = "") -> None:
         y = to_y(price)
-        for x in range(int(zone_left), int(zone_right) + 6, 12):  # dashed
+        # Full-width dashes, TradingView-style: a level is a level, not a
+        # zone decoration — on a finished trade the zone is a sliver at the
+        # right edge and zone-wide dashes were invisible.
+        for x in range(int(MARGIN), int(chart_right) - 6, 12):  # dashed
             draw.line((x, y, x + 6, y), fill=color, width=2)
-        draw.text((chart_right + 8, y - 8), f"{tag} {price:g}", fill=color, font=LABEL_FONT)
+        # Blot out the grid label underneath so the level's own label reads.
+        draw.rectangle((chart_right + 2, y - 12, WIDTH - 2, y + 12), fill=BACKGROUND)
+        draw.text((chart_right + 8, y - 8), f"{tag} {_price(price)}", fill=color, font=LABEL_FONT)
         if note:
             # The figure sits right against its line, inside the zone. ASCII
             # only: the bundled font has no cyrillic or typographic minus.

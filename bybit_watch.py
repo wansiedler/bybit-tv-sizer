@@ -18,6 +18,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -1033,9 +1034,19 @@ def diff(
     return changes
 
 
+def _sig2(amount: float) -> str:
+    """Two leading fraction digits: 0.5320 -> 0.53, 0.04213 -> 0.042."""
+    if amount == 0:
+        return "0.00"
+    decimals = max(2, 1 - math.floor(math.log10(abs(amount))))
+    return f"{amount:.{decimals}f}"
+
+
 def _usd(amount: float) -> str:
-    """Signed money: cents normally, four decimals for dust below a dollar."""
-    return f"{amount:+,.2f}" if abs(amount) >= 0.995 else f"{amount:+.4f}"
+    """Signed money: cents normally, two significant fraction digits below."""
+    if abs(amount) >= 0.995:
+        return f"{amount:+,.2f}"
+    return f"+{_sig2(amount)}" if amount > 0 else f"-{_sig2(abs(amount))}" if amount else "+0.00"
 
 
 def _val(value: float) -> str:
@@ -1151,7 +1162,7 @@ async def tick(
                 opened_fee = float(record.get("openFee") or 0)
                 closed_fee = float(record.get("closeFee") or 0)
                 if opened_fee or closed_fee:
-                    line += f"-({opened_fee:.4g}+{closed_fee:.4g})"
+                    line += f"-({_sig2(opened_fee)}+{_sig2(closed_fee)})"
                 if depo:
                     line += f"=<b>{depo:,.2f}$</b>"
                 spoken_line += f", {'profit' if pnl >= 0 else 'loss'} {abs(pnl):.0f}"

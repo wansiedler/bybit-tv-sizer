@@ -1821,3 +1821,21 @@ def test_stats_report_takes_a_day_count(keyed, monkeypatch):
     assert seen == [7]
     assert "За 90 дн." in asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo, "500"))
     assert "Например" in asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo, "неделя"))
+
+
+@pytest.mark.parametrize(
+    ("amount", "expected"),
+    [
+        (512.3, "+512.30"),
+        (0.532, "+0.53"),
+        (0.04213, "+0.042"),
+        (-0.0617, "-0.062"),
+        (0.0, "+0.00"),
+    ],
+)
+def test_usd_keeps_two_leading_fraction_digits(amount, expected):
+    assert bybit_watch._usd(amount) == expected
+
+
+def test_sig2_zero_stays_flat():
+    assert bybit_watch._sig2(0.0) == "0.00"
