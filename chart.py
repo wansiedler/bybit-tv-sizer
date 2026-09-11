@@ -158,10 +158,16 @@ def render(
         draw.rectangle((chart_right + 2, y - 12, WIDTH - 2, y + 12), fill=BACKGROUND)
         draw.text((chart_right + 8, y - 8), f"{tag} {_price(price)}", fill=color, font=LABEL_FONT)
         if note:
-            # The figure sits right against its line, inside the zone. ASCII
-            # only: the bundled font has no cyrillic or typographic minus.
-            width = draw.textlength(note, font=LABEL_FONT)
-            draw.text((chart_right - width - 12, y - 30), note, fill=color, font=LABEL_FONT)
+            # The figures sit right against their line, inside the zone,
+            # stacked upward one per " | " part so nothing overflows it —
+            # each on its own backing so no dashed line strikes the text.
+            # ASCII only: the bundled font has no cyrillic glyphs.
+            for stack, part in enumerate(reversed(note.split(" | "))):
+                width = draw.textlength(part, font=LABEL_FONT)
+                x0 = chart_right - width - 12
+                y0 = y - 30 - 27 * stack
+                draw.rectangle((x0 - 6, y0 - 3, x0 + width + 6, y0 + 22), fill=BACKGROUND)
+                draw.text((x0, y0), part, fill=color, font=LABEL_FONT)
 
     if breakeven is not None:
         level(breakeven, BREAKEVEN, "be")
