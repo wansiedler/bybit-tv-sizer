@@ -118,8 +118,10 @@ HTTPS_PROXY=http://10.77.0.1:8888
 ```
 
 httpx reads the variable by itself — every HTTPS call the bot makes leaves
-through the VPS. Local traffic (the TTS speaker, the Cast device) is plain
-HTTP on the LAN and never touches the proxy.
+through the VPS. Local traffic must not: the relay appends `CAST_HOST` and
+`TTS_HOST` to `NO_PROXY` on start, because the Cast device answers its
+"what are you" request over HTTPS and, sent through the VPS, that request
+only times out — 30 s of silence before every spoken line.
 
 ## The iPad (full-tunnel VPN)
 

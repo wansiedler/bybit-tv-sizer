@@ -45,6 +45,29 @@ CAST_PORT = int(os.getenv("CAST_PORT", "8009"))
 CAST_UUID = os.getenv("CAST_UUID", "")
 TTS_HOST = os.getenv("TTS_HOST", "")
 TTS_PORT = int(os.getenv("TTS_PORT", "8422"))
+
+
+def exempt_from_proxy(*hosts: str) -> str:
+    """Keep the LAN endpoints off the HTTPS_PROXY tunnel; returns NO_PROXY.
+
+    pychromecast asks the Cast device for its type over HTTPS, and urllib
+    routes every HTTPS request through HTTPS_PROXY unless the host is in
+    NO_PROXY — exactly like httpx. Through the VPS the speaker does not
+    exist, so each spoken line first waited out a 30 s timeout, and the
+    poll loop that was speaking waited with it. The bot's own LAN hosts
+    are appended here so the config cannot forget them.
+    """
+    raw = os.getenv("NO_PROXY") or os.getenv("no_proxy") or ""
+    listed = [host.strip() for host in raw.split(",") if host.strip()]
+    for host in hosts:
+        if host and host not in listed:
+            listed.append(host)
+    value = ",".join(listed)
+    os.environ["NO_PROXY"] = os.environ["no_proxy"] = value
+    return value
+
+
+exempt_from_proxy(CAST_HOST, TTS_HOST)
 # Not /tmp: a predictable path in a world-writable directory is a
 # swap-the-file-under-us invitation. The directory is created 0700.
 TTS_DIR = Path(os.getenv("TTS_DIR") or Path.home() / ".cache/lexx-relay/tts")

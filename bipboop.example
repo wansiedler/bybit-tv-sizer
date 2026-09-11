@@ -110,7 +110,9 @@ TV_PUBLIC_URL=
 IP_WATCH=1
 IP_POLL_SEC=60
 TUNNEL_TIMEOUT=5
-# Telegram goes direct — only Bybit needs the fixed-IP tunnel.
+# Telegram goes direct — only Bybit needs the fixed-IP tunnel. The relay
+# appends CAST_HOST and TTS_HOST itself, so the speaker never waits on the
+# tunnel; list any other LAN host you talk to here.
 NO_PROXY=api.telegram.org
 # Cut a position whose stop-risk overshoots RISK_PCT back down to it with
 # a reduce-only market order. Exact: the only slack is the lot step. 1 = on.

@@ -34,6 +34,27 @@ def wired(monkeypatch, tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+#  proxy exemption                                                             #
+# --------------------------------------------------------------------------- #
+def test_exempt_from_proxy_appends_the_lan_hosts(monkeypatch):
+    monkeypatch.setenv("NO_PROXY", "api.telegram.org")
+    monkeypatch.delenv("no_proxy", raising=False)
+
+    value = speaker.exempt_from_proxy("192.0.2.10", "192.0.2.20")
+
+    assert value == "api.telegram.org,192.0.2.10,192.0.2.20"
+    assert speaker.os.environ["NO_PROXY"] == value
+    assert speaker.os.environ["no_proxy"] == value  # urllib reads either spelling
+
+
+def test_exempt_from_proxy_skips_blank_and_listed_hosts(monkeypatch):
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.setenv("no_proxy", " 192.0.2.10 ,")
+
+    assert speaker.exempt_from_proxy("", "192.0.2.10") == "192.0.2.10"
+
+
+# --------------------------------------------------------------------------- #
 #  enabled / spoken                                                            #
 # --------------------------------------------------------------------------- #
 def test_enabled_when_fully_configured(wired):
