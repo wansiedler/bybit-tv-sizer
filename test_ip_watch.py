@@ -148,7 +148,7 @@ def test_proxy_endpoint_is_none_when_the_value_names_no_host(monkeypatch):
 
 def test_reachable_finds_a_listening_socket():
     async def scenario():
-        server = await asyncio.start_server(lambda r, w: None, "127.0.0.1", 0)
+        server = await asyncio.start_server(lambda r, w: w.close(), "127.0.0.1", 0)
         port = server.sockets[0].getsockname()[1]
         try:
             return await ip_watch.reachable("127.0.0.1", port)
@@ -163,7 +163,7 @@ def test_reachable_says_no_when_nothing_listens():
     async def scenario():
         # Bind and drop it: the port is known free, so the connect is refused
         # rather than left hanging.
-        server = await asyncio.start_server(lambda r, w: None, "127.0.0.1", 0)
+        server = await asyncio.start_server(lambda r, w: w.close(), "127.0.0.1", 0)
         port = server.sockets[0].getsockname()[1]
         server.close()
         await server.wait_closed()
