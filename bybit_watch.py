@@ -1159,9 +1159,9 @@ async def tick(
                 pnl = float(record["closedPnl"])
                 depo = await equity(http)
                 # Net first, ticker after: the money is the news.
-                line = f"💸<b>{_usd(pnl)}{share(pnl, depo)}</b>"
+                line = f"💸<b>{_usd(pnl)}</b>"
                 if depo:
-                    line += f"=<b>{depo:,.2f}$</b>"
+                    line += f"=<b>{depo:,.2f}$</b>{share(pnl, depo)}"
                 line += f"·{_arrow(was.side)}{base_symbol(symbol)}"
                 opened_fee = float(record.get("openFee") or 0)
                 closed_fee = float(record.get("closeFee") or 0)
@@ -1182,7 +1182,7 @@ async def tick(
                 if kind:
                     line += f"·{kind}"
                 if opened_fee or closed_fee:
-                    line += f" ({_sig2(opened_fee)}+{_sig2(closed_fee)})"
+                    line += f" (комса {_sig2(opened_fee + closed_fee)})"
                 entry: dict = {"row": journal_row(symbol, was, record, pnl, depo, forced, kind)}
                 if png is not None:
                     # The Apps Script saves it to Drive and writes the link
