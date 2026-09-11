@@ -977,6 +977,17 @@ def test_positions_report_without_depo_keeps_plain_numbers(keyed):
     assert "Σ" not in text  # a single position needs no total
 
 
+def test_tick_escapes_the_rr_warning_for_html(keyed):
+    """Telegram parses the entry notice as HTML; "<" must not reach it raw."""
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[row(sl="0.15", tp="0.17")]]  # thin reward: RR well under 2
+
+    asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
+
+    assert "⚠️ RR 0.65 &lt; 2" in out.sent[0]
+    assert "< 2" not in out.sent[0]
+
+
 def test_sl_without_tp_shows_risk_but_no_rr(keyed):
     # /positions side of it.
     http = FakeHTTP()

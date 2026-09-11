@@ -16,6 +16,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import html
 import json
 import logging
 import math
@@ -1276,8 +1277,10 @@ async def tick(
                 line += "\n" + "\n".join(exits)
             if fee:
                 line += f"\nкомса{_sig2(fee)}"
+            # The line is HTML: a bare "<" in "RR 0.63 < 2" makes Telegram
+            # refuse the whole notice, photo and text fallback both.
             for warn in trade_warnings(now, depo):
-                line += f"\n{warn}"
+                line += f"\n{html.escape(warn)}"
             tp_note = sl_note = ""
             if target is not None:
                 tp_note = f"{target:+,.2f}{share(target, depo)}"
