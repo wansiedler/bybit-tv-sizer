@@ -1152,7 +1152,7 @@ def test_tick_sends_a_close_chart_with_the_pnl_caption(keyed):
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
-    assert out.photos == ["💸📈FARTCOIN<b>+512.30</b>-(0.073+0.078)"]
+    assert out.photos == ["💸<b>+512.30</b>·📈FARTCOIN (0.073+0.078)"]
     assert out.sent == []
     assert out.spoken == ["Fartcoin long closed, profit 512"]
 
@@ -1350,7 +1350,7 @@ def test_tick_reports_pnl_on_a_close(keyed):
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == ["💸📈FARTCOIN<b>+512.30</b>-(0.073+0.078)"]
+    assert out.sent == ["💸<b>+512.30</b>·📈FARTCOIN (0.073+0.078)"]
     assert out.spoken == ["Fartcoin long closed, profit 512"]
 
 
@@ -1363,7 +1363,9 @@ def test_tick_close_reports_the_pnl_as_a_share_of_equity(keyed):
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == ["💸📈FARTCOIN<b>+512.30(+5.12%)</b>-(0.073+0.078)=<b>10,000.00$</b>·руками"]
+    assert out.sent == [
+        "💸<b>+512.30(+5.12%)</b>=<b>10,000.00$</b>·📈FARTCOIN·руками (0.073+0.078)"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1405,7 +1407,7 @@ def test_tick_close_without_fee_fields_stays_plain(keyed):
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == ["💸📈FARTCOIN<b>+512.30</b>"]
+    assert out.sent == ["💸<b>+512.30</b>·📈FARTCOIN"]
 
 
 def test_tick_close_survives_a_missing_pnl(keyed):

@@ -1158,13 +1158,13 @@ async def tick(
                 # Bybit's closedPnl is already net of both fees.
                 pnl = float(record["closedPnl"])
                 depo = await equity(http)
-                line += f"<b>{_usd(pnl)}{share(pnl, depo)}</b>"
-                opened_fee = float(record.get("openFee") or 0)
-                closed_fee = float(record.get("closeFee") or 0)
-                if opened_fee or closed_fee:
-                    line += f"-({_sig2(opened_fee)}+{_sig2(closed_fee)})"
+                # Net first, ticker after: the money is the news.
+                line = f"💸<b>{_usd(pnl)}{share(pnl, depo)}</b>"
                 if depo:
                     line += f"=<b>{depo:,.2f}$</b>"
+                line += f"·{_arrow(was.side)}{base_symbol(symbol)}"
+                opened_fee = float(record.get("openFee") or 0)
+                closed_fee = float(record.get("closeFee") or 0)
                 spoken_line += f", {'profit' if pnl >= 0 else 'loss'} {abs(pnl):.0f}"
                 total_fees = opened_fee + closed_fee
                 png = await close_chart(
@@ -1181,6 +1181,8 @@ async def tick(
                 kind = "риск-гард" if forced else await close_kind(http, record)
                 if kind:
                     line += f"·{kind}"
+                if opened_fee or closed_fee:
+                    line += f" ({_sig2(opened_fee)}+{_sig2(closed_fee)})"
                 entry: dict = {"row": journal_row(symbol, was, record, pnl, depo, forced, kind)}
                 if png is not None:
                     # The Apps Script saves it to Drive and writes the link
