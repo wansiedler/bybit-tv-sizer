@@ -668,7 +668,7 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         elif funding < 0:
             fund_note = f"+фанд{_sig2(-funding)}"
         block.append(
-            f"PnL{position.unrealised:+,.2f}−комса{fees:.2f}{fund_note}"
+            f"PnL{position.unrealised:+,.2f}−комса{_sig2(fees)}{fund_note}"
             f"=<b>{net:+,.2f}{share(net)}</b>"
         )
         total += position.unrealised
