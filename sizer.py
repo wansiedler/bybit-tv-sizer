@@ -6,7 +6,7 @@ chart; this watcher rewrites the quantity so the distance between entry and
 stop-loss always risks the same fixed percentage of account equity.
 
     DRY_RUN=1               # log and announce instead of amending
-    RISK_PCT=0.5            # percent of equity between entry and stop
+    RISK_PCT=0.5            # percent of the wallet balance between entry and stop
     FALLBACK_SL_PCT=0       # assumed stop when the order has none; 0 skips
     MAX_LEVERAGE=5          # notional ceiling, as a multiple of equity
     SYMBOLS=                # comma-separated allowlist; empty = all
@@ -66,13 +66,20 @@ def enabled() -> bool:
 
 
 async def get_equity(http: httpx.AsyncClient) -> Decimal:
+    """The risk base: wallet balance, unrealised PnL excluded.
+
+    The trimmer in bybit_watch measures against the same figure, so an
+    order sized here fills into a position that is already the right size
+    — sizing against equity would hand every fill straight to the knife
+    whenever the open positions sit in profit.
+    """
     result = await bybit_watch._get(
         http, "/v5/account/wallet-balance", {"accountType": ACCOUNT_TYPE}
     )
     accounts = result.get("list") or []
     if not accounts:
         raise RuntimeError("wallet-balance returned no accounts")
-    return Decimal(accounts[0].get("totalEquity") or accounts[0].get("totalWalletBalance"))
+    return Decimal(accounts[0].get("totalWalletBalance") or accounts[0].get("totalEquity"))
 
 
 async def get_open_orders(http: httpx.AsyncClient) -> list[dict]:

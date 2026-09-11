@@ -282,7 +282,7 @@ async def trim(http: httpx.AsyncClient, open_now: dict[str, Position], send, spe
         if per_unit <= 0:
             continue
         if depo is None:
-            depo = await equity(http)
+            depo = await wallet_balance(http)
         if not depo:
             return
         risk = per_unit * position.size
@@ -983,8 +983,8 @@ def trade_warnings(position: Position, depo: float | None) -> list[str]:
     return warns
 
 
-async def equity(http: httpx.AsyncClient) -> float | None:
-    """Account equity in USDT, best-effort: garnish for the PnL percent."""
+async def _account_figure(http: httpx.AsyncClient, *fields: str) -> float | None:
+    """The first non-empty of `fields` on the account, in USDT; best-effort."""
     try:
         result = await _get(
             http,
@@ -994,12 +994,29 @@ async def equity(http: httpx.AsyncClient) -> float | None:
         rows = result.get("list") or []
         if not rows:
             return None
-        value = rows[0].get("totalEquity") or rows[0].get("totalWalletBalance")
+        value = next((rows[0].get(field) for field in fields if rows[0].get(field)), None)
         return float(value) if value else None
-    # Deliberately broad: no equity figure must never block the notice.
+    # Deliberately broad: no account figure must never block a notice.
     except Exception:  # noqa: BLE001
-        log.exception("no equity")
+        log.exception("no %s", fields[0])
         return None
+
+
+async def equity(http: httpx.AsyncClient) -> float | None:
+    """Account equity in USDT, best-effort: garnish for the PnL percent."""
+    return await _account_figure(http, "totalEquity", "totalWalletBalance")
+
+
+async def wallet_balance(http: httpx.AsyncClient) -> float | None:
+    """Wallet balance in USDT, unrealised PnL excluded: the base every risk
+    figure is measured against.
+
+    Equity breathes with the open positions' own PnL: a drawdown shrinks
+    it, every risk share grows, and a trimmer keyed to it would slice the
+    losers on the way down. The wallet only moves on fills and transfers,
+    so a position sized at RISK_PCT stays that size until it closes.
+    """
+    return await _account_figure(http, "totalWalletBalance")
 
 
 async def entry_fee(http: httpx.AsyncClient, symbol: str) -> float | None:

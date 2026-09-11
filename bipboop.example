@@ -67,7 +67,8 @@ GUARD_GRACE_SEC=45
 BYBIT_TESTNET=0
 # 1 = only log the amend, 0 = actually send it
 DRY_RUN=1
-# percent of equity risked between entry and stop
+# percent of the wallet balance (unrealised PnL excluded) risked between
+# entry and stop; the trimmer cuts positions back to the same figure
 RISK_PCT=0.5
 # stop assumed when the order has none; 0 = skip such orders
 FALLBACK_SL_PCT=0

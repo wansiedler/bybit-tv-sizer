@@ -1387,6 +1387,20 @@ def test_equity_falls_back_to_wallet_balance(keyed):
     assert asyncio.run(bybit_watch.equity(http)) == 42.0
 
 
+def test_wallet_balance_ignores_unrealised_pnl(keyed):
+    http = FakeHTTP()
+    http.equity_rows = [{"totalEquity": "900", "totalWalletBalance": "1000"}]
+
+    assert asyncio.run(bybit_watch.wallet_balance(http)) == 1000.0
+
+
+def test_wallet_balance_never_falls_back_to_equity(keyed):
+    http = FakeHTTP()
+    http.equity_rows = [{"totalEquity": "900", "totalWalletBalance": ""}]
+
+    assert asyncio.run(bybit_watch.wallet_balance(http)) is None
+
+
 def test_equity_swallows_api_errors(keyed, caplog):
     class Refusing(FakeHTTP):
         async def get(self, url, headers=None, timeout=None):
@@ -1395,7 +1409,7 @@ def test_equity_swallows_api_errors(keyed, caplog):
     with caplog.at_level("ERROR", logger="relay.bybit"):
         assert asyncio.run(bybit_watch.equity(Refusing())) is None
 
-    assert "no equity" in caplog.text
+    assert "no totalEquity" in caplog.text
 
 
 def test_tick_close_without_fee_fields_stays_plain(keyed):
@@ -1924,7 +1938,9 @@ def test_tick_close_subtracts_funding(keyed):
 # --------------------------------------------------------------------------- #
 def trim_http(step="0.1", min_qty="0.1"):
     http = ClosingHTTP()
-    http.equity_rows = [{"totalEquity": "1000"}]
+    # Equity sits below the wallet: an open loser. The target comes from
+    # the wallet, so the loser is not what gets the position cut.
+    http.equity_rows = [{"totalEquity": "900", "totalWalletBalance": "1000"}]
     http.instrument_pages = [
         {"list": [{"symbol": "CLUSDT", "lotSizeFilter": {"qtyStep": step, "minOrderQty": min_qty}}]}
     ]

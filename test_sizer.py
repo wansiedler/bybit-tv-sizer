@@ -74,7 +74,7 @@ class FakeHTTP:
         if "/v5/order/realtime" in url:
             return FakeResponse({"retCode": 0, "result": {"list": self.orders}})
         if "/v5/account/wallet-balance" in url:
-            rows = [{"totalEquity": self.equity}]
+            rows = [{"totalWalletBalance": self.equity, "totalEquity": "1"}]  # uPnL ignored
             return FakeResponse({"retCode": 0, "result": {"list": rows}})
         return FakeResponse({"retCode": 0, "result": {"list": self.instruments}})
 
@@ -144,10 +144,10 @@ def test_get_equity_prefers_total_equity():
     assert asyncio.run(sizer.get_equity(http)) == Decimal("10000.5")
 
 
-def test_get_equity_falls_back_to_wallet_balance():
+def test_get_equity_falls_back_to_equity_without_a_wallet_figure():
     class Fallback(FakeHTTP):
         async def get(self, url, headers=None, timeout=None):
-            rows = [{"totalEquity": "", "totalWalletBalance": "42"}]
+            rows = [{"totalWalletBalance": "", "totalEquity": "42"}]
             return FakeResponse({"retCode": 0, "result": {"list": rows}})
 
     assert asyncio.run(sizer.get_equity(Fallback())) == Decimal("42")
