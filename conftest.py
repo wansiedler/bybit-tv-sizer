@@ -39,6 +39,9 @@ def _default_config(monkeypatch, tmp_path):
     monkeypatch.setattr(bybit_watch, "RISK_GUARD", False)
     monkeypatch.setattr(bybit_watch, "GUARD_MAX_LEVERAGE", 1.0)
     monkeypatch.setattr(bybit_watch, "GUARD_GRACE", 45.0)
+    monkeypatch.setattr(bybit_watch, "RISK_TRIM", False)
+    monkeypatch.setattr(bybit_watch, "TRIM_TOLERANCE", 1.25)
+    bybit_watch._trim_cooldown.clear()
     bybit_watch._guard_seen.clear()
     bybit_watch._guard_closed.clear()
     # One attempt, no waiting: the retry loop is exercised by its own tests.

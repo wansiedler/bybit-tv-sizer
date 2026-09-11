@@ -1917,3 +1917,133 @@ def test_tick_close_subtracts_funding(keyed):
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": aged}, out.send, out.speak, out.send_photo))
 
     assert out.sent == ["💸<b>+500.00</b>·📈FARTCOIN (комса 0.15, фанд 12.30)"]
+
+
+# --------------------------------------------------------------------------- #
+#  risk trimmer                                                                #
+# --------------------------------------------------------------------------- #
+def trim_http(step="0.1", min_qty="0.1"):
+    http = ClosingHTTP()
+    http.equity_rows = [{"totalEquity": "1000"}]
+    http.instrument_pages = [
+        {"list": [{"symbol": "CLUSDT", "lotSizeFilter": {"qtyStep": step, "minOrderQty": min_qty}}]}
+    ]
+    return http
+
+
+# Entry 100, stop 99: 1$ risk per unit. Size 10 risks 10$; the target on a
+# 1000$ deposit at 0.5% is 5$ — so half the position has to go.
+OVERSIZED = Position("long", 10.0, 100.0, 1000.0, stop_loss=99.0)
+
+
+@pytest.fixture
+def trimming(keyed, monkeypatch):
+    monkeypatch.setattr(bybit_watch, "RISK_TRIM", True)
+
+
+def test_trim_cuts_back_to_the_target_risk(trimming):
+    http, out = trim_http(), Recorder()
+
+    asyncio.run(bybit_watch.trim(http, {"CLUSDT": OVERSIZED}, out.send, out.speak))
+
+    assert http.orders == [
+        {
+            "category": "linear",
+            "symbol": "CLUSDT",
+            "side": "Sell",
+            "orderType": "Market",
+            "qty": "5",
+            "reduceOnly": True,
+            "positionIdx": 0,
+        }
+    ]
+    assert out.sent == ["✂️ CL: риск 1.00% депо при цели 0.50% — режу 10→5"]
+    assert out.spoken == ["CL trimmed"]
+
+
+def test_trim_leaves_a_tolerable_overshoot_alone(trimming):
+    http, out = trim_http(), Recorder()
+    fine = Position("long", 6.0, 100.0, 600.0, stop_loss=99.0)  # 6$ vs 5$ target
+
+    asyncio.run(bybit_watch.trim(http, {"CLUSDT": fine}, out.send, out.speak))
+
+    assert http.orders == []
+    assert out.sent == []
+
+
+def test_trim_skips_stopless_and_zero_positions(trimming):
+    http, out = trim_http(), Recorder()
+
+    asyncio.run(bybit_watch.trim(http, {"CLUSDT": NAKED}, out.send, out.speak))
+
+    assert http.orders == []
+
+
+def test_trim_respects_the_cooldown(trimming):
+    http, out = trim_http(), Recorder()
+    bybit_watch._trim_cooldown["CLUSDT"] = __import__("time").monotonic()
+
+    asyncio.run(bybit_watch.trim(http, {"CLUSDT": OVERSIZED}, out.send, out.speak))
+
+    assert http.orders == []
+
+
+def test_trim_gives_up_below_the_exchange_minimum(trimming):
+    http, out = trim_http(min_qty="7"), Recorder()
+
+    asyncio.run(bybit_watch.trim(http, {"CLUSDT": OVERSIZED}, out.send, out.speak))
+
+    assert http.orders == []
+
+
+def test_trim_skips_an_unknown_instrument(trimming):
+    http, out = trim_http(), Recorder()
+    http.instrument_pages = [{"list": []}]
+
+    asyncio.run(bybit_watch.trim(http, {"CLUSDT": OVERSIZED}, out.send, out.speak))
+
+    assert http.orders == []
+
+
+def test_trim_reports_a_refused_cut(trimming):
+    http, out = trim_http(), Recorder()
+    http.refuse_order = True
+
+    asyncio.run(bybit_watch.trim(http, {"CLUSDT": OVERSIZED}, out.send, out.speak))
+
+    assert out.sent == ["❌ CL: не смог подрезать (order rejected)"]
+
+
+def test_trim_stops_without_equity(trimming):
+    http, out = trim_http(), Recorder()
+    http.equity_rows = []
+
+    asyncio.run(bybit_watch.trim(http, {"CLUSDT": OVERSIZED}, out.send, out.speak))
+
+    assert http.orders == []
+
+
+def test_trim_skips_a_stop_glued_to_the_entry(trimming):
+    http, out = trim_http(), Recorder()
+    glued = Position("long", 10.0, 100.0, 1000.0, stop_loss=100.0)
+
+    asyncio.run(bybit_watch.trim(http, {"CLUSDT": glued}, out.send, out.speak))
+
+    assert http.orders == []
+
+
+def test_trim_stays_dormant_when_disabled(keyed):
+    http, out = trim_http(), Recorder()
+
+    asyncio.run(bybit_watch.trim(http, {"CLUSDT": OVERSIZED}, out.send, out.speak))
+
+    assert http.orders == []
+
+
+def test_trim_fetches_equity_once_for_many_positions(trimming):
+    http, out = trim_http(), Recorder()
+    fine = Position("long", 6.0, 100.0, 600.0, stop_loss=99.0)
+
+    asyncio.run(bybit_watch.trim(http, {"AUSDT": fine, "BUSDT": fine}, out.send, out.speak))
+
+    assert http.requests.count(next(u for u in http.requests if "wallet-balance" in u)) == 1

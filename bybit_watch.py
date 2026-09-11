@@ -61,6 +61,11 @@ RISK_TARGET = float(os.getenv("RISK_PCT", "0.5")) / 100
 # A breach is announced first and enforced only if it survives the grace
 # window — enough time to set a stop or drop the leverage after an entry.
 RISK_GUARD = os.getenv("RISK_GUARD", "1") == "1"
+# The trimmer: a position whose stop-distance risk overshoots the target by
+# more than the tolerance is cut back down with a reduce-only market order —
+# the market entry that filled worse than the sized limit gets reshaped.
+RISK_TRIM = os.getenv("RISK_TRIM", "1") == "1"
+TRIM_TOLERANCE = float(os.getenv("RISK_TRIM_TOLERANCE", "1.25"))
 GUARD_MAX_LEVERAGE = float(os.getenv("MAX_LEVERAGE", "1"))
 GUARD_GRACE = float(os.getenv("GUARD_GRACE_SEC", "45"))
 
@@ -240,6 +245,75 @@ def _guard_violation(position: Position) -> str | None:
     if position.stop_loss is None:
         return "нет стопа"
     return None
+
+
+async def _lot(http: httpx.AsyncClient, symbol: str) -> tuple[float, float]:
+    """The instrument's quantity step and minimum order size."""
+    result = await _get(
+        http, "/v5/market/instruments-info", {"category": "linear", "symbol": symbol}
+    )
+    rows = result.get("list") or []
+    lot = (rows[0] if rows else {}).get("lotSizeFilter") or {}
+    return float(lot.get("qtyStep") or 0), float(lot.get("minOrderQty") or 0)
+
+
+# When each symbol was last trimmed: Bybit needs a moment to show the new
+# size, and re-cutting on every half-second poll would shred the position.
+_trim_cooldown: dict[str, float] = {}
+
+
+async def trim(http: httpx.AsyncClient, open_now: dict[str, Position], send, speak) -> None:
+    """Cut an oversized position back to the target risk.
+
+    The sizer shapes LIMIT orders; an entry thrown in at market keeps the
+    quantity sized for a different price, so the stop suddenly risks more
+    than RISK_PCT. This trims the position with a reduce-only market order
+    until the stop distance costs the target again. It only ever shrinks.
+    """
+    if not RISK_TRIM:
+        return
+    depo = None
+    for symbol, position in open_now.items():
+        if not position.stop_loss or position.size <= 0:
+            continue
+        if time.monotonic() - _trim_cooldown.get(symbol, 0.0) < 10.0:
+            continue
+        per_unit = abs(position.price - position.stop_loss)
+        if per_unit <= 0:
+            continue
+        if depo is None:
+            depo = await equity(http)
+        if not depo:
+            return
+        risk = per_unit * position.size
+        target = depo * RISK_TARGET
+        if risk <= target * TRIM_TOLERANCE:
+            continue
+        step, min_qty = await _lot(http, symbol)
+        if step <= 0:
+            continue
+        want = math.floor(target / per_unit / step) * step
+        cut = position.size - want
+        if want < min_qty or cut < step:
+            continue
+        _trim_cooldown[symbol] = time.monotonic()
+        try:
+            await _close_market(
+                http,
+                symbol,
+                "Buy" if position.side == "long" else "Sell",
+                f"{cut:g}",
+                position.position_idx,
+            )
+            await send(
+                f"✂️ {base_symbol(symbol)}: риск {risk / depo * 100:.2f}% депо при цели "
+                f"{RISK_TARGET * 100:.2f}% — режу {position.size:g}→{want:g}"
+            )
+            await speak(f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} trimmed")
+        # Deliberately broad: one refused cut must not strand the rest.
+        except Exception as exc:  # noqa: BLE001
+            log.exception("trim failed for %s", symbol)
+            await send(f"❌ {base_symbol(symbol)}: не смог подрезать ({exc})")
 
 
 async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, speak) -> None:
@@ -1150,6 +1224,7 @@ async def tick(
     """
     after = await positions(http)
     await guard(http, after, send, speak)
+    await trim(http, after, send, speak)
     if before is None:
         return after
 
