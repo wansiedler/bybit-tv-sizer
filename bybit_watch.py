@@ -930,7 +930,7 @@ def journal_row(
     exit_price = float(record.get("avgExitPrice") or 0)
     return [
         opened,
-        symbol,
+        base_symbol(symbol),
         "Лонг" if was.side == "long" else "Шорт",
         "win" if pnl >= 0 else "stop",
         rr,
