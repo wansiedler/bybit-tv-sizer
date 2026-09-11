@@ -641,7 +641,8 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         # uPnL is pure price difference; both fees at the taker rate come
         # off — the entry already paid, the exit still to come.
         fees = 2 * TAKER_FEE * position.value
-        net = position.unrealised - fees
+        funding = await accrued_funding(http, symbol, position.created_ms)
+        net = position.unrealised - fees - funding
         head = f"{arrow}{base_symbol(symbol)} {_val(position.value)}$@{position.price:g}"
         rr = None
         if position.stop_loss and position.take_profit:
@@ -653,22 +654,27 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         at_sl = at_tp = None
         if position.stop_loss:
             # What the stop costs if it fires, fees included.
-            at_sl = -abs(position.price - position.stop_loss) * position.size - fees
+            at_sl = -abs(position.price - position.stop_loss) * position.size - fees - funding
             exits.append(f"sl{position.stop_loss:g}:<b>{_usd(at_sl)}{share(at_sl)}</b>")
         if position.take_profit:
             sign = 1 if position.side == "long" else -1
-            at_tp = sign * (position.take_profit - position.price) * position.size - fees
+            at_tp = sign * (position.take_profit - position.price) * position.size - fees - funding
             tp_depo = f"=деп{depo + at_tp:,.2f}$" if depo else ""
             exits.append(f"tp{position.take_profit:g}:<b>{_usd(at_tp)}{share(at_tp)}{tp_depo}</b>")
         block = [head, *exits]
+        fund_note = ""
+        if funding > 0:
+            fund_note = f"−фанд{_sig2(funding)}"
+        elif funding < 0:
+            fund_note = f"+фанд{_sig2(-funding)}"
         block.append(
-            f"PnL{position.unrealised:+,.2f}−комса{fees:.2f}=<b>{net:+,.2f}{share(net)}</b>"
+            f"PnL{position.unrealised:+,.2f}−комса{fees:.2f}{fund_note}"
+            f"=<b>{net:+,.2f}{share(net)}</b>"
         )
         total += position.unrealised
         total_net += net
         lines.append("\n".join(block))
         if send_album is not None:
-            funding = await accrued_funding(http, symbol, position.created_ms)
             be = breakeven_price(
                 position.side, position.price, funding / position.size if position.size else 0.0
             )
@@ -1206,8 +1212,10 @@ async def tick(
         elif kind == "closed" and was is not None:
             record = await closed_record(http, symbol)
             if record is not None:
-                # Bybit's closedPnl is already net of both fees.
-                pnl = float(record["closedPnl"])
+                # Bybit's closedPnl nets both trading fees; funding it does
+                # not — that is charged separately, so it comes off here.
+                funding = await accrued_funding(http, symbol, was.created_ms)
+                pnl = float(record["closedPnl"]) - funding
                 depo = await equity(http)
                 # Net first, ticker after: the money is the news.
                 line = f"💸<b>{_usd(pnl)}</b>"
@@ -1232,8 +1240,11 @@ async def tick(
                 kind = "риск-гард" if forced else await close_kind(http, record)
                 if kind:
                     line += f"·{kind}"
-                if opened_fee or closed_fee:
-                    line += f" (комса {_sig2(opened_fee + closed_fee)})"
+                if opened_fee or closed_fee or funding:
+                    costs = f"комса {_sig2(opened_fee + closed_fee)}"
+                    if funding:
+                        costs += f", фанд {_sig2(funding)}"
+                    line += f" ({costs})"
                 entry: dict = {"row": journal_row(symbol, was, record, pnl, depo, forced, kind)}
                 if png is not None:
                     # The Apps Script saves it to Drive and writes the link

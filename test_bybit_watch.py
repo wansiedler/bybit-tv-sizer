@@ -1885,3 +1885,35 @@ def test_accrued_funding_survives_a_refusal(keyed, caplog):
 
     assert got == 0.0
     assert "no funding history" in caplog.text
+
+
+def test_positions_pnl_line_subtracts_funding(keyed):
+    http = ClosingHTTP()
+    http.position_pages = [[dict(row(), unrealisedPnl="512.3", createdTime="1700000000000")]]
+    http.exec_rows = [{"execFee": "0.4"}]
+
+    report = asyncio.run(bybit_watch.positions_report(http))
+
+    assert "−комса20.62−фанд0.40=" in report
+
+
+def test_positions_pnl_line_adds_received_funding(keyed):
+    http = ClosingHTTP()
+    http.position_pages = [[dict(row(), unrealisedPnl="512.3", createdTime="1700000000000")]]
+    http.exec_rows = [{"execFee": "-0.4"}]
+
+    report = asyncio.run(bybit_watch.positions_report(http))
+
+    assert "−комса20.62+фанд0.40=" in report
+
+
+def test_tick_close_subtracts_funding(keyed):
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[]]
+    http.pnl_rows = [closed()]
+    http.exec_rows = [{"execFee": "12.3"}]
+    aged = Position("long", 100.0, 0.16, 16.0, created_ms=1_700_000_000_000)
+
+    asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": aged}, out.send, out.speak, out.send_photo))
+
+    assert out.sent == ["💸<b>+500.00</b>·📈FARTCOIN (комса 0.15, фанд 12.30)"]
