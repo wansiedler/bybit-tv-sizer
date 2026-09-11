@@ -1839,3 +1839,49 @@ def test_usd_keeps_two_leading_fraction_digits(amount, expected):
 
 def test_sig2_zero_stays_flat():
     assert bybit_watch._sig2(0.0) == "0.00"
+
+
+# --------------------------------------------------------------------------- #
+#  breakeven / funding                                                         #
+# --------------------------------------------------------------------------- #
+def test_breakeven_covers_both_fees():
+    be = bybit_watch.breakeven_price("long", 100.0)
+
+    # Selling the whole position at `be` pays both taker fees exactly.
+    t = bybit_watch.TAKER_FEE
+    assert be - 100.0 == pytest.approx(t * 100.0 + t * be)
+    assert bybit_watch.breakeven_price("short", 100.0) < 100.0
+
+
+def test_breakeven_carries_the_funding_cost():
+    plain = bybit_watch.breakeven_price("long", 100.0)
+
+    assert bybit_watch.breakeven_price("long", 100.0, 0.5) > plain
+    assert bybit_watch.breakeven_price("short", 100.0, -0.5) > bybit_watch.breakeven_price(
+        "short", 100.0
+    )
+
+
+def test_accrued_funding_sums_the_charges(keyed):
+    http = FakeHTTP()
+    http.exec_rows = [{"execFee": "0.012"}, {"execFee": "-0.004"}]
+
+    assert asyncio.run(bybit_watch.accrued_funding(http, "BTCUSDT", 1_700_000_000_000)) == (
+        pytest.approx(0.008)
+    )
+
+
+def test_accrued_funding_is_zero_for_a_fresh_position(keyed):
+    assert asyncio.run(bybit_watch.accrued_funding(FakeHTTP(), "BTCUSDT", 0)) == 0.0
+
+
+def test_accrued_funding_survives_a_refusal(keyed, caplog):
+    class Refusing(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise OSError("down")
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        got = asyncio.run(bybit_watch.accrued_funding(Refusing(), "BTCUSDT", 1))
+
+    assert got == 0.0
+    assert "no funding history" in caplog.text

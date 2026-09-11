@@ -32,6 +32,7 @@ BACKGROUND = (19, 23, 34)
 UP = (38, 166, 154)
 DOWN = (239, 83, 80)
 ENTRY = (208, 214, 222)
+BREAKEVEN = (222, 196, 100)
 TEXT = (208, 214, 222)
 GRID = (34, 40, 54)
 GRID_TEXT = (120, 128, 144)
@@ -81,6 +82,7 @@ def render(
     tp_note: str = "",
     sl_note: str = "",
     exit_note: str = "",
+    breakeven: float | None = None,
     plain: bool = False,
 ) -> bytes:
     """The chart as PNG bytes. Raises on empty candles: nothing to draw.
@@ -92,7 +94,7 @@ def render(
     if not candles:
         raise ValueError("no candles")
 
-    levels = [entry, take_profit, stop_loss, exit_price]
+    levels = [entry, take_profit, stop_loss, exit_price, breakeven]
     prices = [price for price in levels if price is not None]
     lowest = min(min(c.low for c in candles), *prices)
     highest = max(max(c.high for c in candles), *prices)
@@ -161,6 +163,8 @@ def render(
             width = draw.textlength(note, font=LABEL_FONT)
             draw.text((chart_right - width - 12, y - 30), note, fill=color, font=LABEL_FONT)
 
+    if breakeven is not None:
+        level(breakeven, BREAKEVEN, "be")
     if not plain:
         level(entry, ENTRY, "in", entry_note)
     if take_profit:

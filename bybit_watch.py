@@ -132,6 +132,7 @@ class Position:
     unrealised: float = 0.0
     leverage: float = 0.0
     position_idx: int = 0
+    created_ms: int = 0
 
 
 async def positions(http: httpx.AsyncClient) -> dict[str, Position]:
@@ -152,6 +153,7 @@ async def positions(http: httpx.AsyncClient) -> dict[str, Position]:
             unrealised=float(row.get("unrealisedPnl") or 0),
             leverage=float(row.get("leverage") or 0),
             position_idx=int(row.get("positionIdx") or 0),
+            created_ms=int(row.get("createdTime") or 0),
         )
     return open_now
 
@@ -666,6 +668,10 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         total_net += net
         lines.append("\n".join(block))
         if send_album is not None:
+            funding = await accrued_funding(http, symbol, position.created_ms)
+            be = breakeven_price(
+                position.side, position.price, funding / position.size if position.size else 0.0
+            )
             tp_note = sl_note = ""
             if at_tp is not None:
                 tp_note = f"{at_tp:+,.2f}{share(at_tp)}"
@@ -688,6 +694,7 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
                 ),
                 tp_note=tp_note,
                 sl_note=sl_note,
+                breakeven=be,
             )
             if png is not None:
                 pngs.append(png)
@@ -748,6 +755,47 @@ def _bar_of(times: list[int], moment: int) -> int:
     return fits[-1] if fits else 0
 
 
+def breakeven_price(side: str, entry: float, extra_cost_per_unit: float = 0.0) -> float:
+    """The exit price where the trade nets zero.
+
+    Both taker fees are baked in, plus any extra per-unit cost — the funding
+    the position has actually been charged so far. A short that RECEIVES
+    funding gets a kinder breakeven the same way.
+    """
+    t = TAKER_FEE
+    if side == "long":
+        return (entry * (1 + t) + extra_cost_per_unit) / (1 - t)
+    return (entry * (1 - t) - extra_cost_per_unit) / (1 + t)
+
+
+async def accrued_funding(http: httpx.AsyncClient, symbol: str, since_ms: int) -> float:
+    """Funding actually charged on the position since it opened, best-effort.
+
+    Bybit settles funding on its own clock (every eight hours on most
+    perpetuals); the execution log records each charge as an execFee —
+    positive paid, negative received. Unknown stays zero.
+    """
+    if not since_ms:
+        return 0.0
+    try:
+        result = await _get(
+            http,
+            "/v5/execution/list",
+            {
+                "category": "linear",
+                "symbol": symbol,
+                "execType": "Funding",
+                "startTime": str(since_ms),
+                "limit": "50",
+            },
+        )
+        return sum(float(r.get("execFee") or 0) for r in result.get("list", []))
+    # Deliberately broad: the chart line is garnish, zero is a fine answer.
+    except Exception:  # noqa: BLE001
+        log.exception("no funding history for %s", symbol)
+        return 0.0
+
+
 async def entry_chart(
     http: httpx.AsyncClient,
     symbol: str,
@@ -755,6 +803,7 @@ async def entry_chart(
     entry_note: str = "",
     tp_note: str = "",
     sl_note: str = "",
+    breakeven: float | None = None,
 ) -> bytes | None:
     """A PNG of recent candles with the entry, TP and SL drawn in. Best-effort:
     the text notice must go out even when the picture cannot be made.
@@ -778,6 +827,7 @@ async def entry_chart(
             entry_note=entry_note,
             tp_note=tp_note,
             sl_note=sl_note,
+            breakeven=breakeven,
         )
     # Deliberately broad: a chart is garnish, never worth losing the notice.
     except Exception:  # noqa: BLE001
@@ -1143,6 +1193,7 @@ async def tick(
                 http,
                 symbol,
                 now,
+                breakeven=breakeven_price(now.side, now.price),
                 entry_note=(
                     f"{_val(now.value)}$"
                     + (f" ({now.value / depo * 100:.1f}% depo)" if depo else "")
