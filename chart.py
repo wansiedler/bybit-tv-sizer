@@ -125,16 +125,16 @@ def render(
         draw.rectangle((zone_left, to_y(max(a, b)), zone_right, to_y(min(a, b))), fill=fill)
 
     # TradingView-style: green between entry and target, red between entry
-    # and stop. A finished trade shows one zone, colored by how it went; its
-    # TP and SL stay as lines so the outcome shading remains readable.
-    if exit_price is not None:
+    # and stop — on finished trades too, spanning entry bar to exit bar.
+    # Only a trade that carried no levels at all falls back to a single
+    # zone colored by how it went.
+    if take_profit:
+        zone(entry, take_profit, PROFIT_FILL)
+    if stop_loss:
+        zone(entry, stop_loss, RISK_FILL)
+    if exit_price is not None and not take_profit and not stop_loss:
         won = (exit_price >= entry) == (side == "long")
         zone(entry, exit_price, PROFIT_FILL if won else RISK_FILL)
-    else:
-        if take_profit:
-            zone(entry, take_profit, PROFIT_FILL)
-        if stop_loss:
-            zone(entry, stop_loss, RISK_FILL)
 
     # At TradingView-zoom densities a bar is a single pixel column.
     body = max(1.0, step * 0.7)
