@@ -16,6 +16,7 @@ import commands
 @pytest.fixture
 def owner(monkeypatch):
     monkeypatch.setattr(commands, "TARGET_CHAT_ID", "777")
+    monkeypatch.setattr(commands, "OWNER_ID", "777")
     monkeypatch.setattr(commands, "BOT_TOKEN", "token")
     return "777"
 
@@ -96,8 +97,11 @@ def test_parse_watch_users_empty_means_nobody():
 # --------------------------------------------------------------------------- #
 #  command_of                                                                  #
 # --------------------------------------------------------------------------- #
-def _update(text, chat_id="777", update_id=1):
-    return {"update_id": update_id, "message": {"chat": {"id": chat_id}, "text": text}}
+def _update(text, chat_id="777", update_id=1, sender="777", bot=False):
+    message = {"chat": {"id": chat_id}, "text": text}
+    if sender is not None:
+        message["from"] = {"id": sender, "is_bot": bot}
+    return {"update_id": update_id, "message": message}
 
 
 @pytest.mark.parametrize(
@@ -128,6 +132,32 @@ def test_command_of_ignores_strangers(owner, caplog):
         assert commands.command_of(_update("/status", chat_id="999")) is None
 
     assert "ignoring command from chat 999" in caplog.text
+
+
+def test_command_of_ignores_other_members_of_the_chat(owner, caplog):
+    with caplog.at_level("WARNING", logger="relay.commands"):
+        assert commands.command_of(_update("/stopall", sender="999")) is None
+
+    assert "ignoring command from user 999" in caplog.text
+
+
+def test_command_of_ignores_bots(owner):
+    assert commands.command_of(_update("/stopall", bot=True)) is None
+
+
+def test_command_of_ignores_a_message_without_a_sender(owner):
+    assert commands.command_of(_update("/stopall", sender=None)) is None
+
+
+def test_command_of_obeys_the_owner_inside_a_group(owner, monkeypatch):
+    monkeypatch.setattr(commands, "TARGET_CHAT_ID", "-100777")
+    monkeypatch.setattr(commands, "OWNER_ID", "42")
+
+    assert commands.command_of(_update("/close CL", chat_id="-100777", sender="42")) == (
+        "close",
+        "CL",
+    )
+    assert commands.command_of(_update("/close CL", chat_id="-100777", sender="777")) is None
 
 
 # --------------------------------------------------------------------------- #

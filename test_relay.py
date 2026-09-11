@@ -328,6 +328,23 @@ def test_notify_posts_when_enabled(config):
     assert http.posted == ["🟢 up"]
 
 
+def test_notify_keeps_the_notice_out_of_the_log(config, caplog):
+    http = FakeHTTP()
+
+    with caplog.at_level("INFO", logger="relay"):
+        asyncio.run(relay.notify(as_client(http), "🟢 up"))
+
+    assert http.posted == ["🟢 up"]
+    assert "sent:" not in caplog.text
+
+
+def test_send_via_bot_logs_what_it_sent(config, caplog):
+    with caplog.at_level("INFO", logger="relay"):
+        asyncio.run(relay.send_via_bot(as_client(FakeHTTP()), "OP 📈 1.0"))
+
+    assert "sent: OP 📈 1.0" in caplog.text
+
+
 def test_notify_silent_when_disabled(config, monkeypatch):
     monkeypatch.setattr(relay, "NOTIFY_LIFECYCLE", False)
     http = FakeHTTP()
@@ -528,7 +545,9 @@ def test_run_up_notice_carries_the_journal_and_webhook_links(config, monkeypatch
 
     up = str(http.posted[0])
     assert "📒 https://example.test/sheet" in up
-    assert "📡 https://tv.example.test/tv/s3cret" in up
+    # The secret is the webhook's only auth: shown masked, handed out by /links.
+    assert "📡 https://tv.example.test/tv/… (/links)" in up
+    assert "s3cret" not in up
 
 
 def test_run_announces_speaking_hours_with_a_speaker(config, monkeypatch):

@@ -17,7 +17,10 @@ so **only `main` is supported**. Fixes land there and nowhere else.
   can be revoked in @BotFather, a session cannot be revoked selectively — you
   have to terminate the session from a Telegram client.
 - The bot's username is public, so anyone can message it. Commands are answered
-  only for `TARGET_CHAT_ID`; anything else is logged and dropped.
+  only when `OWNER_ID` writes them in `TARGET_CHAT_ID`; any other chat, sender
+  or bot is logged and dropped.
+- The TradingView webhook secret is the only auth on that endpoint. The
+  startup notice masks it; `/links` hands it out on request.
 
 ## Reporting a vulnerability
 

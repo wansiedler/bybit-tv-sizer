@@ -101,7 +101,9 @@ def _accepted(response, what: str) -> bool:
     return True
 
 
-async def send_via_bot(http: httpx.AsyncClient, text: str, html: bool = False) -> bool:
+async def send_via_bot(
+    http: httpx.AsyncClient, text: str, html: bool = False, *, quiet: bool = False
+) -> bool:
     """Post one line through the bot. Returns True when Telegram accepted it.
 
     `html` turns on Telegram's HTML parse mode — only for text we compose
@@ -122,7 +124,8 @@ async def send_via_bot(http: httpx.AsyncClient, text: str, html: bool = False) -
 
     if not _accepted(response, "sendMessage"):
         return False
-    log.info("sent: %s", text)
+    if not quiet:
+        log.info("sent: %s", text)
     return True
 
 
@@ -198,7 +201,8 @@ async def notify(http: httpx.AsyncClient, text: str) -> None:
     if not NOTIFY_LIFECYCLE:
         return
     try:
-        await send_via_bot(http, text)
+        # Quiet: the up notice carries links, and the log needs none of them.
+        await send_via_bot(http, text, quiet=True)
     # Deliberately broad: the shutdown path must not raise on its way out.
     except Exception:  # noqa: BLE001
         log.exception("lifecycle notice failed")
@@ -377,13 +381,17 @@ async def run() -> None:
             except Exception:  # noqa: BLE001
                 ip = ""
             net = f" · 🌐 {ip}" if ip else ""
-            links = ""
+            # /links hands out the full webhook URL on request; the up notice
+            # masks the secret, since it is the webhook's only auth and the
+            # chat history outlives the moment.
+            links = shown = ""
             if tv_alerts.JOURNAL_URL:
-                links += f"\n📒 {tv_alerts.JOURNAL_URL}"
+                links = shown = f"\n📒 {tv_alerts.JOURNAL_URL}"
             if tv_alerts.enabled() and tv_alerts.TV_PUBLIC_URL:
                 links += f"\n📡 {tv_alerts.TV_PUBLIC_URL}/tv/{tv_alerts.TV_WEBHOOK_SECRET}"
+                shown += f"\n📡 {tv_alerts.TV_PUBLIC_URL}/tv/… (/links)"
             await notify(
-                http, f"🟢 {RELAY_NAME} up — listening {SOURCE} as @{who}{speaking}{net}{links}"
+                http, f"🟢 {RELAY_NAME} up — listening {SOURCE} as @{who}{speaking}{net}{shown}"
             )
             if audio is not None:
                 await speaker.lifecycle("Relay up")

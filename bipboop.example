@@ -12,8 +12,12 @@ WATCH_USERS=some_trader
 # @your_bot token from @BotFather
 BOT_TOKEN=
 
-# Where the bot posts. Your own user id, or -100... for a channel.
+# Where the bot posts. Your own user id, or -100... for a group.
 TARGET_CHAT_ID=
+# Who may give the bot orders (/close, /stopall, /lev1 ...): your numeric
+# user id. Defaults to TARGET_CHAT_ID, which is the same number in a private
+# chat. A group target must set it, or every command is refused.
+OWNER_ID=
 
 # Telethon login store, without the .session suffix. Keep it inside session/
 # so a desktop run and a Docker run share one login instead of drifting into
@@ -93,6 +97,10 @@ MIN_RR=2
 # the path is the only auth — make it long and random. Empty disables.
 TV_WEBHOOK_SECRET=
 TV_PORT=8423
+# Host interface docker-compose publishes TV_PORT on. 127.0.0.1 suits a
+# tunnel running on the same machine (cloudflared); a router port-forward
+# needs 0.0.0.0.
+TV_BIND=127.0.0.1
 
 # Trade journal: every closed trade lands as a row in a Google Sheet via a
 # tiny Apps Script web app (see README). Both empty disables it. The secret

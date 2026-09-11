@@ -6,7 +6,7 @@ carries a secret, so the port being reachable does not mean anyone can make
 your speaker talk:
 
     TV_WEBHOOK_SECRET=          # empty disables the receiver
-    TV_PORT=8423                # published to the LAN in docker-compose.yml
+    TV_PORT=8423                # published on TV_BIND (loopback by default)
 
 TradingView must reach this from the internet — a tunnel (cloudflared,
 Tailscale Funnel) or a router port-forward in front of TV_PORT.
