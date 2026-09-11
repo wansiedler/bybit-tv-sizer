@@ -213,7 +213,33 @@ def _client(api_id: int, api_hash: str) -> TelegramClient:
     code.
     """
     Path(SESSION).parent.mkdir(parents=True, exist_ok=True)
+    _lock_down(_session_file())
     return TelegramClient(SESSION, api_id, api_hash)
+
+
+def _session_file() -> Path:
+    """The sqlite store Telethon will open: SESSION plus the suffix it adds."""
+    return Path(SESSION if SESSION.endswith(".session") else f"{SESSION}.session")
+
+
+def _lock_down(store: Path) -> None:
+    """Keep the Telegram login readable by its owner alone, on every start.
+
+    Telethon creates the store through sqlite3 with the process umask —
+    0644 on a stock machine, which leaves a full account login readable by
+    every local user. The file is created here first, at 0600, and both it
+    and the -journal sqlite writes beside it are chmod'ed each run, so a
+    store left over from an earlier version is tightened too. Best-effort:
+    a bind-mounted volume that refuses the chmod must not stop the relay.
+    """
+    journal = store.with_name(f"{store.name}-journal")
+    try:
+        store.touch(mode=0o600, exist_ok=True)
+        for path in (store, journal):
+            if path.exists():
+                path.chmod(0o600)
+    except OSError:
+        log.warning("could not restrict %s to 0600", store)
 
 
 async def check() -> None:

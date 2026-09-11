@@ -8,6 +8,7 @@ be driven deterministically instead of by actually killing the test process.
 
 import asyncio
 import signal
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
@@ -366,6 +367,49 @@ def test_client_accepts_a_session_beside_the_script(monkeypatch, tmp_path):
     monkeypatch.setattr(relay, "TelegramClient", FakeClient)
 
     assert isinstance(relay._client(1, "hash"), FakeClient)
+
+
+def test_client_creates_the_session_store_owner_only(monkeypatch, tmp_path):
+    """A fresh login must never start life world-readable."""
+    store = tmp_path / "lexx_relay"
+    monkeypatch.setattr(relay, "SESSION", str(store))
+    monkeypatch.setattr(relay, "TelegramClient", FakeClient)
+
+    relay._client(1, "hash")
+
+    assert (tmp_path / "lexx_relay.session").stat().st_mode & 0o777 == 0o600
+
+
+def test_client_tightens_an_existing_store_and_its_journal(monkeypatch, tmp_path):
+    """A store left at 0644 by an earlier version is fixed on the next start."""
+    store = tmp_path / "lexx_relay.session"
+    journal = tmp_path / "lexx_relay.session-journal"
+    for path in (store, journal):
+        path.write_bytes(b"")
+        path.chmod(0o644)
+    monkeypatch.setattr(relay, "SESSION", str(store))  # suffix already present
+    monkeypatch.setattr(relay, "TelegramClient", FakeClient)
+
+    relay._client(1, "hash")
+
+    assert store.stat().st_mode & 0o777 == 0o600
+    assert journal.stat().st_mode & 0o777 == 0o600
+
+
+def test_client_survives_a_volume_that_refuses_chmod(monkeypatch, tmp_path, caplog):
+    """Docker bind mounts can refuse; a warning, not a dead relay."""
+    store = tmp_path / "lexx_relay"
+    monkeypatch.setattr(relay, "SESSION", str(store))
+    monkeypatch.setattr(relay, "TelegramClient", FakeClient)
+
+    def refuse(self, mode):
+        raise PermissionError("read-only volume")
+
+    monkeypatch.setattr(Path, "chmod", refuse)
+    with caplog.at_level("WARNING", logger="relay"):
+        assert isinstance(relay._client(1, "hash"), FakeClient)
+
+    assert "could not restrict" in caplog.text
 
 
 # --------------------------------------------------------------------------- #
