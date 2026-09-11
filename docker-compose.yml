@@ -17,7 +17,9 @@ services:
     ports:
       - "${TTS_PORT:-8422}:${TTS_PORT:-8422}"
       # TradingView webhook receiver; harmless while TV_WEBHOOK_SECRET is empty.
-      - "${TV_PORT:-8423}:${TV_PORT:-8423}"
+      # Loopback only: cloudflared on the host is what the internet talks to.
+      # A router port-forward instead needs TV_BIND=0.0.0.0.
+      - "${TV_BIND:-127.0.0.1}:${TV_PORT:-8423}:${TV_PORT:-8423}"
     volumes:
       - ./session:/app/session
     # First run needs a terminal for the Telegram login code:

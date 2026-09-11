@@ -5,8 +5,9 @@ directly — so this module long-polls `getUpdates` and answers. Delivery and
 speech are passed in rather than imported, which keeps this module free of a
 cycle with relay.py and lets the tests drive it without a network.
 
-Only `TARGET_CHAT_ID` is obeyed. A bot's username is public, so anyone can
-message it; commands from any other chat are ignored, not answered.
+Only `OWNER_ID` writing in `TARGET_CHAT_ID` is obeyed. A bot's username is
+public, so anyone can message it, and a group target has other members;
+commands from any other chat or sender are ignored, not answered.
 """
 
 import asyncio
@@ -27,6 +28,10 @@ load_dotenv("bipboop")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID")
+# Who may give orders. In a private chat the chat id is the owner's user id,
+# so this defaults to TARGET_CHAT_ID; a group target has to name the owner
+# explicitly, otherwise no sender matches and every command is refused.
+OWNER_ID = os.getenv("OWNER_ID") or TARGET_CHAT_ID
 SOURCE = os.getenv("SOURCE_CHAT", "source_bot")
 POLL_TIMEOUT = int(os.getenv("POLL_TIMEOUT", "25"))
 
@@ -107,6 +112,10 @@ def command_of(update: dict) -> tuple[str, str] | None:
         return None
     if str(message.get("chat", {}).get("id")) != str(TARGET_CHAT_ID):
         log.warning("ignoring command from chat %s", message.get("chat", {}).get("id"))
+        return None
+    sender = message.get("from") or {}
+    if str(sender.get("id")) != str(OWNER_ID) or sender.get("is_bot"):
+        log.warning("ignoring command from user %s", sender.get("id"))
         return None
     text = message.get("text", "").strip()
     if not text.startswith("/"):
