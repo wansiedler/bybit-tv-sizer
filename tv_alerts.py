@@ -13,6 +13,7 @@ Tailscale Funnel) or a router port-forward in front of TV_PORT.
 """
 
 import asyncio
+import hmac
 import logging
 import os
 import re
@@ -28,8 +29,8 @@ load_dotenv("bipboop")
 
 TV_WEBHOOK_SECRET = os.getenv("TV_WEBHOOK_SECRET", "")
 TV_PORT = int(os.getenv("TV_PORT", "8423"))
-# GET /j answers with a redirect to the trading journal, so the sheet has a
-# short address on the own domain. Empty keeps the path dead silent.
+# The trading journal's sheet link, for the up notice and /links only: the
+# listener never serves it — the journal is every trade and the deposit.
 JOURNAL_URL = os.getenv("JOURNAL_URL", "")
 # The public origin the tunnel exposes this webhook on, for the up notice.
 TV_PUBLIC_URL = os.getenv("TV_PUBLIC_URL", "")
@@ -39,6 +40,11 @@ MAX_BODY = 4096
 
 def enabled() -> bool:
     return bool(TV_WEBHOOK_SECRET)
+
+
+def _on_secret_path(path: str) -> bool:
+    """Whether the request path is exactly the secret one, in constant time."""
+    return hmac.compare_digest(path.encode(), f"/tv/{TV_WEBHOOK_SECRET}".encode())
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -58,7 +64,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.connection.close()
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's spelling
-        if self.path != f"/tv/{TV_WEBHOOK_SECRET}":
+        if not _on_secret_path(self.path):
             self._refuse()
             return
         length = min(int(self.headers.get("Content-Length") or 0), MAX_BODY)
@@ -71,12 +77,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's spelling
         """The alive page on the exact secret path; dead silence elsewhere."""
-        if JOURNAL_URL and self.path == "/j":
-            self.send_response(302)
-            self.send_header("Location", JOURNAL_URL)
-            self.end_headers()
-            return
-        if self.path != f"/tv/{TV_WEBHOOK_SECRET}":
+        if not _on_secret_path(self.path):
             self._refuse()
             return
         body = (
