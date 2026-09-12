@@ -38,6 +38,8 @@ def _isolate(monkeypatch):
     monkeypatch.setattr(sizer, "RISK_PCT", Decimal("0.005"))
     monkeypatch.setattr(sizer, "FALLBACK_SL_PCT", Decimal("0"))
     monkeypatch.setattr(sizer, "MAX_LEVERAGE", Decimal("5"))
+    monkeypatch.setattr(sizer, "MAKER_FEE", Decimal("0.0002"))
+    monkeypatch.setattr(sizer, "TAKER_FEE", Decimal("0.00055"))
     monkeypatch.setattr(sizer, "SYMBOLS", set())
     # Debounce off by default: the settling behaviour has its own tests.
     monkeypatch.setattr(sizer, "SETTLE_POLLS", 1)
@@ -199,8 +201,9 @@ def size(order, equity="10000", lot=BTC_LOT):
 
 
 def test_risk_percent_sets_the_quantity():
-    # 0.5% of 10000 = 50 USDT risked over a 1000-point stop -> 0.05 BTC.
-    assert size(ORDER) == Decimal("0.050")
+    # 0.5% of 10000 = 50 USDT covers the 1000-point stop plus the maker
+    # entry (12/unit) and the taker stop close (32.45/unit) -> 0.047 BTC.
+    assert size(ORDER) == Decimal("0.047")
 
 
 def test_leverage_ceiling_caps_a_tight_stop():
@@ -222,13 +225,13 @@ def test_fallback_stop_is_used_when_configured(monkeypatch):
     monkeypatch.setattr(sizer, "FALLBACK_SL_PCT", Decimal("0.01"))
 
     # Sell side: the assumed stop sits 1% above 60000, i.e. 600 points away.
-    assert size(dict(ORDER, stopLoss="0", side="Sell")) == Decimal("0.083")
+    assert size(dict(ORDER, stopLoss="0", side="Sell")) == Decimal("0.077")
 
 
 def test_fallback_stop_sits_below_a_buy(monkeypatch):
     monkeypatch.setattr(sizer, "FALLBACK_SL_PCT", Decimal("0.01"))
 
-    assert size(dict(ORDER, stopLoss="")) == Decimal("0.083")
+    assert size(dict(ORDER, stopLoss="")) == Decimal("0.077")
 
 
 def test_stop_equal_to_entry_is_skipped():
@@ -300,17 +303,17 @@ def test_tick_amends_and_announces_when_live(monkeypatch):
 
     run_tick(http, out)
 
-    assert http.amended[0]["qty"] == "0.050"
+    assert http.amended[0]["qty"] == "0.047"
     assert out.sent == [
         "⚖️ BTCUSDT Buy limit @ 60000\n"
-        "stop 59000 (1.67%) → qty 0.001 (60$, 0.6% депо) → 0.050 (3,000$, 30.0% депо)"
+        "stop 59000 (1.67%) → qty 0.001 (60$, 0.6% депо) → 0.047 (2,820$, 28.2% депо)"
     ]
 
 
 def test_tick_leaves_a_correctly_sized_order_alone(monkeypatch):
     monkeypatch.setattr(sizer, "DRY_RUN", False)
     http, out = FakeHTTP(), Recorder()
-    http.orders = [dict(ORDER, qty="0.050")]
+    http.orders = [dict(ORDER, qty="0.047")]
 
     run_tick(http, out)
 
@@ -419,11 +422,11 @@ def test_tick_shrinks_without_consulting_the_margin(monkeypatch):
             return await super().get(url, headers=headers, timeout=timeout)
 
     http, out = NoCapCalls(), Recorder()
-    http.orders = [dict(ORDER, qty="0.100")]  # bigger than the 0.05 target
+    http.orders = [dict(ORDER, qty="0.100")]  # bigger than the 0.047 target
 
     run_tick(http, out)
 
-    assert http.amended[0]["qty"] == "0.050"
+    assert http.amended[0]["qty"] == "0.047"
 
 
 def test_tick_grows_uncapped_when_the_cap_is_unknown(monkeypatch):
@@ -434,7 +437,7 @@ def test_tick_grows_uncapped_when_the_cap_is_unknown(monkeypatch):
 
     run_tick(http, out)
 
-    assert http.amended[0]["qty"] == "0.050"
+    assert http.amended[0]["qty"] == "0.047"
     assert "урезано" not in out.sent[0]
 
 

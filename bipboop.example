@@ -71,9 +71,13 @@ GUARD_GRACE_SEC=45
 BYBIT_TESTNET=0
 # 1 = only log the amend, 0 = actually send it
 DRY_RUN=1
-# percent of the wallet balance (unrealised PnL excluded) risked between
-# entry and stop; the trimmer cuts positions back to the same figure
+# percent of the wallet balance (unrealised PnL excluded) that a stop-out
+# costs, fees included; the trimmer cuts positions back to the same figure
 RISK_PCT=0.5
+# The fees the sizing budgets for: the entry (maker limit) and the stop's
+# market close (taker). Bybit derivatives non-VIP defaults.
+MAKER_FEE=0.0002
+TAKER_FEE=0.00055
 # stop assumed when the order has none; 0 = skip such orders
 FALLBACK_SL_PCT=0
 # notional ceiling = equity * this

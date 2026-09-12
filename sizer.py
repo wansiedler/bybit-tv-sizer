@@ -42,6 +42,9 @@ DRY_RUN = os.getenv("DRY_RUN", "1").lower() not in ("0", "false", "no", "")
 RISK_PCT = Decimal(os.getenv("RISK_PCT", "0.5")) / Decimal(100)
 FALLBACK_SL_PCT = Decimal(os.getenv("FALLBACK_SL_PCT", "0")) / Decimal(100)
 MAX_LEVERAGE = Decimal(os.getenv("MAX_LEVERAGE", "5"))
+# The entry fills as a maker limit; the stop closes as a taker market order.
+MAKER_FEE = Decimal(os.getenv("MAKER_FEE", "0.0002"))
+TAKER_FEE = Decimal(os.getenv("TAKER_FEE", "0.00055"))
 SYMBOLS = {s.strip().upper() for s in os.getenv("SYMBOLS", "").split(",") if s.strip()}
 POLL = float(os.getenv("POLL_SEC", "3"))
 CATEGORY = os.getenv("CATEGORY", "linear")
@@ -116,7 +119,12 @@ def round_step(value: Decimal, step: Decimal) -> Decimal:
 
 
 def target_qty(order: dict, equity: Decimal, instrument: dict) -> Decimal | None:
-    """Quantity that puts exactly RISK_PCT of equity between entry and stop."""
+    """Quantity whose stop-out costs exactly RISK_PCT of equity.
+
+    The cost of stopping out is the price distance plus both fees — the
+    maker entry and the stop's taker market close — so the realised loss
+    stays inside RISK_PCT, matching the trimmer's arithmetic.
+    """
     symbol, order_id = order["symbol"], order["orderId"][:8]
     entry = Decimal(order["price"])
     if entry <= 0:
@@ -139,7 +147,7 @@ def target_qty(order: dict, equity: Decimal, instrument: dict) -> Decimal | None
         return None
 
     lot = instrument["lotSizeFilter"]
-    qty = (equity * RISK_PCT) / distance
+    qty = (equity * RISK_PCT) / (distance + entry * MAKER_FEE + stop * TAKER_FEE)
     qty = min(qty, (equity * MAX_LEVERAGE) / entry)  # notional ceiling
     qty = min(round_step(qty, Decimal(lot["qtyStep"])), Decimal(lot["maxOrderQty"]))
 
