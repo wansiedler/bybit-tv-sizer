@@ -270,6 +270,10 @@ async def trim(http: httpx.AsyncClient, open_now: dict[str, Position], send, spe
     quantity sized for a different price, so the stop suddenly risks more
     than RISK_PCT. This trims the position with a reduce-only market order
     until the stop distance costs the target again. It only ever shrinks.
+
+    The stop's true cost includes both taker fees — the market entry that
+    oversized the position and the stop's own market close — so the realised
+    loss stays inside the target, not just the price distance.
     """
     if not RISK_TRIM:
         return
@@ -279,9 +283,10 @@ async def trim(http: httpx.AsyncClient, open_now: dict[str, Position], send, spe
             continue
         if time.monotonic() - _trim_cooldown.get(symbol, 0.0) < 10.0:
             continue
-        per_unit = abs(position.price - position.stop_loss)
-        if per_unit <= 0:
+        distance = abs(position.price - position.stop_loss)
+        if distance <= 0:
             continue
+        per_unit = distance + (position.price + position.stop_loss) * TAKER_FEE
         if depo is None:
             depo = await wallet_balance(http)
         if not depo:

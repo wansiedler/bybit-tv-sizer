@@ -2010,8 +2010,9 @@ def trim_http(step="0.1", min_qty="0.1"):
     return http
 
 
-# Entry 100, stop 99: 1$ risk per unit. Size 10 risks 10$; the target on a
-# 1000$ deposit at 0.5% is 5$ — so half the position has to go.
+# Entry 100, stop 99: 1$ of price risk per unit, 1.109445$ with both taker
+# fees (199 × 0.00055). Size 10 risks 11.09$; the target on a 1000$ deposit
+# at 0.5% is 5$ — so the position is cut to 4.5.
 OVERSIZED = Position("long", 10.0, 100.0, 1000.0, stop_loss=99.0)
 
 
@@ -2031,29 +2032,30 @@ def test_trim_cuts_back_to_the_target_risk(trimming):
             "symbol": "CLUSDT",
             "side": "Sell",
             "orderType": "Market",
-            "qty": "5",
+            "qty": "5.5",
             "reduceOnly": True,
             "positionIdx": 0,
         }
     ]
-    assert out.sent == ["✂️ CL: риск 1.00% депо при цели 0.50% — режу 10→5"]
+    assert out.sent == ["✂️ CL: риск 1.11% депо при цели 0.50% — режу 10→4.5"]
     assert out.spoken == ["CL trimmed"]
 
 
 def test_trim_cuts_even_a_small_overshoot(trimming):
-    """No tolerance band: 6$ of risk against a 5$ target loses the sixth."""
+    """No tolerance band: 6.66$ of risk against a 5$ target gets cut."""
     http, out = trim_http(), Recorder()
     slightly = Position("long", 6.0, 100.0, 600.0, stop_loss=99.0)
 
     asyncio.run(bybit_watch.trim(http, {"CLUSDT": slightly}, out.send, out.speak))
 
-    assert [o["qty"] for o in http.orders] == ["1"]
-    assert out.sent == ["✂️ CL: риск 0.60% депо при цели 0.50% — режу 6→5"]
+    assert [o["qty"] for o in http.orders] == ["1.5"]
+    assert out.sent == ["✂️ CL: риск 0.67% депо при цели 0.50% — режу 6→4.5"]
 
 
 def test_trim_leaves_an_exact_position_alone(trimming):
     http, out = trim_http(), Recorder()
-    exact = Position("long", 5.0, 100.0, 500.0, stop_loss=99.0)  # 5$ = target
+    # 4.5 units cost 4.99$ at the stop, fees included: inside the 5$ target.
+    exact = Position("long", 4.5, 100.0, 450.0, stop_loss=99.0)
 
     asyncio.run(bybit_watch.trim(http, {"CLUSDT": exact}, out.send, out.speak))
 
@@ -2064,7 +2066,8 @@ def test_trim_leaves_an_exact_position_alone(trimming):
 def test_trim_cannot_cut_below_one_lot_step(trimming):
     """An overshoot smaller than the exchange step has nothing to sell."""
     http, out = trim_http(), Recorder()
-    hair = Position("long", 5.05, 100.0, 505.0, stop_loss=99.0)  # 5.05$ vs 5$
+    # 5.05$ of risk against 5$, but the 0.05 cut is below the 0.1 step.
+    hair = Position("long", 4.55, 100.0, 455.0, stop_loss=99.0)
 
     asyncio.run(bybit_watch.trim(http, {"CLUSDT": hair}, out.send, out.speak))
 
