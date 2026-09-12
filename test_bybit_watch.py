@@ -31,6 +31,8 @@ class FakeHTTP:
         self.pnl_rows: list[dict[str, Any]] = []
         self.kline_rows: list[list[str]] = []
         self.exec_rows: list[dict[str, Any]] = []
+        self.funding_rows: list[dict[str, Any]] = []
+        self.trade_rows: list[dict[str, Any]] = []
         self.equity_rows: list[dict[str, Any]] = []
         self.deposit_rows: list[dict[str, Any]] = []
         self.withdraw_rows: list[dict[str, Any]] = []
@@ -49,6 +51,10 @@ class FakeHTTP:
         if "/v5/market/kline" in url:
             return FakeResponse({"retCode": 0, "result": {"list": self.kline_rows}})
         if "/v5/execution/list" in url:
+            if "execType=Funding" in url:
+                return FakeResponse({"retCode": 0, "result": {"list": self.funding_rows}})
+            if "execType=Trade" in url:
+                return FakeResponse({"retCode": 0, "result": {"list": self.trade_rows}})
             return FakeResponse({"retCode": 0, "result": {"list": self.exec_rows}})
         if "/v5/account/wallet-balance" in url:
             return FakeResponse({"retCode": 0, "result": {"list": self.equity_rows}})
@@ -1941,7 +1947,7 @@ def test_breakeven_carries_the_funding_cost():
 
 def test_accrued_funding_sums_the_charges(keyed):
     http = FakeHTTP()
-    http.exec_rows = [{"execFee": "0.012"}, {"execFee": "-0.004"}]
+    http.funding_rows = [{"execFee": "0.012"}, {"execFee": "-0.004"}]
 
     assert asyncio.run(bybit_watch.accrued_funding(http, "BTCUSDT", 1_700_000_000_000)) == (
         pytest.approx(0.008)
@@ -1961,13 +1967,57 @@ def test_accrued_funding_survives_a_refusal(keyed, caplog):
         got = asyncio.run(bybit_watch.accrued_funding(Refusing(), "BTCUSDT", 1))
 
     assert got == 0.0
-    assert "no funding history" in caplog.text
+    assert "no Funding history" in caplog.text
+
+
+def test_breakeven_uses_the_real_entry_fee_when_known():
+    # A maker fill paid 20$/unit where the taker assumption would say 55.
+    be = bybit_watch.breakeven_price("long", 100_000.0, entry_fee_per_unit=20.0)
+    assert be == pytest.approx((100_000 + 20) / (1 - 0.00055))
+
+    be = bybit_watch.breakeven_price("short", 100_000.0, entry_fee_per_unit=20.0)
+    assert be == pytest.approx((100_000 - 20) / (1 + 0.00055))
+
+
+def test_entry_fee_per_unit_reads_the_trade_executions(keyed):
+    http = FakeHTTP()
+    http.trade_rows = [{"execFee": "0.3"}, {"execFee": "0.1"}]
+    pos = Position("long", 10.0, 100.0, 1000.0, created_ms=1_700_000_000_000)
+
+    assert asyncio.run(bybit_watch.entry_fee_per_unit(http, "CLUSDT", pos)) == pytest.approx(0.04)
+
+
+def test_entry_fee_per_unit_unknown_without_history(keyed):
+    pos = Position("long", 10.0, 100.0, 1000.0, created_ms=1_700_000_000_000)
+
+    assert asyncio.run(bybit_watch.entry_fee_per_unit(FakeHTTP(), "CLUSDT", pos)) is None
+
+
+def test_entry_fee_per_unit_unknown_for_a_zero_size(keyed):
+    http = FakeHTTP()
+    http.trade_rows = [{"execFee": "0.3"}]
+    pos = Position("long", 0.0, 100.0, 0.0, created_ms=1_700_000_000_000)
+
+    assert asyncio.run(bybit_watch.entry_fee_per_unit(http, "CLUSDT", pos)) is None
+
+
+def test_positions_pnl_line_uses_the_real_entry_fee(keyed):
+    http = ClosingHTTP()
+    http.position_pages = [[dict(row(), unrealisedPnl="512.3", createdTime="1700000000000")]]
+    # 3.75 really paid on the way in, plus the taker exit still to come
+    # (0.055% of 18748.7 = 10.31) — not the 20.62 double-taker estimate.
+    http.trade_rows = [{"execFee": "3.75"}]
+    http.funding_rows = [{"execFee": "0.4"}]
+
+    report = asyncio.run(bybit_watch.positions_report(http))
+
+    assert "−комса14.06−фанд0.40=" in report
 
 
 def test_positions_pnl_line_subtracts_funding(keyed):
     http = ClosingHTTP()
     http.position_pages = [[dict(row(), unrealisedPnl="512.3", createdTime="1700000000000")]]
-    http.exec_rows = [{"execFee": "0.4"}]
+    http.funding_rows = [{"execFee": "0.4"}]
 
     report = asyncio.run(bybit_watch.positions_report(http))
 
@@ -1977,7 +2027,7 @@ def test_positions_pnl_line_subtracts_funding(keyed):
 def test_positions_pnl_line_adds_received_funding(keyed):
     http = ClosingHTTP()
     http.position_pages = [[dict(row(), unrealisedPnl="512.3", createdTime="1700000000000")]]
-    http.exec_rows = [{"execFee": "-0.4"}]
+    http.funding_rows = [{"execFee": "-0.4"}]
 
     report = asyncio.run(bybit_watch.positions_report(http))
 
@@ -1988,7 +2038,7 @@ def test_tick_close_subtracts_funding(keyed):
     http, out = FakeHTTP(), Recorder()
     http.position_pages = [[]]
     http.pnl_rows = [closed()]
-    http.exec_rows = [{"execFee": "12.3"}]
+    http.funding_rows = [{"execFee": "12.3"}]
     aged = Position("long", 100.0, 0.16, 16.0, created_ms=1_700_000_000_000)
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": aged}, out.send, out.speak, out.send_photo))

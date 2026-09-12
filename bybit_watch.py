@@ -727,9 +727,12 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
     total_net = 0.0
     for symbol, position in sorted(open_now.items()):
         arrow = "📈" if position.side == "long" else "📉"
-        # uPnL is pure price difference; both fees at the taker rate come
-        # off — the entry already paid, the exit still to come.
-        fees = 2 * TAKER_FEE * position.value
+        # uPnL is pure price difference; what was really paid so far (entry
+        # fills, from the execution log) and the taker exit still to come
+        # both come off. An unknown history falls back to a taker entry.
+        real = await entry_fee_per_unit(http, symbol, position)
+        paid = real * position.size if real is not None else TAKER_FEE * position.value
+        fees = paid + TAKER_FEE * position.value
         funding = await accrued_funding(http, symbol, position.created_ms)
         net = position.unrealised - fees - funding
         head = f"{arrow}{base_symbol(symbol)} {_val(position.value)}$@{position.price:g}"
@@ -765,7 +768,10 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         lines.append("\n".join(block))
         if send_album is not None:
             be = breakeven_price(
-                position.side, position.price, funding / position.size if position.size else 0.0
+                position.side,
+                position.price,
+                funding / position.size if position.size else 0.0,
+                entry_fee_per_unit=real,
             )
             tp_note = sl_note = ""
             if at_tp is not None:
@@ -850,25 +856,35 @@ def _bar_of(times: list[int], moment: int) -> int:
     return fits[-1] if fits else 0
 
 
-def breakeven_price(side: str, entry: float, extra_cost_per_unit: float = 0.0) -> float:
+def breakeven_price(
+    side: str,
+    entry: float,
+    extra_cost_per_unit: float = 0.0,
+    entry_fee_per_unit: float | None = None,
+) -> float:
     """The exit price where the trade nets zero.
 
-    Both taker fees are baked in, plus any extra per-unit cost — the funding
-    the position has actually been charged so far. A short that RECEIVES
-    funding gets a kinder breakeven the same way.
+    The exit is priced as a taker market close. The entry fee is the real
+    one per unit when known (a limit fill costs maker, not taker); without
+    it a taker entry is assumed — the pessimistic bound. Any extra per-unit
+    cost is the funding the position has actually been charged so far; a
+    short that RECEIVES funding gets a kinder breakeven the same way.
     """
     t = TAKER_FEE
+    paid = entry * t if entry_fee_per_unit is None else entry_fee_per_unit
     if side == "long":
-        return (entry * (1 + t) + extra_cost_per_unit) / (1 - t)
-    return (entry * (1 - t) - extra_cost_per_unit) / (1 + t)
+        return (entry + paid + extra_cost_per_unit) / (1 - t)
+    return (entry - paid - extra_cost_per_unit) / (1 + t)
 
 
-async def accrued_funding(http: httpx.AsyncClient, symbol: str, since_ms: int) -> float:
-    """Funding actually charged on the position since it opened, best-effort.
+async def accrued_fees(
+    http: httpx.AsyncClient, symbol: str, since_ms: int, exec_type: str
+) -> float:
+    """execFee actually charged since `since_ms`, best-effort; unknown is zero.
 
-    Bybit settles funding on its own clock (every eight hours on most
-    perpetuals); the execution log records each charge as an execFee —
-    positive paid, negative received. Unknown stays zero.
+    The execution log only reaches seven days back, so an older position's
+    entry fees can fall off the edge — the callers treat zero as "unknown"
+    and fall back to an estimate.
     """
     if not since_ms:
         return 0.0
@@ -879,16 +895,41 @@ async def accrued_funding(http: httpx.AsyncClient, symbol: str, since_ms: int) -
             {
                 "category": "linear",
                 "symbol": symbol,
-                "execType": "Funding",
+                "execType": exec_type,
                 "startTime": str(since_ms),
-                "limit": "50",
+                "limit": "100",
             },
         )
         return sum(float(r.get("execFee") or 0) for r in result.get("list", []))
     # Deliberately broad: the chart line is garnish, zero is a fine answer.
     except Exception:  # noqa: BLE001
-        log.exception("no funding history for %s", symbol)
+        log.exception("no %s history for %s", exec_type, symbol)
         return 0.0
+
+
+async def accrued_funding(http: httpx.AsyncClient, symbol: str, since_ms: int) -> float:
+    """Funding actually charged on the position since it opened.
+
+    Bybit settles funding on its own clock (every eight hours on most
+    perpetuals); each charge is an execFee — positive paid, negative
+    received.
+    """
+    return await accrued_fees(http, symbol, since_ms, "Funding")
+
+
+async def entry_fee_per_unit(
+    http: httpx.AsyncClient, symbol: str, position: Position
+) -> float | None:
+    """The real entry cost per unit, from the trade executions.
+
+    Covers however the position was actually filled — maker, taker or a mix.
+    None when nothing is on record (a fill not yet in the log, or a position
+    older than the seven-day execution history): the caller assumes taker.
+    """
+    fees = await accrued_fees(http, symbol, position.created_ms, "Trade")
+    if fees <= 0 or position.size <= 0:
+        return None
+    return fees / position.size
 
 
 async def entry_chart(
@@ -1308,7 +1349,11 @@ async def tick(
                 http,
                 symbol,
                 now,
-                breakeven=breakeven_price(now.side, now.price),
+                breakeven=breakeven_price(
+                    now.side,
+                    now.price,
+                    entry_fee_per_unit=fee / now.size if fee and now.size else None,
+                ),
                 entry_note=(
                     f"{_val(now.value)}$"
                     + (f" ({now.value / depo * 100:.1f}% depo)" if depo else "")
