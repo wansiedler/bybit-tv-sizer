@@ -40,6 +40,47 @@ breach that many seconds to be fixed; at zero it acts immediately. A
 forced close is labelled everywhere — in Telegram, and in the journal as
 «принудительно остановлено» with the broken rule.
 
+## Auto-trim: a market entry is cut back to the target risk
+
+The sizer shapes limit orders before they fill. But sometimes the entry is
+thrown in at market instead — the quantity stays sized for the old price and
+the stop suddenly risks more than `RISK_PCT`. The trimmer (`RISK_TRIM=1`,
+the default) notices and shrinks the position with a reduce-only market
+order until stopping out costs the target again. It only ever shrinks.
+
+The budget pays for everything between the entry and the stop, not just the
+price distance — every leg is a taker order:
+
+```text
+stop cost per unit = |entry − stop| + entry·fee + stop·fee
+```
+
+and when a cut is needed, the kept size also answers for the cut's own
+market close (the entry fee is already sunk on the full size):
+
+```text
+target ≥ size·entry·fee  +  (size − keep)·entry·fee  +  keep·(|entry − stop| + stop·fee)
+```
+
+solved for `keep`, floored to the exchange's lot step.
+
+Worked example — a 100 000 $ deposit, 1 BTC bought at market for 100 000
+with the stop at 98 000, `RISK_PCT=1%`, taker fee 0.055%:
+
+```text
+stop cost per unit:   2 000 + 55.00 + 53.90 = 2 108.90 $/BTC
+position risk:        2 108.90 $ = 2.11% of the deposit → trim
+budget for the keep:  1 000 − 2 × 55.00 = 890 $
+keep:                 890 / (2 000 + 53.90 − 55.00) → 0.445 BTC
+
+✂️ BTC: риск 2.11% депо при цели 1.00% — режу 1→0.445
+```
+
+Stopping out afterwards costs 55.00 (entry fee on the full size) + 30.53
+(the cut's market close) + 890.00 (price distance on the keep) + 23.99
+(the keep's stop) = 999.51 $ — inside the 1% all in. Funding and stop
+slippage are not budgeted; at 0.01%/8h funding is noise next to 1%.
+
 ## Alert relaying
 
 Compacts LEXX Draco alerts and re-posts them through your own bot.
