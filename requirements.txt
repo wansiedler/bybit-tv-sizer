@@ -9,4 +9,4 @@ httpx>=0.28.1
 python-dotenv>=1.2.3
 PyChromecast>=14.0.10
 gTTS>=2.5.4
-Pillow>=11.0.0
+Pillow>=12.3.0
