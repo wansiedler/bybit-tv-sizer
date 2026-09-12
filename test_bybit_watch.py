@@ -1507,6 +1507,58 @@ def test_money_moves_reads_finished_flows_only(keyed):
     }
 
 
+def test_money_moves_drops_the_withdrawal_covered_by_a_transfer(keyed):
+    # Bybit's withdraw flow: inter-transfer out of UNIFIED, then the on-chain
+    # withdrawal of the same money (minus the fee) from FUND. One move, not two.
+    http = FakeHTTP()
+    http.deposit_rows = []
+    http.withdraw_rows = [
+        {
+            "withdrawId": "w9",
+            "amount": "125.32",
+            "withdrawFee": "0.2",
+            "coin": "USDT",
+            "status": "success",
+        }
+    ]
+    http.transfer_rows = [
+        {
+            "transferId": "t9",
+            "amount": "125.52",
+            "coin": "USDT",
+            "status": "SUCCESS",
+            "fromAccountType": "UNIFIED",
+            "toAccountType": "FUND",
+        }
+    ]
+
+    moves = asyncio.run(bybit_watch.money_moves(http))
+
+    assert [(m["id"], m["amount"]) for m in moves] == [("tr-t9", -125.52)]
+
+
+def test_money_moves_drops_the_deposit_covered_by_a_transfer(keyed):
+    # A deposit lands in FUND first; the transfer into UNIFIED is the event
+    # that reaches the trading account.
+    http = FakeHTTP()
+    http.deposit_rows = [{"txID": "d9", "amount": "50", "coin": "USDT", "status": "3"}]
+    http.withdraw_rows = []
+    http.transfer_rows = [
+        {
+            "transferId": "t8",
+            "amount": "50",
+            "coin": "USDT",
+            "status": "SUCCESS",
+            "fromAccountType": "FUND",
+            "toAccountType": "UNIFIED",
+        }
+    ]
+
+    moves = asyncio.run(bybit_watch.money_moves(http))
+
+    assert [(m["id"], m["amount"]) for m in moves] == [("tr-t8", 50.0)]
+
+
 def test_money_tick_primes_silently(keyed):
     out = Recorder()
 

@@ -1358,31 +1358,18 @@ async def money_moves(http: httpx.AsyncClient) -> list[dict]:
 
     Each move: an `id` stable across polls, a signed `amount` (into the
     trading account positive, out of it negative) and the `coin`.
+
+    Money passing through the funding account would show up twice: Bybit's
+    withdraw flow is an inter-transfer out of UNIFIED followed by the on-chain
+    withdrawal of the same money from FUND, and a deposit lands in FUND before
+    it is transferred in. The transfer is the event that crosses the trading
+    account's border, so a deposit or withdrawal already covered by a matching
+    transfer of the same coin and amount is dropped, not counted twice.
     """
     since = str(int((time.time() - 7 * 86400) * 1000))
     moves: list[dict] = []
-    result = await _get(http, "/v5/asset/deposit/query-record", {"startTime": since, "limit": "50"})
-    for r in result.get("rows", []):
-        if str(r.get("status")) == "3":  # status three means success
-            moves.append(
-                {
-                    "id": f"dep-{r.get('txID') or r.get('successAt')}",
-                    "amount": float(r.get("amount") or 0),
-                    "coin": r.get("coin", ""),
-                }
-            )
-    result = await _get(
-        http, "/v5/asset/withdraw/query-record", {"startTime": since, "limit": "50"}
-    )
-    for r in result.get("rows", []):
-        if r.get("status") == "success":
-            moves.append(
-                {
-                    "id": f"wd-{r.get('withdrawId')}",
-                    "amount": -float(r.get("amount") or 0),
-                    "coin": r.get("coin", ""),
-                }
-            )
+    into_trading: set[tuple[str, float]] = set()
+    out_of_trading: set[tuple[str, float]] = set()
     result = await _get(http, "/v5/asset/transfer/query-inter-transfer-list", {"limit": "50"})
     for r in result.get("list", []):
         into = r.get("toAccountType") == "UNIFIED"
@@ -1390,13 +1377,45 @@ async def money_moves(http: httpx.AsyncClient) -> list[dict]:
         # Only finished transfers that cross the trading account's border.
         if r.get("status") != "SUCCESS" or into == out_of:
             continue
+        amount = float(r.get("amount") or 0)
+        coin = r.get("coin", "")
+        (into_trading if into else out_of_trading).add((coin, round(amount, 8)))
         moves.append(
             {
                 "id": f"tr-{r.get('transferId')}",
-                "amount": float(r.get("amount") or 0) * (1 if into else -1),
-                "coin": r.get("coin", ""),
+                "amount": amount * (1 if into else -1),
+                "coin": coin,
             }
         )
+    result = await _get(http, "/v5/asset/deposit/query-record", {"startTime": since, "limit": "50"})
+    for r in result.get("rows", []):
+        amount = float(r.get("amount") or 0)
+        coin = r.get("coin", "")
+        # Status three means success.
+        if str(r.get("status")) == "3" and (coin, round(amount, 8)) not in into_trading:
+            moves.append(
+                {
+                    "id": f"dep-{r.get('txID') or r.get('successAt')}",
+                    "amount": amount,
+                    "coin": coin,
+                }
+            )
+    result = await _get(
+        http, "/v5/asset/withdraw/query-record", {"startTime": since, "limit": "50"}
+    )
+    for r in result.get("rows", []):
+        amount = float(r.get("amount") or 0)
+        # The transfer moved amount plus the withdrawal fee out of UNIFIED.
+        debited = round(amount + float(r.get("withdrawFee") or 0), 8)
+        coin = r.get("coin", "")
+        if r.get("status") == "success" and (coin, debited) not in out_of_trading:
+            moves.append(
+                {
+                    "id": f"wd-{r.get('withdrawId')}",
+                    "amount": -amount,
+                    "coin": coin,
+                }
+            )
     return moves
 
 
