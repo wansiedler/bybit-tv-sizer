@@ -271,9 +271,10 @@ async def trim(http: httpx.AsyncClient, open_now: dict[str, Position], send, spe
     than RISK_PCT. This trims the position with a reduce-only market order
     until the stop distance costs the target again. It only ever shrinks.
 
-    The stop's true cost includes both taker fees — the market entry that
-    oversized the position and the stop's own market close — so the realised
-    loss stays inside the target, not just the price distance.
+    The stop's true cost includes every taker fee on the way: the market
+    entry that oversized the position, the cut's own market close, and the
+    stop's market close on what is kept — so the realised loss from entry
+    to stop stays inside the target, not just the price distance.
     """
     if not RISK_TRIM:
         return
@@ -286,7 +287,9 @@ async def trim(http: httpx.AsyncClient, open_now: dict[str, Position], send, spe
         distance = abs(position.price - position.stop_loss)
         if distance <= 0:
             continue
-        per_unit = distance + (position.price + position.stop_loss) * TAKER_FEE
+        entry_fee = position.price * TAKER_FEE
+        stop_fee = position.stop_loss * TAKER_FEE
+        per_unit = distance + entry_fee + stop_fee
         if depo is None:
             depo = await wallet_balance(http)
         if not depo:
@@ -298,7 +301,13 @@ async def trim(http: httpx.AsyncClient, open_now: dict[str, Position], send, spe
         step, min_qty = await _lot(http, symbol)
         if step <= 0:
             continue
-        want = math.floor(target / per_unit / step) * step
+        # The kept size answers for what is left of the budget once the sunk
+        # fees are out: the entry fee was paid on every unit, and the cut
+        # (size - want) pays its own taker fee at roughly the entry price.
+        # target >= entry_fee*size + entry_fee*(size-want) + want*(distance+stop_fee)
+        # solved for want:
+        budget = target - 2 * position.size * entry_fee
+        want = math.floor(budget / (distance + stop_fee - entry_fee) / step) * step
         cut = position.size - want
         if want < min_qty or cut < step:
             continue

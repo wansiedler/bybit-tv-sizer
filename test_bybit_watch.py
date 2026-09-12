@@ -2010,9 +2010,10 @@ def trim_http(step="0.1", min_qty="0.1"):
     return http
 
 
-# Entry 100, stop 99: 1$ of price risk per unit, 1.109445$ with both taker
-# fees (199 × 0.00055). Size 10 risks 11.09$; the target on a 1000$ deposit
-# at 0.5% is 5$ — so the position is cut to 4.5.
+# Entry 100, stop 99: 1$ of price risk per unit, 1.10945$ with both taker
+# fees (199 × 0.00055). Size 10 risks 11.09$ against a 5$ target (0.5% of a
+# 1000$ wallet). The budget also pays the entry fee on all ten units and the
+# cut's own market close, so the keep is 3.9, not target/per_unit's 4.5.
 OVERSIZED = Position("long", 10.0, 100.0, 1000.0, stop_loss=99.0)
 
 
@@ -2032,12 +2033,12 @@ def test_trim_cuts_back_to_the_target_risk(trimming):
             "symbol": "CLUSDT",
             "side": "Sell",
             "orderType": "Market",
-            "qty": "5.5",
+            "qty": "6.1",
             "reduceOnly": True,
             "positionIdx": 0,
         }
     ]
-    assert out.sent == ["✂️ CL: риск 1.11% депо при цели 0.50% — режу 10→4.5"]
+    assert out.sent == ["✂️ CL: риск 1.11% депо при цели 0.50% — режу 10→3.9"]
     assert out.spoken == ["CL trimmed"]
 
 
@@ -2048,8 +2049,8 @@ def test_trim_cuts_even_a_small_overshoot(trimming):
 
     asyncio.run(bybit_watch.trim(http, {"CLUSDT": slightly}, out.send, out.speak))
 
-    assert [o["qty"] for o in http.orders] == ["1.5"]
-    assert out.sent == ["✂️ CL: риск 0.67% депо при цели 0.50% — режу 6→4.5"]
+    assert [o["qty"] for o in http.orders] == ["1.7"]
+    assert out.sent == ["✂️ CL: риск 0.67% депо при цели 0.50% — режу 6→4.3"]
 
 
 def test_trim_leaves_an_exact_position_alone(trimming):
@@ -2066,8 +2067,8 @@ def test_trim_leaves_an_exact_position_alone(trimming):
 def test_trim_cannot_cut_below_one_lot_step(trimming):
     """An overshoot smaller than the exchange step has nothing to sell."""
     http, out = trim_http(), Recorder()
-    # 5.05$ of risk against 5$, but the 0.05 cut is below the 0.1 step.
-    hair = Position("long", 4.55, 100.0, 455.0, stop_loss=99.0)
+    # 5.01$ of risk against 5$, but the 0.02 cut is below the 0.1 step.
+    hair = Position("long", 4.52, 100.0, 452.0, stop_loss=99.0)
 
     asyncio.run(bybit_watch.trim(http, {"CLUSDT": hair}, out.send, out.speak))
 
