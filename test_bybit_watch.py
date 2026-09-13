@@ -31,6 +31,8 @@ class FakeHTTP:
         self.pnl_rows: list[dict[str, Any]] = []
         self.kline_rows: list[list[str]] = []
         self.exec_rows: list[dict[str, Any]] = []
+        self.funding_rows: list[dict[str, Any]] = []
+        self.trade_rows: list[dict[str, Any]] = []
         self.equity_rows: list[dict[str, Any]] = []
         self.deposit_rows: list[dict[str, Any]] = []
         self.withdraw_rows: list[dict[str, Any]] = []
@@ -49,6 +51,10 @@ class FakeHTTP:
         if "/v5/market/kline" in url:
             return FakeResponse({"retCode": 0, "result": {"list": self.kline_rows}})
         if "/v5/execution/list" in url:
+            if "execType=Funding" in url:
+                return FakeResponse({"retCode": 0, "result": {"list": self.funding_rows}})
+            if "execType=Trade" in url:
+                return FakeResponse({"retCode": 0, "result": {"list": self.trade_rows}})
             return FakeResponse({"retCode": 0, "result": {"list": self.exec_rows}})
         if "/v5/account/wallet-balance" in url:
             return FakeResponse({"retCode": 0, "result": {"list": self.equity_rows}})
@@ -160,8 +166,9 @@ def test_get_raises_on_a_bybit_refusal(keyed):
         async def get(self, url, headers=None, timeout=None):
             return FakeResponse({"retCode": 10003, "retMsg": "API key is invalid."})
 
+    attempt = bybit_watch.positions(Refusing())
     with pytest.raises(RuntimeError, match="10003"):
-        asyncio.run(bybit_watch.positions(Refusing()))
+        asyncio.run(attempt)
 
 
 # --------------------------------------------------------------------------- #
@@ -627,7 +634,8 @@ def test_lev1_caps_positions_and_orders(keyed):
 
     assert text == "✅ FARTCOIN → 1x\n✅ OP → 1x"
     assert [o["symbol"] for o in http.orders] == ["FARTCOINUSDT", "OPUSDT"]
-    assert http.orders[0]["buyLeverage"] == "1" and http.orders[0]["sellLeverage"] == "1"
+    assert http.orders[0]["buyLeverage"] == "1"
+    assert http.orders[0]["sellLeverage"] == "1"
 
 
 def test_lev1_sweeps_the_rest_of_the_exchange_after_the_actives(keyed):
@@ -1236,7 +1244,8 @@ def test_journal_row_without_a_stop_falls_back_to_usdt():
 
     row = bybit_watch.journal_row("CLUSDT", was, {}, 5.4321)
 
-    assert row[0] == "" and row[4] == ""
+    assert row[0] == ""
+    assert row[4] == ""
     assert row[3] == "win"
     assert row[5] == 5.43  # plain net USDT, no risk to divide by
 
@@ -1259,7 +1268,8 @@ def test_close_chart_stays_on_the_configured_timeframe(keyed):
 
     png = asyncio.run(bybit_watch.close_chart(http, "FARTCOINUSDT", LONG, record))
 
-    assert png is not None and png.startswith(b"\x89PNG")
+    assert png is not None
+    assert png.startswith(b"\x89PNG")
     assert any("interval=15" in url and "limit=1000" in url for url in http.requests)
 
 
@@ -1329,7 +1339,8 @@ def test_closed_record_retries_until_bybit_writes_it(keyed, monkeypatch):
 
     record = asyncio.run(bybit_watch.closed_record(http, "FARTCOINUSDT"))
 
-    assert record is not None and record["closedPnl"] == "512.3"
+    assert record is not None
+    assert record["closedPnl"] == "512.3"
     assert http.asked == 3
 
 
@@ -1617,8 +1628,9 @@ def test_money_poll_survives_failures(keyed, monkeypatch, caplog):
     monkeypatch.setattr(bybit_watch.asyncio, "sleep", fake_sleep)
     out = Recorder()
 
+    attempt = bybit_watch.money_poll(Refusing(), out.send)
     with caplog.at_level("ERROR", logger="relay.bybit"), pytest.raises(asyncio.CancelledError):
-        asyncio.run(bybit_watch.money_poll(Refusing(), out.send))
+        asyncio.run(attempt)
 
     assert "money poll failed" in caplog.text
     assert out.sent == []
@@ -1631,8 +1643,9 @@ def test_money_poll_lets_cancellation_through(keyed):
 
     out = Recorder()
 
+    attempt = bybit_watch.money_poll(Cancelling(), out.send)
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(bybit_watch.money_poll(Cancelling(), out.send))
+        asyncio.run(attempt)
 
     assert out.sent == []
 
@@ -1651,8 +1664,9 @@ def test_money_poll_hands_ticks_through(keyed, monkeypatch):
     monkeypatch.setattr(bybit_watch, "money_tick", fake_tick)
     monkeypatch.setattr(bybit_watch.asyncio, "sleep", fake_sleep)
 
+    attempt = bybit_watch.money_poll(FakeHTTP(), Recorder().send)
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(bybit_watch.money_poll(FakeHTTP(), Recorder().send))
+        asyncio.run(attempt)
 
     assert ticks == [None, {"x"}]
 
@@ -1686,12 +1700,14 @@ def test_poll_survives_failures_and_keeps_going(keyed, monkeypatch, caplog):
 
     monkeypatch.setattr(bybit_watch.asyncio, "sleep", fake_sleep)
 
+    attempt = bybit_watch.poll(http, out.send, out.speak, out.send_photo)
     with caplog.at_level("ERROR", logger="relay.bybit"), pytest.raises(asyncio.CancelledError):
-        asyncio.run(bybit_watch.poll(http, out.send, out.speak, out.send_photo))
+        asyncio.run(attempt)
 
     assert "bybit poll failed" in caplog.text
     assert any(seconds >= 30 for seconds in slept)  # backed off after the failure
-    assert out.sent and out.sent[0].startswith("💸📈FARTCOIN")
+    assert out.sent
+    assert out.sent[0].startswith("💸📈FARTCOIN")
 
 
 def test_poll_lets_cancellation_through(keyed, monkeypatch):
@@ -1703,8 +1719,9 @@ def test_poll_lets_cancellation_through(keyed, monkeypatch):
 
     out = Recorder()
 
+    attempt = bybit_watch.poll(Cancelling(), out.send, out.speak, out.send_photo)
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(bybit_watch.poll(Cancelling(), out.send, out.speak, out.send_photo))
+        asyncio.run(attempt)
 
     assert out.sent == []
 
@@ -1941,7 +1958,7 @@ def test_breakeven_carries_the_funding_cost():
 
 def test_accrued_funding_sums_the_charges(keyed):
     http = FakeHTTP()
-    http.exec_rows = [{"execFee": "0.012"}, {"execFee": "-0.004"}]
+    http.funding_rows = [{"execFee": "0.012"}, {"execFee": "-0.004"}]
 
     assert asyncio.run(bybit_watch.accrued_funding(http, "BTCUSDT", 1_700_000_000_000)) == (
         pytest.approx(0.008)
@@ -1961,13 +1978,57 @@ def test_accrued_funding_survives_a_refusal(keyed, caplog):
         got = asyncio.run(bybit_watch.accrued_funding(Refusing(), "BTCUSDT", 1))
 
     assert got == 0.0
-    assert "no funding history" in caplog.text
+    assert "no Funding history" in caplog.text
+
+
+def test_breakeven_uses_the_real_entry_fee_when_known():
+    # A maker fill paid 20$/unit where the taker assumption would say 55.
+    be = bybit_watch.breakeven_price("long", 100_000.0, entry_fee_per_unit=20.0)
+    assert be == pytest.approx((100_000 + 20) / (1 - 0.00055))
+
+    be = bybit_watch.breakeven_price("short", 100_000.0, entry_fee_per_unit=20.0)
+    assert be == pytest.approx((100_000 - 20) / (1 + 0.00055))
+
+
+def test_entry_fee_per_unit_reads_the_trade_executions(keyed):
+    http = FakeHTTP()
+    http.trade_rows = [{"execFee": "0.3"}, {"execFee": "0.1"}]
+    pos = Position("long", 10.0, 100.0, 1000.0, created_ms=1_700_000_000_000)
+
+    assert asyncio.run(bybit_watch.entry_fee_per_unit(http, "CLUSDT", pos)) == pytest.approx(0.04)
+
+
+def test_entry_fee_per_unit_unknown_without_history(keyed):
+    pos = Position("long", 10.0, 100.0, 1000.0, created_ms=1_700_000_000_000)
+
+    assert asyncio.run(bybit_watch.entry_fee_per_unit(FakeHTTP(), "CLUSDT", pos)) is None
+
+
+def test_entry_fee_per_unit_unknown_for_a_zero_size(keyed):
+    http = FakeHTTP()
+    http.trade_rows = [{"execFee": "0.3"}]
+    pos = Position("long", 0.0, 100.0, 0.0, created_ms=1_700_000_000_000)
+
+    assert asyncio.run(bybit_watch.entry_fee_per_unit(http, "CLUSDT", pos)) is None
+
+
+def test_positions_pnl_line_uses_the_real_entry_fee(keyed):
+    http = ClosingHTTP()
+    http.position_pages = [[dict(row(), unrealisedPnl="512.3", createdTime="1700000000000")]]
+    # 3.75 really paid on the way in, plus the taker exit still to come
+    # (0.055% of 18748.7 = 10.31) — not the 20.62 double-taker estimate.
+    http.trade_rows = [{"execFee": "3.75"}]
+    http.funding_rows = [{"execFee": "0.4"}]
+
+    report = asyncio.run(bybit_watch.positions_report(http))
+
+    assert "−комса14.06−фанд0.40=" in report
 
 
 def test_positions_pnl_line_subtracts_funding(keyed):
     http = ClosingHTTP()
     http.position_pages = [[dict(row(), unrealisedPnl="512.3", createdTime="1700000000000")]]
-    http.exec_rows = [{"execFee": "0.4"}]
+    http.funding_rows = [{"execFee": "0.4"}]
 
     report = asyncio.run(bybit_watch.positions_report(http))
 
@@ -1977,7 +2038,7 @@ def test_positions_pnl_line_subtracts_funding(keyed):
 def test_positions_pnl_line_adds_received_funding(keyed):
     http = ClosingHTTP()
     http.position_pages = [[dict(row(), unrealisedPnl="512.3", createdTime="1700000000000")]]
-    http.exec_rows = [{"execFee": "-0.4"}]
+    http.funding_rows = [{"execFee": "-0.4"}]
 
     report = asyncio.run(bybit_watch.positions_report(http))
 
@@ -1988,7 +2049,7 @@ def test_tick_close_subtracts_funding(keyed):
     http, out = FakeHTTP(), Recorder()
     http.position_pages = [[]]
     http.pnl_rows = [closed()]
-    http.exec_rows = [{"execFee": "12.3"}]
+    http.funding_rows = [{"execFee": "12.3"}]
     aged = Position("long", 100.0, 0.16, 16.0, created_ms=1_700_000_000_000)
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": aged}, out.send, out.speak, out.send_photo))
@@ -2010,8 +2071,10 @@ def trim_http(step="0.1", min_qty="0.1"):
     return http
 
 
-# Entry 100, stop 99: 1$ risk per unit. Size 10 risks 10$; the target on a
-# 1000$ deposit at 0.5% is 5$ — so half the position has to go.
+# Entry 100, stop 99: 1$ of price risk per unit, 1.10945$ with both taker
+# fees (199 × 0.00055). Size 10 risks 11.09$ against a 5$ target (0.5% of a
+# 1000$ wallet). The budget also pays the entry fee on all ten units and the
+# cut's own market close, so the keep is 3.9, not target/per_unit's 4.5.
 OVERSIZED = Position("long", 10.0, 100.0, 1000.0, stop_loss=99.0)
 
 
@@ -2031,29 +2094,30 @@ def test_trim_cuts_back_to_the_target_risk(trimming):
             "symbol": "CLUSDT",
             "side": "Sell",
             "orderType": "Market",
-            "qty": "5",
+            "qty": "6.1",
             "reduceOnly": True,
             "positionIdx": 0,
         }
     ]
-    assert out.sent == ["✂️ CL: риск 1.00% депо при цели 0.50% — режу 10→5"]
+    assert out.sent == ["✂️ CL: риск 1.11% депо при цели 0.50% — режу 10→3.9"]
     assert out.spoken == ["CL trimmed"]
 
 
 def test_trim_cuts_even_a_small_overshoot(trimming):
-    """No tolerance band: 6$ of risk against a 5$ target loses the sixth."""
+    """No tolerance band: 6.66$ of risk against a 5$ target gets cut."""
     http, out = trim_http(), Recorder()
     slightly = Position("long", 6.0, 100.0, 600.0, stop_loss=99.0)
 
     asyncio.run(bybit_watch.trim(http, {"CLUSDT": slightly}, out.send, out.speak))
 
-    assert [o["qty"] for o in http.orders] == ["1"]
-    assert out.sent == ["✂️ CL: риск 0.60% депо при цели 0.50% — режу 6→5"]
+    assert [o["qty"] for o in http.orders] == ["1.7"]
+    assert out.sent == ["✂️ CL: риск 0.67% депо при цели 0.50% — режу 6→4.3"]
 
 
 def test_trim_leaves_an_exact_position_alone(trimming):
     http, out = trim_http(), Recorder()
-    exact = Position("long", 5.0, 100.0, 500.0, stop_loss=99.0)  # 5$ = target
+    # 4.5 units cost 4.99$ at the stop, fees included: inside the 5$ target.
+    exact = Position("long", 4.5, 100.0, 450.0, stop_loss=99.0)
 
     asyncio.run(bybit_watch.trim(http, {"CLUSDT": exact}, out.send, out.speak))
 
@@ -2064,7 +2128,8 @@ def test_trim_leaves_an_exact_position_alone(trimming):
 def test_trim_cannot_cut_below_one_lot_step(trimming):
     """An overshoot smaller than the exchange step has nothing to sell."""
     http, out = trim_http(), Recorder()
-    hair = Position("long", 5.05, 100.0, 505.0, stop_loss=99.0)  # 5.05$ vs 5$
+    # 5.01$ of risk against 5$, but the 0.02 cut is below the 0.1 step.
+    hair = Position("long", 4.52, 100.0, 452.0, stop_loss=99.0)
 
     asyncio.run(bybit_watch.trim(http, {"CLUSDT": hair}, out.send, out.speak))
 
@@ -2148,3 +2213,232 @@ def test_trim_fetches_equity_once_for_many_positions(trimming):
     asyncio.run(bybit_watch.trim(http, {"AUSDT": fine, "BUSDT": fine}, out.send, out.speak))
 
     assert http.requests.count(next(u for u in http.requests if "wallet-balance" in u)) == 1
+
+
+# --------------------------------------------------------------------------- #
+#  maker takes                                                                  #
+# --------------------------------------------------------------------------- #
+TAKEN = Position("long", 2.0, 100.0, 200.0, take_profit=103.0)
+EXITED = Position("long", 2.0, 100.0, 200.0, take_profit=103.0, maker_exit=True)
+
+
+def exit_row(order_id="e1", symbol="CLUSDT", price="103", qty="2", **extra):
+    return {
+        "orderId": order_id,
+        "symbol": symbol,
+        "reduceOnly": True,
+        "orderType": "Limit",
+        "price": price,
+        "qty": qty,
+        "stopOrderType": "",
+        **extra,
+    }
+
+
+@pytest.fixture
+def making(keyed, monkeypatch):
+    monkeypatch.setattr(bybit_watch, "TP_MAKER", True)
+
+
+def test_tp_maker_reposts_the_take_as_a_limit(making):
+    http, out = ClosingHTTP(), Recorder()
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": TAKEN}, out.send, out.speak))
+
+    assert http.orders == [
+        {
+            "category": "linear",
+            "symbol": "CLUSDT",
+            "side": "Sell",
+            "orderType": "Limit",
+            "qty": "2",
+            "price": "103",
+            "reduceOnly": True,
+            "positionIdx": 0,
+        },
+        {"category": "linear", "symbol": "CLUSDT", "takeProfit": "0", "positionIdx": 0},
+    ]
+    assert out.sent == ["🎯 CL: тейк 103 перевыставлен лимиткой (maker)"]
+    assert out.spoken == ["CL take reposted"]
+
+
+def test_tp_maker_only_clears_the_take_when_the_limit_already_stands(making):
+    http, out = ClosingHTTP(), Recorder()
+    http.order_rows = [exit_row()]
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": TAKEN}, out.send, out.speak))
+
+    assert http.orders == [
+        {"category": "linear", "symbol": "CLUSDT", "takeProfit": "0", "positionIdx": 0}
+    ]
+
+
+def test_tp_maker_resizes_the_exit_after_a_trim(making):
+    http, out = ClosingHTTP(), Recorder()
+    http.order_rows = [exit_row()]
+    trimmed = Position("long", 1.5, 100.0, 150.0, take_profit=103.0, maker_exit=True)
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": trimmed}, out.send, out.speak))
+
+    assert http.orders == [
+        {"category": "linear", "symbol": "CLUSDT", "orderId": "e1", "qty": "1.5"}
+    ]
+    assert out.sent == ["🎯 CL: тейк-лимитка подогнана под 1.5"]
+
+
+def test_tp_maker_leaves_a_matching_exit_alone(making):
+    http, out = ClosingHTTP(), Recorder()
+    http.order_rows = [exit_row()]
+
+    asyncio.run(
+        bybit_watch.tp_maker(http, {"CLUSDT": EXITED, "OPUSDT": NAKED}, out.send, out.speak)
+    )
+
+    assert http.orders == []
+    assert out.sent == []
+
+
+def test_tp_maker_waits_for_the_exit_it_just_placed(making):
+    # maker_exit but the order is not on the list yet: nothing to resize.
+    http, out = ClosingHTTP(), Recorder()
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": EXITED}, out.send, out.speak))
+
+    assert http.orders == []
+
+
+def test_tp_maker_cancels_an_orphaned_exit(making):
+    http, out = ClosingHTTP(), Recorder()
+    http.order_rows = [exit_row()]
+
+    asyncio.run(bybit_watch.tp_maker(http, {}, out.send, out.speak))
+
+    assert http.orders == [{"category": "linear", "symbol": "CLUSDT", "orderId": "e1"}]
+    assert out.sent == ["🎯 CL: тейк-лимитка осталась без позиции — отменена"]
+
+
+def test_tp_maker_orphan_cancel_survives_a_refusal(making, caplog):
+    http, out = ClosingHTTP(), Recorder()
+    http.order_rows = [exit_row()]
+    http.refuse_order = True
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        asyncio.run(bybit_watch.tp_maker(http, {}, out.send, out.speak))
+
+    assert out.sent == []
+    assert "orphan exit cancel failed" in caplog.text
+
+
+def test_tp_maker_orphan_respects_the_cooldown(making):
+    http, out = ClosingHTTP(), Recorder()
+    http.order_rows = [exit_row()]
+    bybit_watch._tp_cooldown["CLUSDT"] = __import__("time").monotonic()
+
+    asyncio.run(bybit_watch.tp_maker(http, {}, out.send, out.speak))
+
+    assert http.orders == []
+
+
+def test_tp_maker_respects_the_cooldown(making):
+    http, out = ClosingHTTP(), Recorder()
+    bybit_watch._tp_cooldown["CLUSDT"] = __import__("time").monotonic()
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": TAKEN}, out.send, out.speak))
+
+    assert http.orders == []
+
+
+def test_tp_maker_reports_a_refused_repost(making):
+    http, out = ClosingHTTP(), Recorder()
+    http.refuse_order = True
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": TAKEN}, out.send, out.speak))
+
+    assert out.sent == ["❌ CL: не смог перевыставить тейк (order rejected)"]
+
+
+def test_tp_maker_reports_a_refused_resize(making):
+    http, out = ClosingHTTP(), Recorder()
+    http.order_rows = [exit_row(qty="9")]
+    http.refuse_order = True
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": EXITED}, out.send, out.speak))
+
+    assert out.sent == ["❌ CL: не смог подогнать тейк (order rejected)"]
+
+
+def test_tp_maker_stays_dormant_when_disabled(keyed):
+    http, out = ClosingHTTP(), Recorder()
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": TAKEN}, out.send, out.speak))
+
+    assert http.requests == []
+    assert http.orders == []
+
+
+def test_maker_exits_survives_a_listing_failure(making, caplog):
+    class Refusing(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise OSError("down")
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        got = asyncio.run(bybit_watch.maker_exits(Refusing()))
+
+    assert got == {}
+    assert "exit order listing failed" in caplog.text
+
+
+def test_maker_exits_keeps_only_reduce_only_limits(keyed):
+    http = FakeHTTP()
+    http.order_rows = [
+        exit_row(),
+        exit_row(order_id="m1", symbol="AUSDT", reduceOnly=False),  # an entry
+        exit_row(order_id="m2", symbol="BUSDT", orderType="Market"),
+        exit_row(order_id="m3", symbol="CUSDT", stopOrderType="TakeProfit"),
+        exit_row(order_id="m4", symbol="DUSDT", price="0"),
+    ]
+
+    exits = asyncio.run(bybit_watch.maker_exits(http))
+
+    assert list(exits) == ["CLUSDT"]
+
+
+def test_positions_fold_the_maker_exit_back_into_the_take(making):
+    http = FakeHTTP()
+    http.position_pages = [[row(sl="0.15"), row(symbol="OPUSDT", tp="1.5", sl="1.2")]]
+    http.order_rows = [
+        exit_row(symbol="FARTCOINUSDT", price="0.2621"),
+        exit_row(order_id="g1", symbol="GHOSTUSDT"),  # no such position
+    ]
+
+    open_now = asyncio.run(bybit_watch.positions(http))
+
+    assert open_now["FARTCOINUSDT"].take_profit == 0.2621
+    assert open_now["FARTCOINUSDT"].maker_exit is True
+    assert open_now["OPUSDT"].take_profit == 1.5
+    assert open_now["OPUSDT"].maker_exit is False
+
+
+def test_positions_skip_the_exit_lookup_when_every_take_is_set(making):
+    http = FakeHTTP()
+    http.position_pages = [[row(tp="0.3", sl="0.15")]]
+
+    asyncio.run(bybit_watch.positions(http))
+
+    assert not any("order/realtime" in u for u in http.requests)
+
+
+def test_close_kind_calls_the_maker_exit_a_take(keyed, monkeypatch):
+    monkeypatch.setattr(bybit_watch, "TP_MAKER", True)
+    http = FakeHTTP()
+    http.history_rows = [{"createType": "CreateByUser", "reduceOnly": True, "orderType": "Limit"}]
+
+    assert asyncio.run(bybit_watch.close_kind(http, {"orderId": "x"})) == "тейк"
+
+
+def test_close_kind_keeps_a_market_hand_close_manual(keyed, monkeypatch):
+    monkeypatch.setattr(bybit_watch, "TP_MAKER", True)
+    http = FakeHTTP()
+    http.history_rows = [{"createType": "CreateByUser", "orderType": "Market"}]
+
+    assert asyncio.run(bybit_watch.close_kind(http, {"orderId": "x"})) == "руками"

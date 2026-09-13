@@ -342,6 +342,73 @@ def _register_listeners(client, http: httpx.AsyncClient, stats: commands.Stats) 
         await _relay_watched(http, stats, event)
 
 
+def _links_pair() -> tuple[str, str]:
+    """(full links for /links, masked links for the up notice).
+
+    /links hands out the full webhook URL on request; the up notice masks
+    the secret, since it is the webhook's only auth and the chat history
+    outlives the moment.
+    """
+    links = shown = ""
+    if tv_alerts.JOURNAL_URL:
+        links = shown = f"\n📒 {tv_alerts.JOURNAL_URL}"
+    if tv_alerts.enabled() and tv_alerts.TV_PUBLIC_URL:
+        links += f"\n📡 {tv_alerts.TV_PUBLIC_URL}/tv/{tv_alerts.TV_WEBHOOK_SECRET}"
+        shown += f"\n📡 {tv_alerts.TV_PUBLIC_URL}/tv/… (/links)"
+    return links, shown
+
+
+def _command_handlers(http: httpx.AsyncClient, links: str) -> commands.Handlers:
+    """The Bybit-side callables the chat commands reach."""
+    return commands.Handlers(
+        positions=lambda: bybit_watch.positions_report(
+            http, lambda caption, pngs: send_album_via_bot(http, caption, pngs)
+        ),
+        stop_all=lambda: bybit_watch.close_everything(http),
+        close_one=lambda arg: bybit_watch.close_position(http, arg),
+        market=lambda: bybit_watch.market_report(
+            http, lambda caption, png: send_photo_via_bot(http, caption, png)
+        ),
+        statistics=lambda arg: bybit_watch.stats_report(
+            http, lambda caption, png: send_photo_via_bot(http, caption, png), arg
+        ),
+        links=links.strip(),
+        ip=lambda: ip_watch.current(http),
+        lev_one=lambda arg: bybit_watch.force_leverage_one(http, arg),
+    )
+
+
+def _spawn_watchers(http: httpx.AsyncClient) -> set[asyncio.Task]:
+    """Start every configured background watcher except the TV webhook."""
+    background: set[asyncio.Task] = set()
+    if bybit_watch.enabled():
+        background.add(
+            asyncio.create_task(
+                bybit_watch.poll(
+                    http,
+                    # The watcher composes its own markup: HTML is safe.
+                    lambda text: send_via_bot(http, text, True),
+                    speaker.trade,
+                    lambda caption, png: send_photo_via_bot(http, caption, png),
+                )
+            )
+        )
+        background.add(
+            asyncio.create_task(bybit_watch.money_poll(http, lambda text: send_via_bot(http, text)))
+        )
+    if sizer.enabled():
+        background.add(asyncio.create_task(sizer.poll(http, lambda text: send_via_bot(http, text))))
+    if sheets.enabled():
+        background.add(asyncio.create_task(sheets.weekly(http)))
+    if ip_watch.enabled():
+        background.add(
+            asyncio.create_task(
+                ip_watch.poll(http, lambda text: send_via_bot(http, text), speaker.trade)
+            )
+        )
+    return background
+
+
 async def run() -> None:
     api_id, api_hash = require_config()
     client = _client(api_id, api_hash)
@@ -381,15 +448,7 @@ async def run() -> None:
             except Exception:  # noqa: BLE001
                 ip = ""
             net = f" · 🌐 {ip}" if ip else ""
-            # /links hands out the full webhook URL on request; the up notice
-            # masks the secret, since it is the webhook's only auth and the
-            # chat history outlives the moment.
-            links = shown = ""
-            if tv_alerts.JOURNAL_URL:
-                links = shown = f"\n📒 {tv_alerts.JOURNAL_URL}"
-            if tv_alerts.enabled() and tv_alerts.TV_PUBLIC_URL:
-                links += f"\n📡 {tv_alerts.TV_PUBLIC_URL}/tv/{tv_alerts.TV_WEBHOOK_SECRET}"
-                shown += f"\n📡 {tv_alerts.TV_PUBLIC_URL}/tv/… (/links)"
+            links, shown = _links_pair()
             await notify(
                 http, f"🟢 {RELAY_NAME} up — listening {SOURCE} as @{who}{speaking}{net}{shown}"
             )
@@ -403,53 +462,10 @@ async def run() -> None:
                     lambda text, html=False: send_via_bot(http, text, html),
                     speaker.announce,
                     speaker.enabled(),
-                    lambda: bybit_watch.positions_report(
-                        http, lambda caption, pngs: send_album_via_bot(http, caption, pngs)
-                    ),
-                    lambda: bybit_watch.close_everything(http),
-                    lambda arg: bybit_watch.close_position(http, arg),
-                    lambda: bybit_watch.market_report(
-                        http, lambda caption, png: send_photo_via_bot(http, caption, png)
-                    ),
-                    lambda arg: bybit_watch.stats_report(
-                        http, lambda caption, png: send_photo_via_bot(http, caption, png), arg
-                    ),
-                    links.strip(),
-                    lambda: ip_watch.current(http),
-                    lambda arg: bybit_watch.force_leverage_one(http, arg),
+                    _command_handlers(http, links),
                 )
             )
-            background = {answering}
-            if bybit_watch.enabled():
-                background.add(
-                    asyncio.create_task(
-                        bybit_watch.poll(
-                            http,
-                            # The watcher composes its own markup: HTML is safe.
-                            lambda text: send_via_bot(http, text, True),
-                            speaker.trade,
-                            lambda caption, png: send_photo_via_bot(http, caption, png),
-                        )
-                    )
-                )
-            if sizer.enabled():
-                background.add(
-                    asyncio.create_task(sizer.poll(http, lambda text: send_via_bot(http, text)))
-                )
-            if bybit_watch.enabled():
-                background.add(
-                    asyncio.create_task(
-                        bybit_watch.money_poll(http, lambda text: send_via_bot(http, text))
-                    )
-                )
-            if sheets.enabled():
-                background.add(asyncio.create_task(sheets.weekly(http)))
-            if ip_watch.enabled():
-                background.add(
-                    asyncio.create_task(
-                        ip_watch.poll(http, lambda text: send_via_bot(http, text), speaker.trade)
-                    )
-                )
+            background = {answering} | _spawn_watchers(http)
             if tv_alerts.enabled():
                 alerts: asyncio.Queue = asyncio.Queue()
                 webhook = tv_alerts.serve(asyncio.get_running_loop(), alerts)

@@ -65,6 +65,125 @@ def _scale(low: float, high: float):
     return to_y
 
 
+@dataclass(frozen=True)
+class Notes:
+    """The annotations pinned to the level lines, split on " | " into rows."""
+
+    entry: str = ""
+    tp: str = ""
+    sl: str = ""
+    exit: str = ""
+
+
+def _grid(draw, to_y, lowest: float, highest: float, chart_right: float) -> None:
+    """A faint price grid, TradingView-style, under everything else."""
+    span = (highest - lowest) or 1.0
+    for i in range(1, 8):
+        price = lowest + span * i / 8
+        y = to_y(price)
+        draw.line((MARGIN, y, chart_right, y), fill=GRID, width=1)
+        draw.text((chart_right + 8, y - 8), _price(price), fill=GRID_TEXT, font=LABEL_FONT)
+
+
+def _draw_zones(
+    draw,
+    to_y,
+    left: float,
+    right: float,
+    side: str,
+    entry: float,
+    take_profit: float | None,
+    stop_loss: float | None,
+    exit_price: float | None,
+) -> None:
+    """TradingView-style: green between entry and target, red between entry
+    and stop — on finished trades too, spanning entry bar to exit bar. Only
+    a trade that carried no levels at all falls back to a single zone
+    colored by how it went."""
+
+    def zone(a: float, b: float, fill: tuple[int, int, int, int]) -> None:
+        draw.rectangle((left, to_y(max(a, b)), right, to_y(min(a, b))), fill=fill)
+
+    if take_profit:
+        zone(entry, take_profit, PROFIT_FILL)
+    if stop_loss:
+        zone(entry, stop_loss, RISK_FILL)
+    if exit_price is not None and not take_profit and not stop_loss:
+        won = (exit_price >= entry) == (side == "long")
+        zone(entry, exit_price, PROFIT_FILL if won else RISK_FILL)
+
+
+def _draw_candles(draw, to_y, candles: list[Candle], step: float, x_of) -> None:
+    """At TradingView-zoom densities a bar is a single pixel column."""
+    body = max(1.0, step * 0.7)
+    for i, candle in enumerate(candles):
+        x = x_of(i)
+        color = UP if candle.close >= candle.open else DOWN
+        draw.line((x, to_y(candle.high), x, to_y(candle.low)), fill=color, width=1)
+        top, bottom = sorted((to_y(candle.open), to_y(candle.close)))
+        draw.rectangle((x - body / 2, top, x + body / 2, max(bottom, top + 1)), fill=color)
+
+
+def _level(
+    draw,
+    to_y,
+    chart_right: float,
+    price: float,
+    color: tuple[int, int, int],
+    tag: str,
+    note: str = "",
+) -> None:
+    """One dashed level line with its gutter label and stacked note rows."""
+    y = to_y(price)
+    # Full-width dashes, TradingView-style: a level is a level, not a
+    # zone decoration — on a finished trade the zone is a sliver at the
+    # right edge and zone-wide dashes were invisible.
+    for x in range(int(MARGIN), int(chart_right) - 6, 12):  # dashed
+        draw.line((x, y, x + 6, y), fill=color, width=2)
+    # Blot out the grid label underneath so the level's own label reads.
+    draw.rectangle((chart_right + 2, y - 12, WIDTH - 2, y + 12), fill=BACKGROUND)
+    draw.text((chart_right + 8, y - 8), f"{tag} {_price(price)}", fill=color, font=LABEL_FONT)
+    if not note:
+        return
+    # The figures sit right against their line, inside the zone,
+    # stacked upward one per " | " part so nothing overflows it —
+    # each on its own backing so no dashed line strikes the text.
+    # ASCII only: the bundled font has no cyrillic glyphs.
+    for stack, part in enumerate(reversed(note.split(" | "))):
+        width = draw.textlength(part, font=LABEL_FONT)
+        x0 = chart_right - width - 12
+        y0 = y - 30 - 27 * stack
+        draw.rectangle((x0 - 6, y0 - 3, x0 + width + 6, y0 + 22), fill=BACKGROUND)
+        draw.text((x0, y0), part, fill=color, font=LABEL_FONT)
+
+
+def _draw_levels(
+    draw,
+    to_y,
+    chart_right: float,
+    side: str,
+    entry: float,
+    take_profit: float | None,
+    stop_loss: float | None,
+    exit_price: float | None,
+    breakeven: float | None,
+    notes: Notes,
+    plain: bool,
+) -> None:
+    """Every level line the trade carries, notes attached."""
+    if breakeven is not None:
+        _level(draw, to_y, chart_right, breakeven, BREAKEVEN, "be")
+    if not plain:
+        _level(draw, to_y, chart_right, entry, ENTRY, "in", notes.entry)
+    if take_profit:
+        _level(draw, to_y, chart_right, take_profit, UP, "tp", notes.tp)
+    if stop_loss:
+        _level(draw, to_y, chart_right, stop_loss, DOWN, "sl", notes.sl)
+    if exit_price is not None:
+        won = (exit_price >= entry) == (side == "long")
+        _level(draw, to_y, chart_right, exit_price, UP if won else DOWN, "out", notes.exit)
+
+
 def render(
     symbol: str,
     side: str,
@@ -74,25 +193,23 @@ def render(
     stop_loss: float | None = None,
     *,
     entry_index: int = 0,
-    exit_index: int | None = None,
-    exit_price: float | None = None,
+    exit_at: tuple[int, float] | None = None,
     pad_right: int = 0,
     timeframe: str = "",
-    entry_note: str = "",
-    tp_note: str = "",
-    sl_note: str = "",
-    exit_note: str = "",
+    notes: Notes | None = None,
     breakeven: float | None = None,
     plain: bool = False,
 ) -> bytes:
     """The chart as PNG bytes. Raises on empty candles: nothing to draw.
 
-    `entry_index`/`exit_index` are bar positions; zones and the entry line
-    span exactly that range. No `exit_index` means the trade is still open
-    and everything runs to the right edge.
+    `entry_index` and `exit_at`'s bar index are bar positions; zones and the
+    entry line span exactly that range. No `exit_at` means the trade is still
+    open and everything runs to the right edge.
     """
     if not candles:
         raise ValueError("no candles")
+    notes = notes or Notes()
+    exit_index, exit_price = exit_at if exit_at is not None else (None, None)
 
     levels = [entry, take_profit, stop_loss, exit_price, breakeven]
     prices = [price for price in levels if price is not None]
@@ -106,14 +223,7 @@ def render(
     chart_right = WIDTH - PRICE_GUTTER
     slots = len(candles) + pad_right
     step = (chart_right - MARGIN) / slots
-
-    # A faint price grid, TradingView-style, under everything else.
-    span = (highest - lowest) or 1.0
-    for i in range(1, 8):
-        price = lowest + span * i / 8
-        y = to_y(price)
-        draw.line((MARGIN, y, chart_right, y), fill=GRID, width=1)
-        draw.text((chart_right + 8, y - 8), _price(price), fill=GRID_TEXT, font=LABEL_FONT)
+    _grid(draw, to_y, lowest, highest, chart_right)
 
     def x_of(index: int) -> float:
         return MARGIN + step * index + step / 2
@@ -122,64 +232,21 @@ def render(
     # gets a zone one full bar wide instead of a zero-width sliver.
     zone_left = x_of(entry_index) - step / 2
     zone_right = x_of(exit_index) + step / 2 if exit_index is not None else chart_right
-
-    def zone(a: float, b: float, fill: tuple[int, int, int, int]) -> None:
-        draw.rectangle((zone_left, to_y(max(a, b)), zone_right, to_y(min(a, b))), fill=fill)
-
-    # TradingView-style: green between entry and target, red between entry
-    # and stop — on finished trades too, spanning entry bar to exit bar.
-    # Only a trade that carried no levels at all falls back to a single
-    # zone colored by how it went.
-    if take_profit:
-        zone(entry, take_profit, PROFIT_FILL)
-    if stop_loss:
-        zone(entry, stop_loss, RISK_FILL)
-    if exit_price is not None and not take_profit and not stop_loss:
-        won = (exit_price >= entry) == (side == "long")
-        zone(entry, exit_price, PROFIT_FILL if won else RISK_FILL)
-
-    # At TradingView-zoom densities a bar is a single pixel column.
-    body = max(1.0, step * 0.7)
-    for i, candle in enumerate(candles):
-        x = x_of(i)
-        color = UP if candle.close >= candle.open else DOWN
-        draw.line((x, to_y(candle.high), x, to_y(candle.low)), fill=color, width=1)
-        top, bottom = sorted((to_y(candle.open), to_y(candle.close)))
-        draw.rectangle((x - body / 2, top, x + body / 2, max(bottom, top + 1)), fill=color)
-
-    def level(price: float, color: tuple[int, int, int], tag: str, note: str = "") -> None:
-        y = to_y(price)
-        # Full-width dashes, TradingView-style: a level is a level, not a
-        # zone decoration — on a finished trade the zone is a sliver at the
-        # right edge and zone-wide dashes were invisible.
-        for x in range(int(MARGIN), int(chart_right) - 6, 12):  # dashed
-            draw.line((x, y, x + 6, y), fill=color, width=2)
-        # Blot out the grid label underneath so the level's own label reads.
-        draw.rectangle((chart_right + 2, y - 12, WIDTH - 2, y + 12), fill=BACKGROUND)
-        draw.text((chart_right + 8, y - 8), f"{tag} {_price(price)}", fill=color, font=LABEL_FONT)
-        if note:
-            # The figures sit right against their line, inside the zone,
-            # stacked upward one per " | " part so nothing overflows it —
-            # each on its own backing so no dashed line strikes the text.
-            # ASCII only: the bundled font has no cyrillic glyphs.
-            for stack, part in enumerate(reversed(note.split(" | "))):
-                width = draw.textlength(part, font=LABEL_FONT)
-                x0 = chart_right - width - 12
-                y0 = y - 30 - 27 * stack
-                draw.rectangle((x0 - 6, y0 - 3, x0 + width + 6, y0 + 22), fill=BACKGROUND)
-                draw.text((x0, y0), part, fill=color, font=LABEL_FONT)
-
-    if breakeven is not None:
-        level(breakeven, BREAKEVEN, "be")
-    if not plain:
-        level(entry, ENTRY, "in", entry_note)
-    if take_profit:
-        level(take_profit, UP, "tp", tp_note)
-    if stop_loss:
-        level(stop_loss, DOWN, "sl", sl_note)
-    if exit_price is not None:
-        won = (exit_price >= entry) == (side == "long")
-        level(exit_price, UP if won else DOWN, "out", exit_note)
+    _draw_zones(draw, to_y, zone_left, zone_right, side, entry, take_profit, stop_loss, exit_price)
+    _draw_candles(draw, to_y, candles, step, x_of)
+    _draw_levels(
+        draw,
+        to_y,
+        chart_right,
+        side,
+        entry,
+        take_profit,
+        stop_loss,
+        exit_price,
+        breakeven,
+        notes,
+        plain,
+    )
 
     title = f"{symbol} · {side}" if side else symbol
     if timeframe:
@@ -202,6 +269,33 @@ def side_by_side(pngs: list[bytes]) -> bytes:
     out = BytesIO()
     canvas.save(out, format="PNG")
     return out.getvalue()
+
+
+def _pnl_bars(draw, to_y, daily: list[float], step: float, zero: float) -> None:
+    """One bar per day, its figure on top when the bars are wide enough."""
+    body = max(2.0, step * 0.6)
+    for i, value in enumerate(daily):
+        x = MARGIN + step * i + step / 2
+        color = UP if value >= 0 else DOWN
+        top, bottom = sorted((zero, to_y(value)))
+        draw.rectangle((x - body / 2, top, x + body / 2, max(bottom, top + 1)), fill=color)
+        # The day's figure at the bar's end, when the bars are wide enough
+        # for the labels not to collide.
+        if value and step >= 45:
+            label = f"{value:+.2f}"
+            x_text = x - draw.textlength(label, font=LABEL_FONT) / 2
+            y_text = top - 22 if value > 0 else bottom + 6
+            draw.text((x_text, y_text), label, fill=color, font=LABEL_FONT)
+
+
+def _date_axis(draw, daily: list[float], step: float, end: date) -> None:
+    """Around ten date marks along the bottom; denser charts skip days."""
+    stride = max(1, (len(daily) + 9) // 10)
+    for i in range(0, len(daily), stride):
+        day = end - timedelta(days=len(daily) - 1 - i)
+        label = day.strftime("%d.%m")
+        x_text = MARGIN + step * i + step / 2 - draw.textlength(label, font=LABEL_FONT) / 2
+        draw.text((x_text, HEIGHT - 26), label, fill=GRID_TEXT, font=LABEL_FONT)
 
 
 def equity_curve(
@@ -234,28 +328,9 @@ def equity_curve(
     draw.line((MARGIN, zero, chart_right, zero), fill=GRID_TEXT, width=1)
     draw.text((chart_right + 8, zero - 8), "0", fill=GRID_TEXT, font=LABEL_FONT)
 
-    body = max(2.0, step * 0.6)
-    for i, value in enumerate(daily):
-        x = MARGIN + step * i + step / 2
-        color = UP if value >= 0 else DOWN
-        top, bottom = sorted((zero, to_y(value)))
-        draw.rectangle((x - body / 2, top, x + body / 2, max(bottom, top + 1)), fill=color)
-        # The day's figure at the bar's end, when the bars are wide enough
-        # for the labels not to collide.
-        if value and step >= 45:
-            label = f"{value:+.2f}"
-            x_text = x - draw.textlength(label, font=LABEL_FONT) / 2
-            y_text = top - 22 if value > 0 else bottom + 6
-            draw.text((x_text, y_text), label, fill=color, font=LABEL_FONT)
-
+    _pnl_bars(draw, to_y, daily, step, zero)
     if end is not None:
-        # Around ten date marks along the bottom, denser charts skip days.
-        stride = max(1, (len(daily) + 9) // 10)
-        for i in range(0, len(daily), stride):
-            day = end - timedelta(days=len(daily) - 1 - i)
-            label = day.strftime("%d.%m")
-            x_text = MARGIN + step * i + step / 2 - draw.textlength(label, font=LABEL_FONT) / 2
-            draw.text((x_text, HEIGHT - 26), label, fill=GRID_TEXT, font=LABEL_FONT)
+        _date_axis(draw, daily, step, end)
 
     total = sum(daily)
     draw.text((MARGIN + 6, MARGIN + 4), title, fill=TEXT, font=TITLE_FONT)

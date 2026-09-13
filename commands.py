@@ -15,6 +15,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 import httpx
 from dotenv import load_dotenv
@@ -148,6 +149,52 @@ def status_text(stats: Stats, speaking: bool) -> str:
     )
 
 
+@dataclass
+class Handlers:
+    """The report and action callables the commands can reach, all optional.
+
+    Async callables from the Bybit side (and the IP watcher); a command whose
+    handler is missing falls through to the help text.
+    """
+
+    positions: Any = None
+    stop_all: Any = None
+    close_one: Any = None
+    market: Any = None
+    statistics: Any = None
+    links: str = ""
+    ip: Any = None
+    lev_one: Any = None
+
+
+async def _status(stats: Stats, speaking: bool, handlers: Handlers, send) -> None:
+    """/status: uptime and counters, the external IP, the market snapshot."""
+    text = status_text(stats, speaking)
+    if handlers.ip is not None:
+        try:
+            text += f"\n🌐 {await handlers.ip()}"
+        # Deliberately broad: a flaky IP lookup must not eat /status.
+        except Exception:  # noqa: BLE001
+            text += "\n🌐 IP недоступен"
+    await send(text)
+    if handlers.market is not None:
+        await handlers.market()
+
+
+async def _report(pending, send) -> None:
+    """Send a report; an empty one already went out with its own media."""
+    report = await pending
+    if report:
+        await send(report, True)  # our own markup: HTML bold is safe
+
+
+async def _test_delivery(stats: Stats, send, speak) -> None:
+    """/test: one sample line through both the bot and the speaker."""
+    await send(f"{SAMPLE_ALERT} (test)")
+    spoke = await speak(SAMPLE_ALERT, stats.relayed + 1)
+    await send("spoke it" if spoke else "speaker silent")
+
+
 async def dispatch(
     command: str,
     arg: str,
@@ -155,55 +202,28 @@ async def dispatch(
     send,
     speak,
     speaking: bool,
-    positions=None,
-    stop_all=None,
-    close_one=None,
-    market=None,
-    statistics=None,
-    links: str = "",
-    ip=None,
-    lev_one=None,
+    handlers: Handlers | None = None,
 ) -> None:
-    """Answer one command. Unknown commands get the help text.
-
-    `positions`, `stop_all` and `close_one` are optional async callables from
-    the Bybit side; without them their commands fall through to the help text.
-    """
+    """Answer one command. Unknown commands get the help text."""
+    h = handlers or Handlers()
     if command == "ping":
         await send("pong")
     elif command == "status":
-        text = status_text(stats, speaking)
-        if ip is not None:
-            try:
-                text += f"\n🌐 {await ip()}"
-            # Deliberately broad: a flaky IP lookup must not eat /status.
-            except Exception:  # noqa: BLE001
-                text += "\n🌐 IP недоступен"
-        await send(text)
-        if market is not None:
-            await market()
-    elif command == "positions" and positions is not None:
-        # An empty answer means the report already went out as a media group.
-        report = await positions()
-        if report:
-            await send(report, True)  # our own markup: HTML bold is safe
-    elif command in ("statistics", "stats") and statistics is not None:
-        # An empty answer means the report already went out with the chart.
-        report = await statistics(arg)
-        if report:
-            await send(report, True)
-    elif command == "stopall" and stop_all is not None:
-        await send(await stop_all())
-    elif command == "close" and close_one is not None:
-        await send(await close_one(arg))
-    elif command == "lev1" and lev_one is not None:
-        await send(await lev_one(arg))
-    elif command == "links" and links:
-        await send(links)
+        await _status(stats, speaking, h, send)
+    elif command == "positions" and h.positions is not None:
+        await _report(h.positions(), send)
+    elif command in ("statistics", "stats") and h.statistics is not None:
+        await _report(h.statistics(arg), send)
+    elif command == "stopall" and h.stop_all is not None:
+        await send(await h.stop_all())
+    elif command == "close" and h.close_one is not None:
+        await send(await h.close_one(arg))
+    elif command == "lev1" and h.lev_one is not None:
+        await send(await h.lev_one(arg))
+    elif command == "links" and h.links:
+        await send(h.links)
     elif command == "test":
-        await send(f"{SAMPLE_ALERT} (test)")
-        spoke = await speak(SAMPLE_ALERT, stats.relayed + 1)
-        await send("spoke it" if spoke else "speaker silent")
+        await _test_delivery(stats, send, speak)
     else:
         await send(HELP)
 
@@ -214,14 +234,7 @@ async def poll(
     send,
     speak,
     speaking: bool,
-    positions=None,
-    stop_all=None,
-    close_one=None,
-    market=None,
-    statistics=None,
-    links: str = "",
-    ip=None,
-    lev_one=None,
+    handlers: Handlers | None = None,
 ) -> None:
     """Answer commands until cancelled. Never lets one failure end the loop."""
     offset: int | None = None
@@ -241,22 +254,7 @@ async def poll(
             command, arg = parsed
             log.info("command: /%s %s", command, arg)
             try:
-                await dispatch(
-                    command,
-                    arg,
-                    stats,
-                    send,
-                    speak,
-                    speaking,
-                    positions,
-                    stop_all,
-                    close_one,
-                    market,
-                    statistics,
-                    links,
-                    ip,
-                    lev_one,
-                )
+                await dispatch(command, arg, stats, send, speak, speaking, handlers)
             # Deliberately broad: one bad command must not end the loop.
             except Exception:  # noqa: BLE001
                 log.exception("/%s failed", command)
