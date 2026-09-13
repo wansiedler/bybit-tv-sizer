@@ -113,8 +113,9 @@ def test_weekly_posts_the_summary_every_wakeup(monkeypatch):
     monkeypatch.setattr(sheets.asyncio, "sleep", fake_sleep)
     monkeypatch.setattr(sheets, "seconds_to_sunday", lambda now: 1.0)
 
+    attempt = sheets.weekly(None)
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(sheets.weekly(None))
+        asyncio.run(attempt)
 
     assert posted == [True, True]
     assert naps == [1.0, 1.0, 1.0]
@@ -138,4 +139,5 @@ def test_week_summary_posts_the_flag():
     ok = asyncio.run(sheets.week_summary(FakeHTTP()))
 
     assert ok is True
-    assert sent["week"] is True and "secret" in sent
+    assert sent["week"] is True
+    assert "secret" in sent

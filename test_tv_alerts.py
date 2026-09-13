@@ -190,8 +190,9 @@ def test_pump_lets_cancellation_through():
     async def run():
         queue: asyncio.Queue = asyncio.Queue()
         queue.put_nowait("x")
+        pumping = tv_alerts.pump(queue, Cancelling().send, Cancelling().speak)
         with pytest.raises(asyncio.CancelledError):
-            await tv_alerts.pump(queue, Cancelling().send, Cancelling().speak)
+            await pumping
 
     asyncio.run(run())
 

@@ -73,8 +73,7 @@ def test_render_draws_a_finished_trade(side, exit_price):
         CANDLES,
         0.162,
         entry_index=0,
-        exit_index=2,
-        exit_price=exit_price,
+        exit_at=(2, exit_price),
         pad_right=2,
     )
 
@@ -91,8 +90,7 @@ def test_render_finished_trade_keeps_tp_and_sl_as_lines():
         0.150,
         0.170,
         entry_index=1,
-        exit_index=2,
-        exit_price=0.158,
+        exit_at=(2, 0.158),
     )
 
     assert png.startswith(b"\x89PNG")
@@ -106,8 +104,7 @@ def test_render_same_bar_trade_still_shows_a_zone():
         CANDLES,
         1.413,
         entry_index=1,
-        exit_index=1,
-        exit_price=1.417,
+        exit_at=(1, 1.417),
         pad_right=2,
     )
 
