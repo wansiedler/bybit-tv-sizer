@@ -195,6 +195,25 @@ async def _test_delivery(stats: Stats, send, speak) -> None:
     await send("spoke it" if spoke else "speaker silent")
 
 
+async def _handled_command(command: str, arg: str, h: Handlers, send) -> bool:
+    """Answer a command that needs a handler; False when it has none to reach."""
+    if command == "positions" and h.positions is not None:
+        await _report(h.positions(), send)
+    elif command in ("statistics", "stats") and h.statistics is not None:
+        await _report(h.statistics(arg), send)
+    elif command == "stopall" and h.stop_all is not None:
+        await send(await h.stop_all())
+    elif command == "close" and h.close_one is not None:
+        await send(await h.close_one(arg))
+    elif command == "lev1" and h.lev_one is not None:
+        await send(await h.lev_one(arg))
+    elif command == "links" and h.links:
+        await send(h.links)
+    else:
+        return False
+    return True
+
+
 async def dispatch(
     command: str,
     arg: str,
@@ -210,21 +229,9 @@ async def dispatch(
         await send("pong")
     elif command == "status":
         await _status(stats, speaking, h, send)
-    elif command == "positions" and h.positions is not None:
-        await _report(h.positions(), send)
-    elif command in ("statistics", "stats") and h.statistics is not None:
-        await _report(h.statistics(arg), send)
-    elif command == "stopall" and h.stop_all is not None:
-        await send(await h.stop_all())
-    elif command == "close" and h.close_one is not None:
-        await send(await h.close_one(arg))
-    elif command == "lev1" and h.lev_one is not None:
-        await send(await h.lev_one(arg))
-    elif command == "links" and h.links:
-        await send(h.links)
     elif command == "test":
         await _test_delivery(stats, send, speak)
-    else:
+    elif not await _handled_command(command, arg, h, send):
         await send(HELP)
 
 
