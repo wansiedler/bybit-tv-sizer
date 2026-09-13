@@ -83,6 +83,7 @@ CHART_BARS = min(int(os.getenv("CHART_BARS", "1800")), 3000)
 RECV_WINDOW = "5000"
 
 _POSITIONS = "/v5/position/list"
+_ORDERS = "/v5/order/realtime"
 _NO_KEYS = "Bybit не подключён: нет API-ключей"
 _NO_ANSWER = "Bybit не ответил, попробуй ещё раз"
 
@@ -191,7 +192,7 @@ async def maker_exits(http: httpx.AsyncClient) -> dict[str, dict]:
     """
     try:
         result = await _get(
-            http, "/v5/order/realtime", {"category": "linear", "settleCoin": "USDT"}
+            http, _ORDERS, {"category": "linear", "settleCoin": "USDT"}
         )
     # Deliberately broad: no order answer must not break the position poll.
     except Exception:  # noqa: BLE001
@@ -492,7 +493,7 @@ async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, sp
     naked: dict[str, dict] = {}
     try:
         result = await _get(
-            http, "/v5/order/realtime", {"category": "linear", "settleCoin": "USDT"}
+            http, _ORDERS, {"category": "linear", "settleCoin": "USDT"}
         )
         for r in result.get("list") or []:
             if r.get("reduceOnly") or r.get("stopOrderType") or r.get("closeOnTrigger"):
@@ -605,7 +606,7 @@ async def _active_symbols(http: httpx.AsyncClient) -> set[str]:
     symbols: set[str] = set()
     result = await _get(http, _POSITIONS, {"category": "linear", "settleCoin": "USDT"})
     symbols |= {r["symbol"] for r in result.get("list", []) if float(r.get("size") or 0) != 0}
-    result = await _get(http, "/v5/order/realtime", {"category": "linear", "settleCoin": "USDT"})
+    result = await _get(http, _ORDERS, {"category": "linear", "settleCoin": "USDT"})
     symbols |= {r["symbol"] for r in result.get("list", [])}
     return symbols
 
@@ -1398,7 +1399,11 @@ def _usd(amount: float) -> str:
     """Signed money: cents normally, two significant fraction digits below."""
     if abs(amount) >= 0.995:
         return f"{amount:+,.2f}"
-    return f"+{_sig2(amount)}" if amount > 0 else f"-{_sig2(abs(amount))}" if amount else "+0.00"
+    if amount > 0:
+        return f"+{_sig2(amount)}"
+    if amount < 0:
+        return f"-{_sig2(abs(amount))}"
+    return "+0.00"
 
 
 def _val(value: float) -> str:

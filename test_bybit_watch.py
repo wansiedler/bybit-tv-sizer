@@ -166,8 +166,9 @@ def test_get_raises_on_a_bybit_refusal(keyed):
         async def get(self, url, headers=None, timeout=None):
             return FakeResponse({"retCode": 10003, "retMsg": "API key is invalid."})
 
+    attempt = bybit_watch.positions(Refusing())
     with pytest.raises(RuntimeError, match="10003"):
-        asyncio.run(bybit_watch.positions(Refusing()))
+        asyncio.run(attempt)
 
 
 # --------------------------------------------------------------------------- #
@@ -633,7 +634,8 @@ def test_lev1_caps_positions_and_orders(keyed):
 
     assert text == "✅ FARTCOIN → 1x\n✅ OP → 1x"
     assert [o["symbol"] for o in http.orders] == ["FARTCOINUSDT", "OPUSDT"]
-    assert http.orders[0]["buyLeverage"] == "1" and http.orders[0]["sellLeverage"] == "1"
+    assert http.orders[0]["buyLeverage"] == "1"
+    assert http.orders[0]["sellLeverage"] == "1"
 
 
 def test_lev1_sweeps_the_rest_of_the_exchange_after_the_actives(keyed):
@@ -1242,7 +1244,8 @@ def test_journal_row_without_a_stop_falls_back_to_usdt():
 
     row = bybit_watch.journal_row("CLUSDT", was, {}, 5.4321)
 
-    assert row[0] == "" and row[4] == ""
+    assert row[0] == ""
+    assert row[4] == ""
     assert row[3] == "win"
     assert row[5] == 5.43  # plain net USDT, no risk to divide by
 
@@ -1265,7 +1268,8 @@ def test_close_chart_stays_on_the_configured_timeframe(keyed):
 
     png = asyncio.run(bybit_watch.close_chart(http, "FARTCOINUSDT", LONG, record))
 
-    assert png is not None and png.startswith(b"\x89PNG")
+    assert png is not None
+    assert png.startswith(b"\x89PNG")
     assert any("interval=15" in url and "limit=1000" in url for url in http.requests)
 
 
@@ -1335,7 +1339,8 @@ def test_closed_record_retries_until_bybit_writes_it(keyed, monkeypatch):
 
     record = asyncio.run(bybit_watch.closed_record(http, "FARTCOINUSDT"))
 
-    assert record is not None and record["closedPnl"] == "512.3"
+    assert record is not None
+    assert record["closedPnl"] == "512.3"
     assert http.asked == 3
 
 
@@ -1623,8 +1628,9 @@ def test_money_poll_survives_failures(keyed, monkeypatch, caplog):
     monkeypatch.setattr(bybit_watch.asyncio, "sleep", fake_sleep)
     out = Recorder()
 
+    attempt = bybit_watch.money_poll(Refusing(), out.send)
     with caplog.at_level("ERROR", logger="relay.bybit"), pytest.raises(asyncio.CancelledError):
-        asyncio.run(bybit_watch.money_poll(Refusing(), out.send))
+        asyncio.run(attempt)
 
     assert "money poll failed" in caplog.text
     assert out.sent == []
@@ -1637,8 +1643,9 @@ def test_money_poll_lets_cancellation_through(keyed):
 
     out = Recorder()
 
+    attempt = bybit_watch.money_poll(Cancelling(), out.send)
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(bybit_watch.money_poll(Cancelling(), out.send))
+        asyncio.run(attempt)
 
     assert out.sent == []
 
@@ -1657,8 +1664,9 @@ def test_money_poll_hands_ticks_through(keyed, monkeypatch):
     monkeypatch.setattr(bybit_watch, "money_tick", fake_tick)
     monkeypatch.setattr(bybit_watch.asyncio, "sleep", fake_sleep)
 
+    attempt = bybit_watch.money_poll(FakeHTTP(), Recorder().send)
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(bybit_watch.money_poll(FakeHTTP(), Recorder().send))
+        asyncio.run(attempt)
 
     assert ticks == [None, {"x"}]
 
@@ -1692,12 +1700,14 @@ def test_poll_survives_failures_and_keeps_going(keyed, monkeypatch, caplog):
 
     monkeypatch.setattr(bybit_watch.asyncio, "sleep", fake_sleep)
 
+    attempt = bybit_watch.poll(http, out.send, out.speak, out.send_photo)
     with caplog.at_level("ERROR", logger="relay.bybit"), pytest.raises(asyncio.CancelledError):
-        asyncio.run(bybit_watch.poll(http, out.send, out.speak, out.send_photo))
+        asyncio.run(attempt)
 
     assert "bybit poll failed" in caplog.text
     assert any(seconds >= 30 for seconds in slept)  # backed off after the failure
-    assert out.sent and out.sent[0].startswith("💸📈FARTCOIN")
+    assert out.sent
+    assert out.sent[0].startswith("💸📈FARTCOIN")
 
 
 def test_poll_lets_cancellation_through(keyed, monkeypatch):
@@ -1709,8 +1719,9 @@ def test_poll_lets_cancellation_through(keyed, monkeypatch):
 
     out = Recorder()
 
+    attempt = bybit_watch.poll(Cancelling(), out.send, out.speak, out.send_photo)
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(bybit_watch.poll(Cancelling(), out.send, out.speak, out.send_photo))
+        asyncio.run(attempt)
 
     assert out.sent == []
 

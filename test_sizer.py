@@ -134,8 +134,9 @@ def test_post_raises_on_a_refusal():
         async def post(self, url, content=None, headers=None, timeout=None):
             return FakeResponse({"retCode": 110007, "retMsg": "insufficient balance"})
 
+    attempt = bybit_watch._post(Refusing(), "/v5/order/amend", {})
     with pytest.raises(RuntimeError, match="insufficient balance"):
-        asyncio.run(bybit_watch._post(Refusing(), "/v5/order/amend", {}))
+        asyncio.run(attempt)
 
 
 # ------------------------------------------------------------------ api calls
@@ -160,8 +161,9 @@ def test_get_equity_without_accounts_raises():
         async def get(self, url, headers=None, timeout=None):
             return FakeResponse({"retCode": 0, "result": {"list": []}})
 
+    attempt = sizer.get_equity(Empty())
     with pytest.raises(RuntimeError, match="no accounts"):
-        asyncio.run(sizer.get_equity(Empty()))
+        asyncio.run(attempt)
 
 
 def test_get_instrument_caches_the_lookup():
@@ -176,8 +178,9 @@ def test_get_instrument_without_a_match_raises():
     http = FakeHTTP()
     http.instruments = []
 
+    attempt = sizer.get_instrument(http, "NOPEUSDT")
     with pytest.raises(RuntimeError, match="no instrument info"):
-        asyncio.run(sizer.get_instrument(http, "NOPEUSDT"))
+        asyncio.run(attempt)
 
 
 def test_amend_qty_posts_the_new_quantity():
@@ -556,8 +559,9 @@ def test_poll_announces_itself_and_survives_failures(monkeypatch, caplog):
 
     monkeypatch.setattr(sizer.asyncio, "sleep", fake_sleep)
 
+    attempt = sizer.poll(Flaky(), out.send)
     with caplog.at_level("ERROR", logger="relay.sizer"), pytest.raises(asyncio.CancelledError):
-        asyncio.run(sizer.poll(Flaky(), out.send))
+        asyncio.run(attempt)
 
     assert out.sent[0].startswith("⚖️ sizer up — dry-run")
     # Three failing passes, but the same error is announced only once.
@@ -574,8 +578,9 @@ def test_poll_lets_cancellation_through():
 
     out = Recorder()
 
+    attempt = sizer.poll(Cancelling(), out.send)
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(sizer.poll(Cancelling(), out.send))
+        asyncio.run(attempt)
 
     assert out.sent[0].startswith("⚖️ sizer up")
     assert len(out.sent) == 1  # no error notice for a cancellation
@@ -602,8 +607,9 @@ def test_poll_announces_a_recovery_relapse(monkeypatch):
 
     monkeypatch.setattr(sizer.asyncio, "sleep", fake_sleep)
 
+    attempt = sizer.poll(Blinking(), out.send)
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(sizer.poll(Blinking(), out.send))
+        asyncio.run(attempt)
 
     assert out.sent[1:] == ["⚖️ sizer error: bybit down", "⚖️ sizer error: bybit down"]
 
