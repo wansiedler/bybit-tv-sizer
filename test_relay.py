@@ -790,8 +790,9 @@ def test_run_relays_alerts_and_skips_noise(config, monkeypatch):
 class FakeWatchedEvent:
     """A message from a watched user, as the watched-user handler sees it."""
 
-    def __init__(self, raw_text, sender=None, chat=None):
+    def __init__(self, raw_text, sender=None, chat=None, message_id=7):
         self.raw_text = raw_text
+        self.message = SimpleNamespace(id=message_id)
         self._sender = sender if sender is not None else SimpleNamespace(username="some_trader")
         self._chat = chat if chat is not None else SimpleNamespace(title="Trading Club")
 
@@ -841,7 +842,9 @@ def test_watched_handler_falls_back_when_names_are_missing(config, monkeypatch):
     http, _ = _run_relay(monkeypatch, feed)
 
     assert http.posted[1] == "👤 @Alexey · ?:\nno names here"
-    assert http.posted[2] == "👤 @? · lexx_club:\nnobody at all"
+    assert (
+        http.posted[2] == '👤 @? · <a href="https://t.me/lexx_club/7">lexx_club</a>:\nnobody at all'
+    )
 
 
 def test_watched_handler_truncates_to_telegram_limit(config, monkeypatch):
@@ -850,7 +853,36 @@ def test_watched_handler_truncates_to_telegram_limit(config, monkeypatch):
 
     http, _ = _run_relay(monkeypatch, feed)
 
-    assert len(http.posted[1]) == 4000
+    assert len(http.posted[1]) <= 4000
+    assert http.posted[1].endswith("x")
+
+
+def test_watched_handler_links_a_private_supergroup(config, monkeypatch):
+    async def feed(client):
+        await client.handlers[1](
+            FakeWatchedEvent(
+                "голос пропал",
+                chat=SimpleNamespace(
+                    title="TF by Gussardi", username=None, megagroup=True, id=123456
+                ),
+                message_id=42,
+            )
+        )
+
+    http, _ = _run_relay(monkeypatch, feed)
+
+    assert http.posted[1] == (
+        '👤 @some_trader · <a href="https://t.me/c/123456/42">TF by Gussardi</a>:\nголос пропал'
+    )
+
+
+def test_watched_handler_escapes_foreign_markup(config, monkeypatch):
+    async def feed(client):
+        await client.handlers[1](FakeWatchedEvent("beware <b> & such"))
+
+    http, _ = _run_relay(monkeypatch, feed)
+
+    assert http.posted[1] == "👤 @some_trader · Trading Club:\nbeware &lt;b&gt; &amp; such"
 
 
 def test_run_without_watch_users_registers_only_the_alert_handler(config, monkeypatch):

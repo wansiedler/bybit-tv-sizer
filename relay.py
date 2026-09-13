@@ -9,6 +9,7 @@ runs on your user account (Telethon) and only the delivery side uses the bot.
 
 import argparse
 import asyncio
+import html as html_mod
 import logging
 import os
 import signal
@@ -102,16 +103,24 @@ def _accepted(response, what: str) -> bool:
 
 
 async def send_via_bot(
-    http: httpx.AsyncClient, text: str, html: bool = False, *, quiet: bool = False
+    http: httpx.AsyncClient,
+    text: str,
+    html: bool = False,
+    *,
+    quiet: bool = False,
+    preview: bool = True,
 ) -> bool:
     """Post one line through the bot. Returns True when Telegram accepted it.
 
     `html` turns on Telegram's HTML parse mode — only for text we compose
-    ourselves; relayed foreign text could break parsing with stray tags.
+    ourselves (foreign text gets escaped first); `preview` off keeps a link
+    in the text from unfurling under the message.
     """
     payload: dict[str, object] = {"chat_id": TARGET_CHAT_ID, "text": text}
     if html:
         payload["parse_mode"] = "HTML"
+    if not preview:
+        payload["link_preview_options"] = {"is_disabled": True}
     try:
         response = await http.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
@@ -306,8 +315,26 @@ class _Shutdown:
         self.event.set()
 
 
+def _message_link(chat, message_id: int) -> str:
+    """A t.me link to the original message, when the chat can carry one.
+
+    Public chats link by username; private supergroups and channels by the
+    t.me/c/ form (opens for members only). A small private group or a DM has
+    no message links at all — empty then.
+    """
+    username = getattr(chat, "username", None)
+    if username:
+        return f"https://t.me/{username}/{message_id}"
+    # Telethon's Channel covers supergroups too; its id is the bare internal
+    # one, without Bot-API's -100 prefix.
+    if getattr(chat, "megagroup", None) or getattr(chat, "broadcast", None):
+        return f"https://t.me/c/{chat.id}/{message_id}"
+    return ""
+
+
 async def _relay_watched(http: httpx.AsyncClient, stats: commands.Stats, event) -> None:
-    """Forward one watched user's message verbatim, with who and where."""
+    """Forward one watched user's message verbatim, with who and where — the
+    chat name linking back to the original message when the chat allows it."""
     text = event.raw_text
     if not text:
         return
@@ -315,8 +342,16 @@ async def _relay_watched(http: httpx.AsyncClient, stats: commands.Stats, event) 
     who = getattr(sender, "username", None) or getattr(sender, "first_name", None) or "?"
     chat = await event.get_chat()
     where = getattr(chat, "title", None) or getattr(chat, "username", None) or "?"
-    # 4096 is Telegram's hard cap on sendMessage; stay under it.
-    await send_via_bot(http, f"👤 @{who} · {where}:\n{text}"[:4000])
+    link = _message_link(chat, event.message.id)
+    where_html = (
+        f'<a href="{link}">{html_mod.escape(where)}</a>' if link else html_mod.escape(where)
+    )
+    # 4096 is Telegram's hard cap on sendMessage; the cut lands on the raw
+    # text so it can never split an HTML entity or the link tag.
+    body = html_mod.escape(text[: 3800 - len(who) - len(where)])
+    await send_via_bot(
+        http, f"👤 @{html_mod.escape(who)} · {where_html}:\n{body}", True, preview=False
+    )
     stats.watched += 1
 
 
