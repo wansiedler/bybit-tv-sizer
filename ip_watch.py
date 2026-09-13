@@ -77,6 +77,37 @@ async def current(http: httpx.AsyncClient) -> str:
     return text.strip()
 
 
+async def _announce_tunnel(up: bool, tunnel: bool | None, send, speak) -> None:
+    """Shout when the tunnel's reachability flips; a healthy start is quiet."""
+    endpoint = proxy_endpoint()
+    if endpoint is None or up is tunnel:
+        return
+    where = f"{endpoint[0]}:{endpoint[1]}"
+    if not up:
+        await send(
+            f"🚨 Туннель до {where} не отвечает — бот отрезан от Bybit.\n"
+            f"API-ключ ходит только через него. Проверь WireGuard на VPS!"
+        )
+        await speak("Tunnel down, Bybit unreachable")
+    elif tunnel is not None:
+        await send(f"✅ Туннель до {where} снова на связи")
+        await speak("Tunnel back up")
+
+
+async def _announce_ip(http: httpx.AsyncClient, known: str | None, send, speak) -> str:
+    """The current IP, shouted when it differs from the known one."""
+    ip = await current(http)
+    if known is None:
+        log.info("external ip: %s", ip)
+    elif ip != known:
+        await send(
+            f"⚠️ Внешний IP сменился: {known} → {ip}\n"
+            f"Обнови whitelist API-ключа на Bybit, иначе бот отвалится!"
+        )
+        await speak("External IP changed, update the Bybit whitelist")
+    return ip
+
+
 async def poll(http: httpx.AsyncClient, send, speak) -> None:
     """Announce IP changes until cancelled. Failures never end the loop."""
     log.info("watching the external ip every %ss", POLL)
@@ -88,31 +119,11 @@ async def poll(http: httpx.AsyncClient, send, speak) -> None:
         try:
             endpoint = proxy_endpoint()
             up = await reachable(*endpoint) if endpoint else True
-            if endpoint and up is not tunnel:
-                where = f"{endpoint[0]}:{endpoint[1]}"
-                if not up:
-                    await send(
-                        f"🚨 Туннель до {where} не отвечает — бот отрезан от Bybit.\n"
-                        f"API-ключ ходит только через него. Проверь WireGuard на VPS!"
-                    )
-                    await speak("Tunnel down, Bybit unreachable")
-                elif tunnel is not None:
-                    await send(f"✅ Туннель до {where} снова на связи")
-                    await speak("Tunnel back up")
+            await _announce_tunnel(up, tunnel, send, speak)
             tunnel = up
             # A dead tunnel fails the IP check too; asking would only log noise.
             if up:
-                ip = await current(http)
-                if known is None:
-                    known = ip
-                    log.info("external ip: %s", ip)
-                elif ip != known:
-                    await send(
-                        f"⚠️ Внешний IP сменился: {known} → {ip}\n"
-                        f"Обнови whitelist API-ключа на Bybit, иначе бот отвалится!"
-                    )
-                    await speak("External IP changed, update the Bybit whitelist")
-                    known = ip
+                known = await _announce_ip(http, known, send, speak)
         except asyncio.CancelledError:
             raise
         # Deliberately broad: a flaky check must not kill the watcher.

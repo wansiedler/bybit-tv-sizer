@@ -42,6 +42,9 @@ DRY_RUN = os.getenv("DRY_RUN", "1").lower() not in ("0", "false", "no", "")
 RISK_PCT = Decimal(os.getenv("RISK_PCT", "0.5")) / Decimal(100)
 FALLBACK_SL_PCT = Decimal(os.getenv("FALLBACK_SL_PCT", "0")) / Decimal(100)
 MAX_LEVERAGE = Decimal(os.getenv("MAX_LEVERAGE", "5"))
+# The entry fills as a maker limit; the stop closes as a taker market order.
+MAKER_FEE = Decimal(os.getenv("MAKER_FEE", "0.0002"))
+TAKER_FEE = Decimal(os.getenv("TAKER_FEE", "0.00055"))
 SYMBOLS = {s.strip().upper() for s in os.getenv("SYMBOLS", "").split(",") if s.strip()}
 POLL = float(os.getenv("POLL_SEC", "3"))
 CATEGORY = os.getenv("CATEGORY", "linear")
@@ -116,7 +119,12 @@ def round_step(value: Decimal, step: Decimal) -> Decimal:
 
 
 def target_qty(order: dict, equity: Decimal, instrument: dict) -> Decimal | None:
-    """Quantity that puts exactly RISK_PCT of equity between entry and stop."""
+    """Quantity whose stop-out costs exactly RISK_PCT of equity.
+
+    The cost of stopping out is the price distance plus both fees — the
+    maker entry and the stop's taker market close — so the realised loss
+    stays inside RISK_PCT, matching the trimmer's arithmetic.
+    """
     symbol, order_id = order["symbol"], order["orderId"][:8]
     entry = Decimal(order["price"])
     if entry <= 0:
@@ -139,7 +147,7 @@ def target_qty(order: dict, equity: Decimal, instrument: dict) -> Decimal | None
         return None
 
     lot = instrument["lotSizeFilter"]
-    qty = (equity * RISK_PCT) / distance
+    qty = (equity * RISK_PCT) / (distance + entry * MAKER_FEE + stop * TAKER_FEE)
     qty = min(qty, (equity * MAX_LEVERAGE) / entry)  # notional ceiling
     qty = min(round_step(qty, Decimal(lot["qtyStep"])), Decimal(lot["maxOrderQty"]))
 
@@ -260,57 +268,86 @@ async def tick(http: httpx.AsyncClient, send) -> None:
 
     equity = await get_equity(http)
     for order in orders:
-        symbol, order_id = order["symbol"], order["orderId"]
-        complaint = rr_warning(order)
-        signature = (
-            f"{order['price']}|{order.get('stopLoss') or ''}|{order.get('takeProfit') or ''}"
-        )
-        if complaint and _warned.get(order_id) != signature:
-            _warned[order_id] = signature
-            await send(f"⚠️ {symbol} {order.get('side', '?')} limit @ {order['price']}: {complaint}")
-        instrument = await get_instrument(http, symbol)
-        want = target_qty(order, equity, instrument)
-        if want is None:
-            continue
-        have = Decimal(order["qty"])
-        capped = False
-        if want > have:
-            # Growing the order needs free margin; shrinking always fits.
-            cap = await margin_cap(http, symbol, Decimal(order["price"]), have)
-            if cap is not None and cap < want:
-                lot = instrument["lotSizeFilter"]
-                cap = round_step(cap, Decimal(lot["qtyStep"]))
-                if cap <= have or cap < Decimal(lot["minOrderQty"]):
-                    log.info("%s %s: no margin to grow, leaving as is", symbol, order_id[:8])
-                    continue
-                want, capped = cap, True
-        if have == want:
-            continue
-        if DRY_RUN:
-            log.info("[dry-run] %s %s: qty %s -> %s", symbol, order_id[:8], have, want)
-            continue
-        await amend_qty(http, symbol, order_id, want)
-        log.info(
-            "%s %s: qty %s -> %s%s", symbol, order_id[:8], have, want, " (capped)" if capped else ""
-        )
+        await _resize_order(http, order, equity, send)
 
-        entry_price = Decimal(order["price"])
 
-        def described(qty: Decimal, entry: Decimal = entry_price) -> str:
-            value = qty * entry
-            dollars = f"{value:,.0f}$" if value >= 10 else f"{value:,.2f}$"
-            return f"{qty} ({dollars}, {value / equity * 100:.1f}% депо)"
-
-        stop_raw = order.get("stopLoss") or ""
-        stop_text = stop_raw or "?"
-        if stop_raw not in ("", "0"):
-            distance_pct = abs(entry_price - Decimal(stop_raw)) / entry_price * 100
-            stop_text += f" ({distance_pct:.2f}%)"
+async def _warn_thin_rr(order: dict, send) -> None:
+    """Complain once per (price, stop, take) signature about a thin RR."""
+    complaint = rr_warning(order)
+    signature = f"{order['price']}|{order.get('stopLoss') or ''}|{order.get('takeProfit') or ''}"
+    if complaint and _warned.get(order["orderId"]) != signature:
+        _warned[order["orderId"]] = signature
         await send(
-            f"⚖️ {symbol} {order.get('side', '?')} limit @ {order['price']}\n"
-            f"stop {stop_text} → qty {described(have)} → {described(want)}"
-            + (" (урезано по марже — подними плечо инструмента)" if capped else "")
+            f"⚠️ {order['symbol']} {order.get('side', '?')} limit @ {order['price']}: {complaint}"
         )
+
+
+async def _fit_margin(
+    http: httpx.AsyncClient, order: dict, instrument: dict, want: Decimal, have: Decimal
+) -> tuple[Decimal, bool] | None:
+    """(quantity, was it capped) under the margin ceiling; None = leave it.
+
+    Growing the order needs free margin; shrinking always fits.
+    """
+    if want <= have:
+        return want, False
+    cap = await margin_cap(http, order["symbol"], Decimal(order["price"]), have)
+    if cap is None or cap >= want:
+        return want, False
+    lot = instrument["lotSizeFilter"]
+    cap = round_step(cap, Decimal(lot["qtyStep"]))
+    if cap <= have or cap < Decimal(lot["minOrderQty"]):
+        log.info("%s %s: no margin to grow, leaving as is", order["symbol"], order["orderId"][:8])
+        return None
+    return cap, True
+
+
+async def _resize_order(http: httpx.AsyncClient, order: dict, equity: Decimal, send) -> None:
+    """Fit one managed order to the target risk, margin and lot allowing."""
+    symbol, order_id = order["symbol"], order["orderId"]
+    await _warn_thin_rr(order, send)
+    instrument = await get_instrument(http, symbol)
+    want = target_qty(order, equity, instrument)
+    if want is None:
+        return
+    have = Decimal(order["qty"])
+    fitted = await _fit_margin(http, order, instrument, want, have)
+    if fitted is None:
+        return
+    want, capped = fitted
+    if have == want:
+        return
+    if DRY_RUN:
+        log.info("[dry-run] %s %s: qty %s -> %s", symbol, order_id[:8], have, want)
+        return
+    await amend_qty(http, symbol, order_id, want)
+    log.info(
+        "%s %s: qty %s -> %s%s", symbol, order_id[:8], have, want, " (capped)" if capped else ""
+    )
+    await _announce_resize(order, equity, have, want, capped, send)
+
+
+async def _announce_resize(
+    order: dict, equity: Decimal, have: Decimal, want: Decimal, capped: bool, send
+) -> None:
+    """The ⚖️ notice: stop distance and the quantity before and after."""
+    entry_price = Decimal(order["price"])
+
+    def described(qty: Decimal) -> str:
+        value = qty * entry_price
+        dollars = f"{value:,.0f}$" if value >= 10 else f"{value:,.2f}$"
+        return f"{qty} ({dollars}, {value / equity * 100:.1f}% депо)"
+
+    stop_raw = order.get("stopLoss") or ""
+    stop_text = stop_raw or "?"
+    if stop_raw not in ("", "0"):
+        distance_pct = abs(entry_price - Decimal(stop_raw)) / entry_price * 100
+        stop_text += f" ({distance_pct:.2f}%)"
+    await send(
+        f"⚖️ {order['symbol']} {order.get('side', '?')} limit @ {order['price']}\n"
+        f"stop {stop_text} → qty {described(have)} → {described(want)}"
+        + (" (урезано по марже — подними плечо инструмента)" if capped else "")
+    )
 
 
 async def poll(http: httpx.AsyncClient, send) -> None:

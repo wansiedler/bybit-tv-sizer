@@ -49,8 +49,9 @@ def run_poll(http, out, monkeypatch, naps):
             raise asyncio.CancelledError
 
     monkeypatch.setattr(ip_watch.asyncio, "sleep", fake_sleep)
+    attempt = ip_watch.poll(as_client(http), out.send, out.speak)
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(ip_watch.poll(as_client(http), out.send, out.speak))
+        asyncio.run(attempt)
 
 
 def test_enabled_follows_the_flag(monkeypatch):
@@ -101,8 +102,9 @@ def test_poll_lets_cancellation_through():
 
     out = Recorder()
 
+    attempt = ip_watch.poll(as_client(Cancelling()), out.send, out.speak)
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(ip_watch.poll(as_client(Cancelling()), out.send, out.speak))
+        asyncio.run(attempt)
 
     assert out.sent == []
 
@@ -117,8 +119,9 @@ def run_rounds(http, out, monkeypatch, rounds):
             raise asyncio.CancelledError
 
     monkeypatch.setattr(ip_watch.asyncio, "sleep", fake_sleep)
+    attempt = ip_watch.poll(as_client(http), out.send, out.speak)
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(ip_watch.poll(as_client(http), out.send, out.speak))
+        asyncio.run(attempt)
 
 
 def test_proxy_endpoint_reads_the_variable(monkeypatch):
@@ -240,5 +243,6 @@ def test_reachable_lets_cancellation_through(monkeypatch):
 
     monkeypatch.setattr(ip_watch.asyncio, "open_connection", cancelling)
 
+    attempt = ip_watch.reachable("10.77.0.1", 8888)
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(ip_watch.reachable("10.77.0.1", 8888))
+        asyncio.run(attempt)
