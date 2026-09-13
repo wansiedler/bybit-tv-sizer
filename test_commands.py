@@ -176,7 +176,13 @@ def test_links_answers_with_the_link_list(owner):
 
     asyncio.run(
         commands.dispatch(
-            "links", "", commands.Stats(), rec.send, rec.speak, True, links="📒 a\n📡 b"
+            "links",
+            "",
+            commands.Stats(),
+            rec.send,
+            rec.speak,
+            True,
+            commands.Handlers(links="📒 a\n📡 b"),
         )
     )
 
@@ -201,7 +207,13 @@ def test_lev1_passes_the_ticker(owner):
 
     asyncio.run(
         commands.dispatch(
-            "lev1", "CL", commands.Stats(), rec.send, rec.speak, True, lev_one=lev_one
+            "lev1",
+            "CL",
+            commands.Stats(),
+            rec.send,
+            rec.speak,
+            True,
+            commands.Handlers(lev_one=lev_one),
         )
     )
 
@@ -224,7 +236,15 @@ def test_positions_answers_with_the_report(owner):
         return "📈 FARTCOIN long 18,749 USDT @ 0.1621 · uPnL +512.30"
 
     asyncio.run(
-        commands.dispatch("positions", "", commands.Stats(), rec.send, rec.speak, True, report)
+        commands.dispatch(
+            "positions",
+            "",
+            commands.Stats(),
+            rec.send,
+            rec.speak,
+            True,
+            commands.Handlers(positions=report),
+        )
     )
 
     assert rec.sent == ["📈 FARTCOIN long 18,749 USDT @ 0.1621 · uPnL +512.30"]
@@ -237,7 +257,15 @@ def test_positions_stays_silent_after_an_album(owner):
         return ""  # the media group already carried everything
 
     asyncio.run(
-        commands.dispatch("positions", "", commands.Stats(), rec.send, rec.speak, True, report)
+        commands.dispatch(
+            "positions",
+            "",
+            commands.Stats(),
+            rec.send,
+            rec.speak,
+            True,
+            commands.Handlers(positions=report),
+        )
     )
 
     assert rec.sent == []
@@ -259,7 +287,13 @@ def test_stopall_answers_with_the_result(owner):
 
     asyncio.run(
         commands.dispatch(
-            "stopall", "", commands.Stats(), rec.send, rec.speak, True, None, stop_all
+            "stopall",
+            "",
+            commands.Stats(),
+            rec.send,
+            rec.speak,
+            True,
+            commands.Handlers(stop_all=stop_all),
         )
     )
 
@@ -284,7 +318,13 @@ def test_close_passes_the_ticker(owner):
 
     asyncio.run(
         commands.dispatch(
-            "close", "CL", commands.Stats(), rec.send, rec.speak, True, None, None, close_one
+            "close",
+            "CL",
+            commands.Stats(),
+            rec.send,
+            rec.speak,
+            True,
+            commands.Handlers(close_one=close_one),
         )
     )
 
@@ -476,7 +516,13 @@ def test_status_also_sends_the_market_snapshot(owner):
 
     asyncio.run(
         commands.dispatch(
-            "status", "", commands.Stats(), rec.send, rec.speak, True, None, None, None, market
+            "status",
+            "",
+            commands.Stats(),
+            rec.send,
+            rec.speak,
+            True,
+            commands.Handlers(market=market),
         )
     )
 
@@ -498,11 +544,7 @@ def test_statistics_sends_the_report(owner):
             rec.send,
             rec.speak,
             True,
-            None,
-            None,
-            None,
-            None,
-            statistics,
+            commands.Handlers(statistics=statistics),
         )
     )
 
@@ -523,11 +565,7 @@ def test_statistics_stays_silent_after_the_chart(owner):
             rec.send,
             rec.speak,
             True,
-            None,
-            None,
-            None,
-            None,
-            statistics,
+            commands.Handlers(statistics=statistics),
         )
     )
 
@@ -548,7 +586,11 @@ def test_status_appends_the_external_ip(owner):
     async def ip():
         return "203.0.113.7"
 
-    asyncio.run(commands.dispatch("status", "", commands.Stats(), rec.send, rec.speak, True, ip=ip))
+    asyncio.run(
+        commands.dispatch(
+            "status", "", commands.Stats(), rec.send, rec.speak, True, commands.Handlers(ip=ip)
+        )
+    )
 
     assert rec.sent[0].endswith("🌐 203.0.113.7")
 
@@ -559,6 +601,10 @@ def test_status_survives_a_failed_ip_lookup(owner):
     async def ip():
         raise OSError("down")
 
-    asyncio.run(commands.dispatch("status", "", commands.Stats(), rec.send, rec.speak, True, ip=ip))
+    asyncio.run(
+        commands.dispatch(
+            "status", "", commands.Stats(), rec.send, rec.speak, True, commands.Handlers(ip=ip)
+        )
+    )
 
     assert rec.sent[0].endswith("🌐 IP недоступен")
