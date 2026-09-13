@@ -22,7 +22,7 @@ import logging
 import math
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import httpx
 from dotenv import load_dotenv
@@ -67,6 +67,11 @@ RISK_GUARD = os.getenv("RISK_GUARD", "1") == "1"
 # that filled worse than the sized limit gets reshaped. No tolerance: the
 # only slack is the exchange's lot step, below which nothing can be cut.
 RISK_TRIM = os.getenv("RISK_TRIM", "1") == "1"
+# Maker takes: the position's market take-profit is traded for a reduce-only
+# limit at the same price — a maker fill costs less than half the taker fee.
+# The price can touch the level and bounce without filling a resting limit,
+# so the cheaper exit is not guaranteed the way the market TP is.
+TP_MAKER = os.getenv("TP_MAKER", "0") == "1"
 GUARD_MAX_LEVERAGE = float(os.getenv("MAX_LEVERAGE", "1"))
 GUARD_GRACE = float(os.getenv("GUARD_GRACE_SEC", "45"))
 
@@ -139,10 +144,17 @@ class Position:
     leverage: float = 0.0
     position_idx: int = 0
     created_ms: int = 0
+    # The take lives as our reduce-only limit order, not on the position.
+    maker_exit: bool = False
 
 
 async def positions(http: httpx.AsyncClient) -> dict[str, Position]:
-    """Open USDT-perpetual positions, keyed by symbol. Zero sizes dropped."""
+    """Open USDT-perpetual positions, keyed by symbol. Zero sizes dropped.
+
+    With TP_MAKER the take-profit may live as a reduce-only limit order
+    instead of on the position; it is folded back into `take_profit` here so
+    every report, chart and close label sees the take wherever it lives.
+    """
     result = await _get(http, _POSITIONS, {"category": "linear", "settleCoin": "USDT"})
     open_now: dict[str, Position] = {}
     for row in result.get("list", []):
@@ -161,7 +173,40 @@ async def positions(http: httpx.AsyncClient) -> dict[str, Position]:
             position_idx=int(row.get("positionIdx") or 0),
             created_ms=int(row.get("createdTime") or 0),
         )
+    if TP_MAKER and any(p.take_profit is None for p in open_now.values()):
+        for symbol, order in (await maker_exits(http)).items():
+            position = open_now.get(symbol)
+            if position is not None and position.take_profit is None:
+                open_now[symbol] = replace(
+                    position, take_profit=float(order["price"]), maker_exit=True
+                )
     return open_now
+
+
+async def maker_exits(http: httpx.AsyncClient) -> dict[str, dict]:
+    """Our reduce-only limit exits by symbol — the maker take-profits.
+
+    Best-effort: an unreachable order list answers empty and the callers
+    try again next poll.
+    """
+    try:
+        result = await _get(
+            http, "/v5/order/realtime", {"category": "linear", "settleCoin": "USDT"}
+        )
+    # Deliberately broad: no order answer must not break the position poll.
+    except Exception:  # noqa: BLE001
+        log.exception("exit order listing failed")
+        return {}
+    exits: dict[str, dict] = {}
+    for r in result.get("list") or []:
+        if (
+            r.get("reduceOnly")
+            and r.get("orderType") == "Limit"
+            and not r.get("stopOrderType")
+            and float(r.get("price") or 0) > 0
+        ):
+            exits[r["symbol"]] = r
+    return exits
 
 
 # /stopall arms on the first call and fires on the second within this window:
@@ -329,6 +374,106 @@ async def trim(http: httpx.AsyncClient, open_now: dict[str, Position], send, spe
         except Exception as exc:  # noqa: BLE001
             log.exception("trim failed for %s", symbol)
             await send(f"❌ {base_symbol(symbol)}: не смог подрезать ({exc})")
+
+
+# When each symbol's take was last touched: Bybit needs a moment to show a
+# fresh order, and re-posting on every half-second poll would spam the book.
+_tp_cooldown: dict[str, float] = {}
+
+
+async def tp_maker(http: httpx.AsyncClient, open_now: dict[str, Position], send, speak) -> None:
+    """Trade the position's market take-profit for a maker limit exit.
+
+    Bybit's position TP fires a market order — a taker fee. A reduce-only
+    limit resting at the same price fills as a maker for less than half of
+    that. Only the take is converted: a limit stop can miss on a wick, and
+    a missed stop has no ceiling, while a missed take is a smaller win.
+
+    The limit is placed before the market TP comes off, so a refusal in
+    between leaves the position covered by the original take. When the
+    trimmer shrinks the position the exit is resized with it, and an exit
+    orphaned by a stop-out is cancelled.
+    """
+    if not TP_MAKER:
+        return
+    exits = await maker_exits(http)
+    for symbol, order in exits.items():
+        if symbol in open_now or time.monotonic() - _tp_cooldown.get(symbol, 0.0) < 10.0:
+            continue
+        _tp_cooldown[symbol] = time.monotonic()
+        try:
+            await _post(
+                http,
+                "/v5/order/cancel",
+                {"category": "linear", "symbol": symbol, "orderId": order["orderId"]},
+            )
+            await send(f"🎯 {base_symbol(symbol)}: тейк-лимитка осталась без позиции — отменена")
+        # Deliberately broad: one refused cancel must not strand the rest.
+        except Exception:  # noqa: BLE001
+            log.exception("orphan exit cancel failed for %s", symbol)
+    for symbol, position in open_now.items():
+        if position.take_profit is None:
+            continue
+        if time.monotonic() - _tp_cooldown.get(symbol, 0.0) < 10.0:
+            continue
+        exit_order = exits.get(symbol)
+        if not position.maker_exit:
+            _tp_cooldown[symbol] = time.monotonic()
+            price = f"{position.take_profit:g}"
+            try:
+                if exit_order is None:
+                    await _post(
+                        http,
+                        "/v5/order/create",
+                        {
+                            "category": "linear",
+                            "symbol": symbol,
+                            "side": "Sell" if position.side == "long" else "Buy",
+                            "orderType": "Limit",
+                            "qty": f"{position.size:g}",
+                            "price": price,
+                            "reduceOnly": True,
+                            "positionIdx": position.position_idx,
+                        },
+                    )
+                await _post(
+                    http,
+                    "/v5/position/trading-stop",
+                    {
+                        "category": "linear",
+                        "symbol": symbol,
+                        "takeProfit": "0",
+                        "positionIdx": position.position_idx,
+                    },
+                )
+                await send(f"🎯 {base_symbol(symbol)}: тейк {price} перевыставлен лимиткой (maker)")
+                await speak(
+                    f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} take reposted"
+                )
+            # Deliberately broad: one refused repost must not strand the rest.
+            except Exception as exc:  # noqa: BLE001
+                log.exception("tp-maker repost failed for %s", symbol)
+                await send(f"❌ {base_symbol(symbol)}: не смог перевыставить тейк ({exc})")
+        elif exit_order is not None and float(exit_order.get("qty") or 0) != position.size:
+            _tp_cooldown[symbol] = time.monotonic()
+            try:
+                await _post(
+                    http,
+                    "/v5/order/amend",
+                    {
+                        "category": "linear",
+                        "symbol": symbol,
+                        "orderId": exit_order["orderId"],
+                        "qty": f"{position.size:g}",
+                    },
+                )
+                await send(
+                    f"🎯 {base_symbol(symbol)}: тейк-лимитка подогнана под {position.size:g}"
+                )
+            # Deliberately broad: one refused amend must not strand the rest.
+            except Exception as exc:  # noqa: BLE001
+                log.exception("tp-maker amend failed for %s", symbol)
+                await send(f"❌ {base_symbol(symbol)}: не смог подогнать тейк ({exc})")
 
 
 async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, speak) -> None:
@@ -1173,6 +1318,10 @@ async def close_kind(http: httpx.AsyncClient, record: dict) -> str:
         if "TakeProfit" in create or stop_type == "TakeProfit":
             return "тейк"
         if create in ("CreateByUser", "CreateByClosing"):
+            # The maker exit is our own reduce-only limit resting at the
+            # take: its fill is a take, not a hand on the button.
+            if TP_MAKER and rows[0].get("reduceOnly") and rows[0].get("orderType") == "Limit":
+                return "тейк"
             return "руками"
         return ""
     # Deliberately broad: the notice must go out with or without the detail.
@@ -1298,6 +1447,7 @@ async def tick(
     after = await positions(http)
     await guard(http, after, send, speak)
     await trim(http, after, send, speak)
+    await tp_maker(http, after, send, speak)
     if before is None:
         return after
 

@@ -95,6 +95,11 @@ SETTLE_POLLS=2
 # is below this, and when a fresh position's risk strays from RISK_PCT.
 # 0 disables the RR check.
 MIN_RR=2
+# Maker takes: swap the position's market take-profit (taker fee) for a
+# reduce-only limit at the same price (maker, less than half the fee).
+# The catch: a touch-and-bounce can leave a resting limit unfilled where
+# the market TP would have closed. The stop always stays a market order.
+TP_MAKER=0
 
 # Announce your own TradingView alerts: point a TV alert's Webhook URL at
 # POST /tv/<secret> on TV_PORT (via a tunnel or port-forward). The secret in

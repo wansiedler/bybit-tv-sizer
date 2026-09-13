@@ -81,6 +81,19 @@ Stopping out afterwards costs 55.00 (entry fee on the full size) + 30.53
 (the keep's stop) = 999.51 $ — inside the 1% all in. Funding and stop
 slippage are not budgeted; at 0.01%/8h funding is noise next to 1%.
 
+## Maker takes (`TP_MAKER=1`)
+
+Bybit's position take-profit fires a market order — a taker fee. With
+`TP_MAKER=1` the bot swaps it for a reduce-only limit resting at the same
+price, which fills as a maker for less than half the fee (0.02% vs 0.055%).
+The exit follows the position: the trimmer's cut resizes it, a stop-out
+cancels the orphan, and every report and chart shows the take as usual.
+
+The trade-off is real: the price can touch the level and bounce without
+filling a resting limit, where the market TP would have closed. The stop is
+never converted — a limit stop can miss on a wick, and a missed stop has no
+ceiling, while a missed take is only a smaller win.
+
 ## Alert relaying
 
 Compacts LEXX Draco alerts and re-posts them through your own bot.

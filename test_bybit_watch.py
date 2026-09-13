@@ -2202,3 +2202,232 @@ def test_trim_fetches_equity_once_for_many_positions(trimming):
     asyncio.run(bybit_watch.trim(http, {"AUSDT": fine, "BUSDT": fine}, out.send, out.speak))
 
     assert http.requests.count(next(u for u in http.requests if "wallet-balance" in u)) == 1
+
+
+# --------------------------------------------------------------------------- #
+#  maker takes                                                                  #
+# --------------------------------------------------------------------------- #
+TAKEN = Position("long", 2.0, 100.0, 200.0, take_profit=103.0)
+EXITED = Position("long", 2.0, 100.0, 200.0, take_profit=103.0, maker_exit=True)
+
+
+def exit_row(order_id="e1", symbol="CLUSDT", price="103", qty="2", **extra):
+    return {
+        "orderId": order_id,
+        "symbol": symbol,
+        "reduceOnly": True,
+        "orderType": "Limit",
+        "price": price,
+        "qty": qty,
+        "stopOrderType": "",
+        **extra,
+    }
+
+
+@pytest.fixture
+def making(keyed, monkeypatch):
+    monkeypatch.setattr(bybit_watch, "TP_MAKER", True)
+
+
+def test_tp_maker_reposts_the_take_as_a_limit(making):
+    http, out = ClosingHTTP(), Recorder()
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": TAKEN}, out.send, out.speak))
+
+    assert http.orders == [
+        {
+            "category": "linear",
+            "symbol": "CLUSDT",
+            "side": "Sell",
+            "orderType": "Limit",
+            "qty": "2",
+            "price": "103",
+            "reduceOnly": True,
+            "positionIdx": 0,
+        },
+        {"category": "linear", "symbol": "CLUSDT", "takeProfit": "0", "positionIdx": 0},
+    ]
+    assert out.sent == ["🎯 CL: тейк 103 перевыставлен лимиткой (maker)"]
+    assert out.spoken == ["CL take reposted"]
+
+
+def test_tp_maker_only_clears_the_take_when_the_limit_already_stands(making):
+    http, out = ClosingHTTP(), Recorder()
+    http.order_rows = [exit_row()]
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": TAKEN}, out.send, out.speak))
+
+    assert http.orders == [
+        {"category": "linear", "symbol": "CLUSDT", "takeProfit": "0", "positionIdx": 0}
+    ]
+
+
+def test_tp_maker_resizes_the_exit_after_a_trim(making):
+    http, out = ClosingHTTP(), Recorder()
+    http.order_rows = [exit_row()]
+    trimmed = Position("long", 1.5, 100.0, 150.0, take_profit=103.0, maker_exit=True)
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": trimmed}, out.send, out.speak))
+
+    assert http.orders == [
+        {"category": "linear", "symbol": "CLUSDT", "orderId": "e1", "qty": "1.5"}
+    ]
+    assert out.sent == ["🎯 CL: тейк-лимитка подогнана под 1.5"]
+
+
+def test_tp_maker_leaves_a_matching_exit_alone(making):
+    http, out = ClosingHTTP(), Recorder()
+    http.order_rows = [exit_row()]
+
+    asyncio.run(
+        bybit_watch.tp_maker(http, {"CLUSDT": EXITED, "OPUSDT": NAKED}, out.send, out.speak)
+    )
+
+    assert http.orders == []
+    assert out.sent == []
+
+
+def test_tp_maker_waits_for_the_exit_it_just_placed(making):
+    # maker_exit but the order is not on the list yet: nothing to resize.
+    http, out = ClosingHTTP(), Recorder()
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": EXITED}, out.send, out.speak))
+
+    assert http.orders == []
+
+
+def test_tp_maker_cancels_an_orphaned_exit(making):
+    http, out = ClosingHTTP(), Recorder()
+    http.order_rows = [exit_row()]
+
+    asyncio.run(bybit_watch.tp_maker(http, {}, out.send, out.speak))
+
+    assert http.orders == [{"category": "linear", "symbol": "CLUSDT", "orderId": "e1"}]
+    assert out.sent == ["🎯 CL: тейк-лимитка осталась без позиции — отменена"]
+
+
+def test_tp_maker_orphan_cancel_survives_a_refusal(making, caplog):
+    http, out = ClosingHTTP(), Recorder()
+    http.order_rows = [exit_row()]
+    http.refuse_order = True
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        asyncio.run(bybit_watch.tp_maker(http, {}, out.send, out.speak))
+
+    assert out.sent == []
+    assert "orphan exit cancel failed" in caplog.text
+
+
+def test_tp_maker_orphan_respects_the_cooldown(making):
+    http, out = ClosingHTTP(), Recorder()
+    http.order_rows = [exit_row()]
+    bybit_watch._tp_cooldown["CLUSDT"] = __import__("time").monotonic()
+
+    asyncio.run(bybit_watch.tp_maker(http, {}, out.send, out.speak))
+
+    assert http.orders == []
+
+
+def test_tp_maker_respects_the_cooldown(making):
+    http, out = ClosingHTTP(), Recorder()
+    bybit_watch._tp_cooldown["CLUSDT"] = __import__("time").monotonic()
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": TAKEN}, out.send, out.speak))
+
+    assert http.orders == []
+
+
+def test_tp_maker_reports_a_refused_repost(making):
+    http, out = ClosingHTTP(), Recorder()
+    http.refuse_order = True
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": TAKEN}, out.send, out.speak))
+
+    assert out.sent == ["❌ CL: не смог перевыставить тейк (order rejected)"]
+
+
+def test_tp_maker_reports_a_refused_resize(making):
+    http, out = ClosingHTTP(), Recorder()
+    http.order_rows = [exit_row(qty="9")]
+    http.refuse_order = True
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": EXITED}, out.send, out.speak))
+
+    assert out.sent == ["❌ CL: не смог подогнать тейк (order rejected)"]
+
+
+def test_tp_maker_stays_dormant_when_disabled(keyed):
+    http, out = ClosingHTTP(), Recorder()
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": TAKEN}, out.send, out.speak))
+
+    assert http.requests == []
+    assert http.orders == []
+
+
+def test_maker_exits_survives_a_listing_failure(making, caplog):
+    class Refusing(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise OSError("down")
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        got = asyncio.run(bybit_watch.maker_exits(Refusing()))
+
+    assert got == {}
+    assert "exit order listing failed" in caplog.text
+
+
+def test_maker_exits_keeps_only_reduce_only_limits(keyed):
+    http = FakeHTTP()
+    http.order_rows = [
+        exit_row(),
+        exit_row(order_id="m1", symbol="AUSDT", reduceOnly=False),  # an entry
+        exit_row(order_id="m2", symbol="BUSDT", orderType="Market"),
+        exit_row(order_id="m3", symbol="CUSDT", stopOrderType="TakeProfit"),
+        exit_row(order_id="m4", symbol="DUSDT", price="0"),
+    ]
+
+    exits = asyncio.run(bybit_watch.maker_exits(http))
+
+    assert list(exits) == ["CLUSDT"]
+
+
+def test_positions_fold_the_maker_exit_back_into_the_take(making):
+    http = FakeHTTP()
+    http.position_pages = [[row(sl="0.15"), row(symbol="OPUSDT", tp="1.5", sl="1.2")]]
+    http.order_rows = [
+        exit_row(symbol="FARTCOINUSDT", price="0.2621"),
+        exit_row(order_id="g1", symbol="GHOSTUSDT"),  # no such position
+    ]
+
+    open_now = asyncio.run(bybit_watch.positions(http))
+
+    assert open_now["FARTCOINUSDT"].take_profit == 0.2621
+    assert open_now["FARTCOINUSDT"].maker_exit is True
+    assert open_now["OPUSDT"].take_profit == 1.5
+    assert open_now["OPUSDT"].maker_exit is False
+
+
+def test_positions_skip_the_exit_lookup_when_every_take_is_set(making):
+    http = FakeHTTP()
+    http.position_pages = [[row(tp="0.3", sl="0.15")]]
+
+    asyncio.run(bybit_watch.positions(http))
+
+    assert not any("order/realtime" in u for u in http.requests)
+
+
+def test_close_kind_calls_the_maker_exit_a_take(keyed, monkeypatch):
+    monkeypatch.setattr(bybit_watch, "TP_MAKER", True)
+    http = FakeHTTP()
+    http.history_rows = [{"createType": "CreateByUser", "reduceOnly": True, "orderType": "Limit"}]
+
+    assert asyncio.run(bybit_watch.close_kind(http, {"orderId": "x"})) == "тейк"
+
+
+def test_close_kind_keeps_a_market_hand_close_manual(keyed, monkeypatch):
+    monkeypatch.setattr(bybit_watch, "TP_MAKER", True)
+    http = FakeHTTP()
+    http.history_rows = [{"createType": "CreateByUser", "orderType": "Market"}]
+
+    assert asyncio.run(bybit_watch.close_kind(http, {"orderId": "x"})) == "руками"
