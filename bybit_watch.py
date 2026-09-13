@@ -159,29 +159,35 @@ async def positions(http: httpx.AsyncClient) -> dict[str, Position]:
     result = await _get(http, _POSITIONS, {"category": "linear", "settleCoin": "USDT"})
     open_now: dict[str, Position] = {}
     for row in result.get("list", []):
-        size = float(row.get("size") or 0)
-        if size == 0:
-            continue
-        open_now[row["symbol"]] = Position(
-            side="long" if row.get("side") == "Buy" else "short",
-            size=size,
-            price=float(row.get("avgPrice") or 0),
-            value=float(row.get("positionValue") or 0),
-            take_profit=float(row["takeProfit"]) if row.get("takeProfit") else None,
-            stop_loss=float(row["stopLoss"]) if row.get("stopLoss") else None,
-            unrealised=float(row.get("unrealisedPnl") or 0),
-            leverage=float(row.get("leverage") or 0),
-            position_idx=int(row.get("positionIdx") or 0),
-            created_ms=int(row.get("createdTime") or 0),
-        )
+        if float(row.get("size") or 0) != 0:
+            open_now[row["symbol"]] = _position_of(row)
     if TP_MAKER and any(p.take_profit is None for p in open_now.values()):
-        for symbol, order in (await maker_exits(http)).items():
-            position = open_now.get(symbol)
-            if position is not None and position.take_profit is None:
-                open_now[symbol] = replace(
-                    position, take_profit=float(order["price"]), maker_exit=True
-                )
+        await _fold_exits(http, open_now)
     return open_now
+
+
+def _position_of(row: dict) -> Position:
+    """One Bybit position row as the watcher's Position."""
+    return Position(
+        side="long" if row.get("side") == "Buy" else "short",
+        size=float(row.get("size") or 0),
+        price=float(row.get("avgPrice") or 0),
+        value=float(row.get("positionValue") or 0),
+        take_profit=float(row["takeProfit"]) if row.get("takeProfit") else None,
+        stop_loss=float(row["stopLoss"]) if row.get("stopLoss") else None,
+        unrealised=float(row.get("unrealisedPnl") or 0),
+        leverage=float(row.get("leverage") or 0),
+        position_idx=int(row.get("positionIdx") or 0),
+        created_ms=int(row.get("createdTime") or 0),
+    )
+
+
+async def _fold_exits(http: httpx.AsyncClient, open_now: dict[str, Position]) -> None:
+    """Give takes that live as maker exit orders back to their positions."""
+    for symbol, order in (await maker_exits(http)).items():
+        position = open_now.get(symbol)
+        if position is not None and position.take_profit is None:
+            open_now[symbol] = replace(position, take_profit=float(order["price"]), maker_exit=True)
 
 
 async def maker_exits(http: httpx.AsyncClient) -> dict[str, dict]:
@@ -191,9 +197,7 @@ async def maker_exits(http: httpx.AsyncClient) -> dict[str, dict]:
     try again next poll.
     """
     try:
-        result = await _get(
-            http, _ORDERS, {"category": "linear", "settleCoin": "USDT"}
-        )
+        result = await _get(http, _ORDERS, {"category": "linear", "settleCoin": "USDT"})
     # Deliberately broad: no order answer must not break the position poll.
     except Exception:  # noqa: BLE001
         log.exception("exit order listing failed")
@@ -330,51 +334,60 @@ async def trim(http: httpx.AsyncClient, open_now: dict[str, Position], send, spe
             continue
         if time.monotonic() - _trim_cooldown.get(symbol, 0.0) < 10.0:
             continue
-        distance = abs(position.price - position.stop_loss)
-        if distance <= 0:
+        if abs(position.price - position.stop_loss) <= 0:
             continue
-        entry_fee = position.price * TAKER_FEE
-        stop_fee = position.stop_loss * TAKER_FEE
-        per_unit = distance + entry_fee + stop_fee
         if depo is None:
             depo = await wallet_balance(http)
         if not depo:
             return
-        risk = per_unit * position.size
-        target = depo * RISK_TARGET
-        if risk <= target:
-            continue
-        step, min_qty = await _lot(http, symbol)
-        if step <= 0:
-            continue
-        # The kept size answers for what is left of the budget once the sunk
-        # fees are out: the entry fee was paid on every unit, and the cut
-        # (size - want) pays its own taker fee at roughly the entry price.
-        # target >= entry_fee*size + entry_fee*(size-want) + want*(distance+stop_fee)
-        # solved for want:
-        budget = target - 2 * position.size * entry_fee
-        want = math.floor(budget / (distance + stop_fee - entry_fee) / step) * step
-        cut = position.size - want
-        if want < min_qty or cut < step:
-            continue
-        _trim_cooldown[symbol] = time.monotonic()
-        try:
-            await _close_market(
-                http,
-                symbol,
-                "Buy" if position.side == "long" else "Sell",
-                f"{cut:g}",
-                position.position_idx,
-            )
-            await send(
-                f"✂️ {base_symbol(symbol)}: риск {risk / depo * 100:.2f}% депо при цели "
-                f"{RISK_TARGET * 100:.2f}% — режу {position.size:g}→{want:g}"
-            )
-            await speak(f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} trimmed")
-        # Deliberately broad: one refused cut must not strand the rest.
-        except Exception as exc:  # noqa: BLE001
-            log.exception("trim failed for %s", symbol)
-            await send(f"❌ {base_symbol(symbol)}: не смог подрезать ({exc})")
+        await _trim_cut(http, symbol, position, depo, send, speak)
+
+
+async def _trim_cut(
+    http: httpx.AsyncClient, symbol: str, position: Position, depo: float, send, speak
+) -> None:
+    """Cut one position whose stop-out overshoots the target, if it does."""
+    # The caller has already ruled out a missing stop; `or 0` narrows the type.
+    stop = position.stop_loss or 0.0
+    distance = abs(position.price - stop)
+    entry_fee = position.price * TAKER_FEE
+    stop_fee = stop * TAKER_FEE
+    per_unit = distance + entry_fee + stop_fee
+    risk = per_unit * position.size
+    target = depo * RISK_TARGET
+    if risk <= target:
+        return
+    step, min_qty = await _lot(http, symbol)
+    if step <= 0:
+        return
+    # The kept size answers for what is left of the budget once the sunk
+    # fees are out: the entry fee was paid on every unit, and the cut
+    # (size - want) pays its own taker fee at roughly the entry price.
+    # target >= entry_fee*size + entry_fee*(size-want) + want*(distance+stop_fee)
+    # solved for want:
+    budget = target - 2 * position.size * entry_fee
+    want = math.floor(budget / (distance + stop_fee - entry_fee) / step) * step
+    cut = position.size - want
+    if want < min_qty or cut < step:
+        return
+    _trim_cooldown[symbol] = time.monotonic()
+    try:
+        await _close_market(
+            http,
+            symbol,
+            "Buy" if position.side == "long" else "Sell",
+            f"{cut:g}",
+            position.position_idx,
+        )
+        await send(
+            f"✂️ {base_symbol(symbol)}: риск {risk / depo * 100:.2f}% депо при цели "
+            f"{RISK_TARGET * 100:.2f}% — режу {position.size:g}→{want:g}"
+        )
+        await speak(f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} trimmed")
+    # Deliberately broad: one refused cut must not strand the rest.
+    except Exception as exc:  # noqa: BLE001
+        log.exception("trim failed for %s", symbol)
+        await send(f"❌ {base_symbol(symbol)}: не смог подрезать ({exc})")
 
 
 # When each symbol's take was last touched: Bybit needs a moment to show a
@@ -398,6 +411,25 @@ async def tp_maker(http: httpx.AsyncClient, open_now: dict[str, Position], send,
     if not TP_MAKER:
         return
     exits = await maker_exits(http)
+    await _cancel_orphan_exits(http, exits, open_now, send)
+    for symbol, position in open_now.items():
+        if position.take_profit is None:
+            continue
+        if time.monotonic() - _tp_cooldown.get(symbol, 0.0) < 10.0:
+            continue
+        exit_order = exits.get(symbol)
+        if not position.maker_exit:
+            _tp_cooldown[symbol] = time.monotonic()
+            await _repost_take(http, symbol, position, exit_order, send, speak)
+        elif exit_order is not None and float(exit_order.get("qty") or 0) != position.size:
+            _tp_cooldown[symbol] = time.monotonic()
+            await _resize_exit(http, symbol, position, exit_order, send)
+
+
+async def _cancel_orphan_exits(
+    http: httpx.AsyncClient, exits: dict[str, dict], open_now: dict[str, Position], send
+) -> None:
+    """Cancel maker exits whose position is gone — a stop-out leaves one."""
     for symbol, order in exits.items():
         if symbol in open_now or time.monotonic() - _tp_cooldown.get(symbol, 0.0) < 10.0:
             continue
@@ -412,69 +444,76 @@ async def tp_maker(http: httpx.AsyncClient, open_now: dict[str, Position], send,
         # Deliberately broad: one refused cancel must not strand the rest.
         except Exception:  # noqa: BLE001
             log.exception("orphan exit cancel failed for %s", symbol)
-    for symbol, position in open_now.items():
-        if position.take_profit is None:
-            continue
-        if time.monotonic() - _tp_cooldown.get(symbol, 0.0) < 10.0:
-            continue
-        exit_order = exits.get(symbol)
-        if not position.maker_exit:
-            _tp_cooldown[symbol] = time.monotonic()
-            price = f"{position.take_profit:g}"
-            try:
-                if exit_order is None:
-                    await _post(
-                        http,
-                        "/v5/order/create",
-                        {
-                            "category": "linear",
-                            "symbol": symbol,
-                            "side": "Sell" if position.side == "long" else "Buy",
-                            "orderType": "Limit",
-                            "qty": f"{position.size:g}",
-                            "price": price,
-                            "reduceOnly": True,
-                            "positionIdx": position.position_idx,
-                        },
-                    )
-                await _post(
-                    http,
-                    "/v5/position/trading-stop",
-                    {
-                        "category": "linear",
-                        "symbol": symbol,
-                        "takeProfit": "0",
-                        "positionIdx": position.position_idx,
-                    },
-                )
-                await send(f"🎯 {base_symbol(symbol)}: тейк {price} перевыставлен лимиткой (maker)")
-                await speak(
-                    f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} take reposted"
-                )
-            # Deliberately broad: one refused repost must not strand the rest.
-            except Exception as exc:  # noqa: BLE001
-                log.exception("tp-maker repost failed for %s", symbol)
-                await send(f"❌ {base_symbol(symbol)}: не смог перевыставить тейк ({exc})")
-        elif exit_order is not None and float(exit_order.get("qty") or 0) != position.size:
-            _tp_cooldown[symbol] = time.monotonic()
-            try:
-                await _post(
-                    http,
-                    "/v5/order/amend",
-                    {
-                        "category": "linear",
-                        "symbol": symbol,
-                        "orderId": exit_order["orderId"],
-                        "qty": f"{position.size:g}",
-                    },
-                )
-                await send(
-                    f"🎯 {base_symbol(symbol)}: тейк-лимитка подогнана под {position.size:g}"
-                )
-            # Deliberately broad: one refused amend must not strand the rest.
-            except Exception as exc:  # noqa: BLE001
-                log.exception("tp-maker amend failed for %s", symbol)
-                await send(f"❌ {base_symbol(symbol)}: не смог подогнать тейк ({exc})")
+
+
+async def _repost_take(
+    http: httpx.AsyncClient,
+    symbol: str,
+    position: Position,
+    exit_order: dict | None,
+    send,
+    speak,
+) -> None:
+    """Stand the reduce-only limit at the take, then drop the market TP.
+
+    In that order: a refusal in between leaves the position covered by the
+    original take.
+    """
+    price = f"{position.take_profit:g}"
+    try:
+        if exit_order is None:
+            await _post(
+                http,
+                "/v5/order/create",
+                {
+                    "category": "linear",
+                    "symbol": symbol,
+                    "side": "Sell" if position.side == "long" else "Buy",
+                    "orderType": "Limit",
+                    "qty": f"{position.size:g}",
+                    "price": price,
+                    "reduceOnly": True,
+                    "positionIdx": position.position_idx,
+                },
+            )
+        await _post(
+            http,
+            "/v5/position/trading-stop",
+            {
+                "category": "linear",
+                "symbol": symbol,
+                "takeProfit": "0",
+                "positionIdx": position.position_idx,
+            },
+        )
+        await send(f"🎯 {base_symbol(symbol)}: тейк {price} перевыставлен лимиткой (maker)")
+        await speak(f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} take reposted")
+    # Deliberately broad: one refused repost must not strand the rest.
+    except Exception as exc:  # noqa: BLE001
+        log.exception("tp-maker repost failed for %s", symbol)
+        await send(f"❌ {base_symbol(symbol)}: не смог перевыставить тейк ({exc})")
+
+
+async def _resize_exit(
+    http: httpx.AsyncClient, symbol: str, position: Position, exit_order: dict, send
+) -> None:
+    """Fit the maker exit to the position after a trim changed its size."""
+    try:
+        await _post(
+            http,
+            "/v5/order/amend",
+            {
+                "category": "linear",
+                "symbol": symbol,
+                "orderId": exit_order["orderId"],
+                "qty": f"{position.size:g}",
+            },
+        )
+        await send(f"🎯 {base_symbol(symbol)}: тейк-лимитка подогнана под {position.size:g}")
+    # Deliberately broad: one refused amend must not strand the rest.
+    except Exception as exc:  # noqa: BLE001
+        log.exception("tp-maker amend failed for %s", symbol)
+        await send(f"❌ {base_symbol(symbol)}: не смог подогнать тейк ({exc})")
 
 
 async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, speak) -> None:
@@ -486,15 +525,21 @@ async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, sp
     """
     if not RISK_GUARD:
         return
-    # Naked limit orders: an entry with no stop attached gets cancelled the
-    # same way a stopless position gets closed. Exits are left alone —
-    # reduce-only and conditional (stop/take) orders carry no stopLoss by
-    # nature.
+    naked = await _naked_orders(http)
+    _forget_fixed(naked, open_now)
+    await _cancel_naked(http, naked, send, speak)
+    await _enforce_rules(http, open_now, send, speak)
+
+
+async def _naked_orders(http: httpx.AsyncClient) -> dict[str, dict]:
+    """Entry orders with no stop attached, keyed for the guard's memory.
+
+    Exits are left alone — reduce-only and conditional (stop/take) orders
+    carry no stopLoss by nature.
+    """
     naked: dict[str, dict] = {}
     try:
-        result = await _get(
-            http, _ORDERS, {"category": "linear", "settleCoin": "USDT"}
-        )
+        result = await _get(http, _ORDERS, {"category": "linear", "settleCoin": "USDT"})
         for r in result.get("list") or []:
             if r.get("reduceOnly") or r.get("stopOrderType") or r.get("closeOnTrigger"):
                 continue
@@ -504,6 +549,11 @@ async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, sp
     # Deliberately broad: no order answer must not stop the position rules.
     except Exception:  # noqa: BLE001
         log.exception("guard order listing failed")
+    return naked
+
+
+def _forget_fixed(naked: dict[str, dict], open_now: dict[str, Position]) -> None:
+    """Drop guard memory for breaches that healed themselves."""
     # A list copy on purpose: the dict shrinks inside the loop.
     for key in list(_guard_seen):  # NOSONAR
         if key.startswith("order:"):
@@ -513,24 +563,41 @@ async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, sp
             fixed = open_now.get(key)
             if fixed is None or _guard_violation(fixed) is None:
                 del _guard_seen[key]
+
+
+async def _grace_holds(key: str, warning: str, spoken: str, send, speak) -> bool:
+    """Whether enforcement waits: warn on first sight, hold inside the window.
+
+    A refused action retries after a full window (half a minute when the
+    grace is zero) instead of hammering the API every poll.
+    """
+    now = time.monotonic()
+    first = _guard_seen.get(key)
+    if first is None:
+        _guard_seen[key] = now
+        if GUARD_GRACE > 0:
+            await send(warning)
+            await speak(spoken)
+            return True
+    elif now - first < (GUARD_GRACE or 30.0):
+        return True
+    else:
+        _guard_seen[key] = now
+    return False
+
+
+async def _cancel_naked(http: httpx.AsyncClient, naked: dict[str, dict], send, speak) -> None:
+    """Cancel entry orders that still have no stop once the grace runs out."""
     for key, order in naked.items():
         symbol = order["symbol"]
-        now = time.monotonic()
-        first = _guard_seen.get(key)
-        if first is None:
-            _guard_seen[key] = now
-            if GUARD_GRACE > 0:
-                await send(
-                    f"🛑 {base_symbol(symbol)}: лимитка без стопа — отменю через {GUARD_GRACE:.0f}с"
-                )
-                await speak(
-                    f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} naked order"
-                )
-                continue
-        elif now - first < (GUARD_GRACE or 30.0):
+        if await _grace_holds(
+            key,
+            f"🛑 {base_symbol(symbol)}: лимитка без стопа — отменю через {GUARD_GRACE:.0f}с",
+            f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} naked order",
+            send,
+            speak,
+        ):
             continue
-        else:
-            _guard_seen[key] = now
         try:
             await _post(
                 http,
@@ -542,28 +609,24 @@ async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, sp
         except Exception as exc:  # noqa: BLE001
             log.exception("guard cancel failed for %s", symbol)
             await send(f"❌ {base_symbol(symbol)}: не смог отменить лимитку ({exc})")
+
+
+async def _enforce_rules(
+    http: httpx.AsyncClient, open_now: dict[str, Position], send, speak
+) -> None:
+    """Market-close positions that still break a rule once the grace runs out."""
     for symbol, position in open_now.items():
         reason = _guard_violation(position)
         if reason is None:
             continue
-        now = time.monotonic()
-        first = _guard_seen.get(symbol)
-        if first is None:
-            _guard_seen[symbol] = now
-            if GUARD_GRACE > 0:
-                await send(
-                    f"🛑 {base_symbol(symbol)}: {reason} — закрою маркетом через {GUARD_GRACE:.0f}с"
-                )
-                await speak(
-                    f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} risk breach"
-                )
-                continue
-        # A refused close retries after a full window (half a minute when the
-        # grace is zero) instead of hammering the API every poll.
-        elif now - first < (GUARD_GRACE or 30.0):
+        if await _grace_holds(
+            symbol,
+            f"🛑 {base_symbol(symbol)}: {reason} — закрою маркетом через {GUARD_GRACE:.0f}с",
+            f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} risk breach",
+            send,
+            speak,
+        ):
             continue
-        else:
-            _guard_seen[symbol] = now
         try:
             await _close_market(
                 http,
@@ -672,6 +735,16 @@ async def force_leverage_one(http: httpx.AsyncClient, query: str = "") -> str:
         except Exception:  # noqa: BLE001
             log.exception("lev1 listing failed")
             return _NO_ANSWER
+    lines = await _cap_actives(http, active)
+    if not active and not rest:
+        return "Нет открытых позиций и ордеров — плечо ставить некому"
+    if rest:
+        lines.append(await _cap_the_rest(http, rest))
+    return "\n".join(lines)
+
+
+async def _cap_actives(http: httpx.AsyncClient, active: list[str]) -> list[str]:
+    """A verdict line per named instrument."""
     lines = []
     for symbol in active:
         verdict = await _cap_leverage(http, symbol)
@@ -681,22 +754,21 @@ async def force_leverage_one(http: httpx.AsyncClient, query: str = "") -> str:
             lines.append(f"· {base_symbol(symbol)} уже 1x")
         else:
             lines.append(f"❌ {base_symbol(symbol)}: {verdict}")
-    if not active and not rest:
-        return "Нет открытых позиций и ордеров — плечо ставить некому"
-    if rest:
-        done = already = failed = 0
-        for symbol in rest:
-            verdict = await _cap_leverage(http, symbol)
-            if verdict == "done":
-                done += 1
-            elif verdict == "already":
-                already += 1
-            else:
-                failed += 1
-        lines.append(
-            f"Остальные {len(rest)} инструментов: ✅ {done} · уже 1x {already} · ❌ {failed}"
-        )
-    return "\n".join(lines)
+    return lines
+
+
+async def _cap_the_rest(http: httpx.AsyncClient, rest: list[str]) -> str:
+    """The whole-exchange sweep, condensed to counters."""
+    done = already = failed = 0
+    for symbol in rest:
+        verdict = await _cap_leverage(http, symbol)
+        if verdict == "done":
+            done += 1
+        elif verdict == "already":
+            already += 1
+        else:
+            failed += 1
+    return f"Остальные {len(rest)} инструментов: ✅ {done} · уже 1x {already} · ❌ {failed}"
 
 
 async def close_position(http: httpx.AsyncClient, query: str) -> str:
@@ -863,16 +935,11 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
     if not open_now:
         return "Открытых позиций нет"
     depo = await equity(http)
-
-    def share(amount: float) -> str:
-        return f"({amount / depo * 100:+.2f}%)" if depo else ""
-
     lines = []
     pngs = []
     total = 0.0
     total_net = 0.0
     for symbol, position in sorted(open_now.items()):
-        arrow = "📈" if position.side == "long" else "📉"
         # uPnL is pure price difference; what was really paid so far (entry
         # fills, from the execution log) and the taker exit still to come
         # both come off. An unknown history falls back to a taker entry.
@@ -881,78 +948,98 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         fees = paid + TAKER_FEE * position.value
         funding = await accrued_funding(http, symbol, position.created_ms)
         net = position.unrealised - fees - funding
-        head = f"{arrow}{base_symbol(symbol)} {_val(position.value)}$@{position.price:g}"
-        rr = None
-        if position.stop_loss and position.take_profit:
-            rr = abs(position.take_profit - position.price) / abs(
-                position.price - position.stop_loss
-            )
-            head += f" | RR{rr:.2f}"
-        exits = []
-        at_sl = at_tp = None
-        if position.stop_loss:
-            # What the stop costs if it fires, fees included.
-            at_sl = -abs(position.price - position.stop_loss) * position.size - fees - funding
-            exits.append(f"sl{position.stop_loss:g}:<b>{_usd(at_sl)}{share(at_sl)}</b>")
-        if position.take_profit:
-            sign = 1 if position.side == "long" else -1
-            at_tp = sign * (position.take_profit - position.price) * position.size - fees - funding
-            tp_depo = f"=деп{depo + at_tp:,.2f}$" if depo else ""
-            exits.append(f"tp{position.take_profit:g}:<b>{_usd(at_tp)}{share(at_tp)}{tp_depo}</b>")
-        block = [head, *exits]
-        fund_note = ""
-        if funding > 0:
-            fund_note = f"−фанд{_sig2(funding)}"
-        elif funding < 0:
-            fund_note = f"+фанд{_sig2(-funding)}"
-        block.append(
-            f"PnL{position.unrealised:+,.2f}−комса{_sig2(fees)}{fund_note}"
-            f"=<b>{net:+,.2f}{share(net)}</b>"
-        )
+        block, rr, at_sl, at_tp = _position_block(symbol, position, fees, funding, net, depo)
         total += position.unrealised
         total_net += net
-        lines.append("\n".join(block))
+        lines.append(block)
         if send_album is not None:
-            be = breakeven_price(
-                position.side,
-                position.price,
-                funding / position.size if position.size else 0.0,
-                entry_fee_per_unit=real,
-            )
-            tp_note = sl_note = ""
-            if at_tp is not None:
-                tp_note = f"{at_tp:+,.2f}{share(at_tp)}"
-                if depo:
-                    tp_note += f" = {depo + at_tp:,.2f}$"
-            if at_sl is not None:
-                sl_note = f"{at_sl:+,.2f}{share(at_sl)}"
-                if depo:
-                    sl_note += f" = {depo + at_sl:,.2f}$"
-            png = await entry_chart(
-                http,
-                symbol,
-                position,
-                entry_note=(
-                    f"{_val(position.value)}$"
-                    + (f" ({position.value / depo * 100:.1f}% depo)" if depo else "")
-                    + (f" | RR {rr:.2f}" if rr is not None else "")
-                    + f" | PnL {position.unrealised:+,.2f} - fee {fees:.2f}"
-                    + f" = {net:+,.2f}{share(net)}"
-                ),
-                tp_note=tp_note,
-                sl_note=sl_note,
-                breakeven=be,
+            png = await _position_chart(
+                http, symbol, position, real, fees, funding, net, rr, at_sl, at_tp, depo
             )
             if png is not None:
                 pngs.append(png)
     # A total of one position would just repeat its line.
     if len(lines) > 1:
-        lines.append(f"ΣPnL{_usd(total)}=<b>{_usd(total_net)}{share(total_net)}</b>")
+        lines.append(f"ΣPnL{_usd(total)}=<b>{_usd(total_net)}{_share(total_net, depo)}</b>")
     text = "\n".join(lines)
     # Telegram caps a media-group caption at 1024 characters.
     if send_album is not None and pngs and len(text) <= 1024 and await send_album(text, pngs):
         return ""
     return text
+
+
+def _position_block(
+    symbol: str, position: Position, fees: float, funding: float, net: float, depo: float | None
+) -> tuple[str, float | None, float | None, float | None]:
+    """One /positions block, plus (rr, at_sl, at_tp) for the chart notes."""
+    head = (
+        f"{_arrow(position.side)}{base_symbol(symbol)} {_val(position.value)}$@{position.price:g}"
+    )
+    rr = None
+    if position.stop_loss and position.take_profit:
+        rr = abs(position.take_profit - position.price) / abs(position.price - position.stop_loss)
+        head += f" | RR{rr:.2f}"
+    exits = []
+    at_sl = at_tp = None
+    if position.stop_loss:
+        # What the stop costs if it fires, fees included.
+        at_sl = -abs(position.price - position.stop_loss) * position.size - fees - funding
+        exits.append(f"sl{position.stop_loss:g}:<b>{_usd(at_sl)}{_share(at_sl, depo)}</b>")
+    if position.take_profit:
+        sign = 1 if position.side == "long" else -1
+        at_tp = sign * (position.take_profit - position.price) * position.size - fees - funding
+        tp_depo = f"=деп{depo + at_tp:,.2f}$" if depo else ""
+        exits.append(
+            f"tp{position.take_profit:g}:<b>{_usd(at_tp)}{_share(at_tp, depo)}{tp_depo}</b>"
+        )
+    fund_note = ""
+    if funding > 0:
+        fund_note = f"−фанд{_sig2(funding)}"
+    elif funding < 0:
+        fund_note = f"+фанд{_sig2(-funding)}"
+    pnl = (
+        f"PnL{position.unrealised:+,.2f}−комса{_sig2(fees)}{fund_note}"
+        f"=<b>{net:+,.2f}{_share(net, depo)}</b>"
+    )
+    return "\n".join([head, *exits, pnl]), rr, at_sl, at_tp
+
+
+async def _position_chart(
+    http: httpx.AsyncClient,
+    symbol: str,
+    position: Position,
+    real: float | None,
+    fees: float,
+    funding: float,
+    net: float,
+    rr: float | None,
+    at_sl: float | None,
+    at_tp: float | None,
+    depo: float | None,
+) -> bytes | None:
+    """The /positions album chart for one position, breakeven drawn in."""
+    be = breakeven_price(
+        position.side,
+        position.price,
+        funding / position.size if position.size else 0.0,
+        entry_fee_per_unit=real,
+    )
+    tp_note, sl_note = _chart_notes(at_tp, at_sl, depo)
+    return await entry_chart(
+        http,
+        symbol,
+        position,
+        entry_note=(
+            f"{_val(position.value)}$"
+            + (f" ({position.value / depo * 100:.1f}% depo)" if depo else "")
+            + (f" | RR {rr:.2f}" if rr is not None else "")
+            + f" | PnL {position.unrealised:+,.2f} - fee {fees:.2f}"
+            + f" = {net:+,.2f}{_share(net, depo)}"
+        ),
+        tp_note=tp_note,
+        sl_note=sl_note,
+        breakeven=be,
+    )
 
 
 async def _klines(
@@ -1245,6 +1332,26 @@ async def entry_fee(http: httpx.AsyncClient, symbol: str) -> float | None:
         return None
 
 
+def _journal_meta(
+    was: Position, record: dict, entry: float, pnl: float, forced: str
+) -> tuple[str, str, float]:
+    """(open date, RR text, R multiple) for the journal row.
+
+    The R multiple is PnL over the risk the stop carried; without a stop it
+    falls back to net USDT.
+    """
+    from datetime import datetime
+
+    opened_ms = record.get("createdTime")
+    opened = datetime.fromtimestamp(int(opened_ms) / 1000).strftime("%d.%m.%y") if opened_ms else ""
+    rr = f"принудительно остановлено: {forced}" if forced else ""
+    if was.stop_loss and was.take_profit:
+        rr = f"1к{abs(was.take_profit - entry) / abs(entry - was.stop_loss):.1f}"
+    risk = abs(entry - was.stop_loss) * was.size if was.stop_loss else 0.0
+    fact: float = round(pnl / risk, 2) if risk else round(pnl, 2)
+    return opened, rr, fact
+
+
 def journal_row(
     symbol: str,
     was: Position,
@@ -1262,18 +1369,8 @@ def journal_row(
     carried; without a stop it falls back to net USDT. Free-text columns
     stay empty for hand-written notes.
     """
-    from datetime import datetime
-
     entry = float(record.get("avgEntryPrice") or was.price)
-    opened_ms = record.get("createdTime")
-    opened = datetime.fromtimestamp(int(opened_ms) / 1000).strftime("%d.%m.%y") if opened_ms else ""
-    rr = f"принудительно остановлено: {forced}" if forced else ""
-    if was.stop_loss and was.take_profit:
-        rr = f"1к{abs(was.take_profit - entry) / abs(entry - was.stop_loss):.1f}"
-    risk = abs(entry - was.stop_loss) * was.size if was.stop_loss else 0.0
-    fact: float = round(pnl / risk, 2) if risk else round(pnl, 2)
-    # Columns: Дата, Пара, Позиция, Результат, RR, Результат (R), Скрин,
-    # Объём $, Вход, Выход, PnL, % депо, Комиссии, Деп.
+    opened, rr, fact = _journal_meta(was, record, entry, pnl, forced)
     opened_fee = float(record.get("openFee") or 0)
     closed_fee = float(record.get("closeFee") or 0)
     exit_price = float(record.get("avgExitPrice") or 0)
@@ -1440,6 +1537,135 @@ def describe(kind: str, symbol: str, was: Position | None, now: Position | None)
     return f"💸{_arrow(was.side)}{sym}", f"{name} {was.side} closed"
 
 
+def _share(amount: float, depo: float | None) -> str:
+    """The amount as a signed share of the deposit; nothing without one."""
+    return f"({amount / depo * 100:+.2f}%)" if depo else ""
+
+
+def _exit_lines(
+    now: Position, fees: float, depo: float | None
+) -> tuple[float | None, float | None, list[str]]:
+    """(at_sl, target, notice lines): what each exit costs or pays, fees off."""
+    at_sl = target = None
+    exits = []
+    if now.stop_loss is not None:
+        # What the stop costs if it fires, fees included.
+        at_sl = -abs(now.price - now.stop_loss) * now.size - fees
+        exits.append(f"sl{now.stop_loss:g}:<b>{_usd(at_sl)}{_share(at_sl, depo)}</b>")
+    if now.take_profit is not None:
+        # What reaching the TP pays, net of both fees: the entry fee
+        # just paid and a like-sized one for the exit.
+        target = abs(now.take_profit - now.price) * now.size - fees
+        tp_depo = f"=деп{depo + target:,.2f}$" if depo else ""
+        exits.append(f"tp{now.take_profit:g}:<b>{_usd(target)}{_share(target, depo)}{tp_depo}</b>")
+    return at_sl, target, exits
+
+
+def _chart_notes(target: float | None, at_sl: float | None, depo: float | None) -> tuple[str, str]:
+    """The chart's TP and SL annotations, with the deposit they would leave."""
+    tp_note = sl_note = ""
+    if target is not None:
+        tp_note = f"{target:+,.2f}{_share(target, depo)}"
+        if depo:
+            tp_note += f" = {depo + target:,.2f}$"
+    if at_sl is not None:
+        sl_note = f"{at_sl:+,.2f}{_share(at_sl, depo)}"
+        if depo:
+            sl_note += f" = {depo + at_sl:,.2f}$"
+    return tp_note, sl_note
+
+
+async def _entry_notice(
+    http: httpx.AsyncClient, symbol: str, now: Position, line: str
+) -> tuple[str, bytes | None]:
+    """The entry notice with exits, fees and warnings, plus its chart."""
+    fee = await entry_fee(http, symbol)
+    depo = await equity(http)
+    fees = 2 * (fee or TAKER_FEE * now.value)
+    rr = None
+    if now.stop_loss is not None and now.take_profit is not None:
+        rr = abs(now.take_profit - now.price) / abs(now.price - now.stop_loss)
+        line += f" | RR{rr:.2f}"
+    at_sl, target, exits = _exit_lines(now, fees, depo)
+    if exits:
+        line += "\n" + "\n".join(exits)
+    if fee:
+        line += f"\nкомса{_sig2(fee)}"
+    # The line is HTML: a bare "<" in "RR 0.63 < 2" makes Telegram
+    # refuse the whole notice, photo and text fallback both.
+    for warn in trade_warnings(now, depo):
+        line += f"\n{html.escape(warn)}"
+    tp_note, sl_note = _chart_notes(target, at_sl, depo)
+    png = await entry_chart(
+        http,
+        symbol,
+        now,
+        breakeven=breakeven_price(
+            now.side,
+            now.price,
+            entry_fee_per_unit=fee / now.size if fee and now.size else None,
+        ),
+        entry_note=(
+            f"{_val(now.value)}$"
+            + (f" ({now.value / depo * 100:.1f}% depo)" if depo else "")
+            + (f" | RR {rr:.2f}" if rr is not None else "")
+            + (f" | fee {fee:.2f}" if fee else "")
+        ),
+        tp_note=tp_note,
+        sl_note=sl_note,
+    )
+    return line, png
+
+
+async def _close_notice(
+    http: httpx.AsyncClient, symbol: str, was: Position, spoken_line: str
+) -> tuple[str | None, str, bytes | None]:
+    """The close notice, its chart and the journal write; None with no record."""
+    record = await closed_record(http, symbol)
+    if record is None:
+        return None, spoken_line, None
+    # Bybit's closedPnl nets both trading fees; funding it does
+    # not — that is charged separately, so it comes off here.
+    funding = await accrued_funding(http, symbol, was.created_ms)
+    pnl = float(record["closedPnl"]) - funding
+    depo = await equity(http)
+    # Net first, ticker after: the money is the news.
+    line = f"💸<b>{_usd(pnl)}</b>"
+    if depo:
+        line += f"=<b>{depo:,.2f}$</b>{_share(pnl, depo)}"
+    line += f"·{_arrow(was.side)}{base_symbol(symbol)}"
+    opened_fee = float(record.get("openFee") or 0)
+    closed_fee = float(record.get("closeFee") or 0)
+    spoken_line += f", {'profit' if pnl >= 0 else 'loss'} {abs(pnl):.0f}"
+    total_fees = opened_fee + closed_fee
+    png = await close_chart(
+        http,
+        symbol,
+        was,
+        record,
+        exit_note=(
+            f"PnL {pnl + total_fees:+,.2f} - fee {total_fees:.2f} = {pnl:+,.2f}{_share(pnl, depo)}"
+        ),
+    )
+    forced = _guard_closed.pop(symbol, "")
+    kind = "риск-гард" if forced else await close_kind(http, record)
+    if kind:
+        line += f"·{kind}"
+    if opened_fee or closed_fee or funding:
+        costs = f"комса {_sig2(opened_fee + closed_fee)}"
+        if funding:
+            costs += f", фанд {_sig2(funding)}"
+        line += f" ({costs})"
+    entry: dict = {"row": journal_row(symbol, was, record, pnl, depo, forced, kind)}
+    if png is not None:
+        # The Apps Script saves it to Drive and writes the link
+        # into the «Ссылка» column of the same row.
+        entry["png"] = base64.b64encode(png).decode()
+        entry["name"] = f"{base_symbol(symbol)}-{record.get('updatedTime', '')}"
+    await sheets.log_close(http, entry)
+    return line, spoken_line, png
+
+
 async def tick(
     http: httpx.AsyncClient, before: dict[str, Position] | None, send, speak, send_photo
 ) -> dict[str, Position]:
@@ -1455,112 +1681,15 @@ async def tick(
     await tp_maker(http, after, send, speak)
     if before is None:
         return after
-
-    def share(amount: float, depo: float | None) -> str:
-        return f"({amount / depo * 100:+.2f}%)" if depo else ""
-
     for kind, symbol, was, now in diff(before, after):
         line, spoken_line = describe(kind, symbol, was, now)
         png = None
         if kind in ("opened", "flipped") and now is not None:
-            fee = await entry_fee(http, symbol)
-            depo = await equity(http)
-            fees = 2 * (fee or TAKER_FEE * now.value)
-            at_sl = target = rr = None
-            if now.stop_loss is not None and now.take_profit is not None:
-                rr = abs(now.take_profit - now.price) / abs(now.price - now.stop_loss)
-                line += f" | RR{rr:.2f}"
-            exits = []
-            if now.stop_loss is not None:
-                # What the stop costs if it fires, fees included.
-                at_sl = -abs(now.price - now.stop_loss) * now.size - fees
-                exits.append(f"sl{now.stop_loss:g}:<b>{_usd(at_sl)}{share(at_sl, depo)}</b>")
-            if now.take_profit is not None:
-                # What reaching the TP pays, net of both fees: the entry fee
-                # just paid and a like-sized one for the exit.
-                target = abs(now.take_profit - now.price) * now.size - fees
-                tp_depo = f"=деп{depo + target:,.2f}$" if depo else ""
-                exits.append(
-                    f"tp{now.take_profit:g}:<b>{_usd(target)}{share(target, depo)}{tp_depo}</b>"
-                )
-            if exits:
-                line += "\n" + "\n".join(exits)
-            if fee:
-                line += f"\nкомса{_sig2(fee)}"
-            # The line is HTML: a bare "<" in "RR 0.63 < 2" makes Telegram
-            # refuse the whole notice, photo and text fallback both.
-            for warn in trade_warnings(now, depo):
-                line += f"\n{html.escape(warn)}"
-            tp_note = sl_note = ""
-            if target is not None:
-                tp_note = f"{target:+,.2f}{share(target, depo)}"
-                if depo:
-                    tp_note += f" = {depo + target:,.2f}$"
-            if at_sl is not None:
-                sl_note = f"{at_sl:+,.2f}{share(at_sl, depo)}"
-                if depo:
-                    sl_note += f" = {depo + at_sl:,.2f}$"
-            png = await entry_chart(
-                http,
-                symbol,
-                now,
-                breakeven=breakeven_price(
-                    now.side,
-                    now.price,
-                    entry_fee_per_unit=fee / now.size if fee and now.size else None,
-                ),
-                entry_note=(
-                    f"{_val(now.value)}$"
-                    + (f" ({now.value / depo * 100:.1f}% depo)" if depo else "")
-                    + (f" | RR {rr:.2f}" if rr is not None else "")
-                    + (f" | fee {fee:.2f}" if fee else "")
-                ),
-                tp_note=tp_note,
-                sl_note=sl_note,
-            )
+            line, png = await _entry_notice(http, symbol, now, line)
         elif kind == "closed" and was is not None:
-            record = await closed_record(http, symbol)
-            if record is not None:
-                # Bybit's closedPnl nets both trading fees; funding it does
-                # not — that is charged separately, so it comes off here.
-                funding = await accrued_funding(http, symbol, was.created_ms)
-                pnl = float(record["closedPnl"]) - funding
-                depo = await equity(http)
-                # Net first, ticker after: the money is the news.
-                line = f"💸<b>{_usd(pnl)}</b>"
-                if depo:
-                    line += f"=<b>{depo:,.2f}$</b>{share(pnl, depo)}"
-                line += f"·{_arrow(was.side)}{base_symbol(symbol)}"
-                opened_fee = float(record.get("openFee") or 0)
-                closed_fee = float(record.get("closeFee") or 0)
-                spoken_line += f", {'profit' if pnl >= 0 else 'loss'} {abs(pnl):.0f}"
-                total_fees = opened_fee + closed_fee
-                png = await close_chart(
-                    http,
-                    symbol,
-                    was,
-                    record,
-                    exit_note=(
-                        f"PnL {pnl + total_fees:+,.2f} - fee {total_fees:.2f}"
-                        f" = {pnl:+,.2f}{share(pnl, depo)}"
-                    ),
-                )
-                forced = _guard_closed.pop(symbol, "")
-                kind = "риск-гард" if forced else await close_kind(http, record)
-                if kind:
-                    line += f"·{kind}"
-                if opened_fee or closed_fee or funding:
-                    costs = f"комса {_sig2(opened_fee + closed_fee)}"
-                    if funding:
-                        costs += f", фанд {_sig2(funding)}"
-                    line += f" ({costs})"
-                entry: dict = {"row": journal_row(symbol, was, record, pnl, depo, forced, kind)}
-                if png is not None:
-                    # The Apps Script saves it to Drive and writes the link
-                    # into the «Ссылка» column of the same row.
-                    entry["png"] = base64.b64encode(png).decode()
-                    entry["name"] = f"{base_symbol(symbol)}-{record.get('updatedTime', '')}"
-                await sheets.log_close(http, entry)
+            closed_line, spoken_line, png = await _close_notice(http, symbol, was, spoken_line)
+            if closed_line is not None:
+                line = closed_line
         if png is None or not await send_photo(line, png):
             await send(line)
         await speak(spoken_line)
@@ -1602,7 +1731,18 @@ async def money_moves(http: httpx.AsyncClient) -> list[dict]:
             }
         )
     result = await _get(http, "/v5/asset/deposit/query-record", {"startTime": since, "limit": "50"})
-    for r in result.get("rows", []):
+    moves.extend(_deposit_moves(result.get("rows", []), into_trading))
+    result = await _get(
+        http, "/v5/asset/withdraw/query-record", {"startTime": since, "limit": "50"}
+    )
+    moves.extend(_withdrawal_moves(result.get("rows", []), out_of_trading))
+    return moves
+
+
+def _deposit_moves(rows: list[dict], into_trading: set[tuple[str, float]]) -> list[dict]:
+    """Finished deposits not already counted as an incoming transfer."""
+    moves = []
+    for r in rows:
         amount = float(r.get("amount") or 0)
         coin = r.get("coin", "")
         # Status three means success.
@@ -1614,10 +1754,13 @@ async def money_moves(http: httpx.AsyncClient) -> list[dict]:
                     "coin": coin,
                 }
             )
-    result = await _get(
-        http, "/v5/asset/withdraw/query-record", {"startTime": since, "limit": "50"}
-    )
-    for r in result.get("rows", []):
+    return moves
+
+
+def _withdrawal_moves(rows: list[dict], out_of_trading: set[tuple[str, float]]) -> list[dict]:
+    """Finished withdrawals not already counted as an outgoing transfer."""
+    moves = []
+    for r in rows:
         amount = float(r.get("amount") or 0)
         # The transfer moved amount plus the withdrawal fee out of UNIFIED.
         debited = round(amount + float(r.get("withdrawFee") or 0), 8)
