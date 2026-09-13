@@ -1193,9 +1193,7 @@ async def entry_chart(
             entry_index=len(candles) - 1,
             pad_right=max(CHART_BARS // 6, 4),
             timeframe=f"{CHART_INTERVAL}m",
-            entry_note=entry_note,
-            tp_note=tp_note,
-            sl_note=sl_note,
+            notes=chart.Notes(entry=entry_note, tp=tp_note, sl=sl_note),
             breakeven=breakeven,
         )
     # Deliberately broad: a chart is garnish, never worth losing the notice.
@@ -1238,11 +1236,10 @@ async def close_chart(
             was.take_profit,
             was.stop_loss,
             entry_index=_bar_of(times, opened),
-            exit_index=_bar_of(times, closed),
-            exit_price=float(record["avgExitPrice"]),
+            exit_at=(_bar_of(times, closed), float(record["avgExitPrice"])),
             pad_right=2,
             timeframe=f"{CHART_INTERVAL}m",
-            exit_note=exit_note,
+            notes=chart.Notes(exit=exit_note),
         )
     # Deliberately broad: a chart is garnish, never worth losing the notice.
     except Exception:  # noqa: BLE001
