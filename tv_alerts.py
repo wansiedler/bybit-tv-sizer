@@ -139,8 +139,8 @@ def format_alert(text: str, came_from: float | None = None) -> tuple[str, str]:
 async def pump(queue: asyncio.Queue, send, speak, price_of=None) -> None:
     """Announce queued alerts until cancelled. One bad alert never ends it.
 
-    `price_of` (async, symbol -> float | None) supplies the pre-cross price
-    that orients the arrow when the alert itself names no direction.
+    `price_of` (async, bare ticker -> float | None) supplies the pre-cross
+    price that orients the arrow when the alert itself names no direction.
     """
     while True:
         text = await queue.get()
@@ -149,7 +149,7 @@ async def pump(queue: asyncio.Queue, send, speak, price_of=None) -> None:
             match = _CROSSING.match(text.strip())
             if price_of is not None and match is not None and not match["dir"]:
                 try:
-                    price = await price_of(f"{match['symbol'].upper()}USDT")
+                    price = await price_of(match["symbol"].upper())
                 # Deliberately broad: no price just means no arrow.
                 except Exception:  # noqa: BLE001
                     log.exception("price lookup failed")

@@ -30,6 +30,7 @@ class FakeHTTP:
         self.position_pages: list[list[dict[str, Any]]] = []
         self.pnl_rows: list[dict[str, Any]] = []
         self.kline_rows: list[list[str]] = []
+        self.moex_rows: list[list] = []
         self.exec_rows: list[dict[str, Any]] = []
         self.funding_rows: list[dict[str, Any]] = []
         self.trade_rows: list[dict[str, Any]] = []
@@ -45,6 +46,8 @@ class FakeHTTP:
 
     async def get(self, url, headers=None, timeout=None):
         self.requests.append(url)
+        if "iss.moex.com" in url:
+            return FakeResponse({"marketdata": {"columns": ["LAST"], "data": self.moex_rows}})
         if "/v5/position/list" in url:
             rows = self.position_pages.pop(0) if self.position_pages else []
             return FakeResponse({"retCode": 0, "result": {"list": rows}})
@@ -159,6 +162,39 @@ def test_price_before_reads_the_previous_minute_close(keyed):
 
 def test_price_before_is_none_without_history(keyed):
     assert asyncio.run(bybit_watch.price_before(FakeHTTP(), "NOPEUSDT")) is None
+
+
+def test_price_before_falls_back_to_moex(keyed):
+    class NoBybit(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            if "/v5/market/kline" in url:
+                return FakeResponse({"retCode": 10001, "retMsg": "unknown symbol"})
+            return await super().get(url, headers=headers, timeout=timeout)
+
+    http = NoBybit()
+    http.moex_rows = [[98.97]]
+
+    assert asyncio.run(bybit_watch.price_before(http, "GAZP")) == 98.97
+    assert any("GAZP.json" in url for url in http.requests)
+
+
+def test_moex_answers_nothing_for_an_unknown_share(keyed):
+    http = FakeHTTP()
+    http.moex_rows = [[None]]
+
+    assert asyncio.run(bybit_watch._moex_last(http, "NOPE")) is None
+    http.moex_rows = []
+    assert asyncio.run(bybit_watch._moex_last(http, "NOPE")) is None
+
+
+def test_moex_survives_a_refusal(keyed, caplog):
+    class Refusing(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise OSError("iss down")
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        assert asyncio.run(bybit_watch._moex_last(Refusing(), "GAZP")) is None
+    assert "no moex price" in caplog.text
 
 
 def test_get_raises_on_a_bybit_refusal(keyed):

@@ -647,21 +647,53 @@ async def _enforce_rules(
             await send(f"❌ {base_symbol(symbol)}: риск-менеджер не смог закрыть ({exc})")
 
 
-async def price_before(http: httpx.AsyncClient, symbol: str) -> float | None:
-    """Where the market was a minute ago: the previous 1m candle's close.
+async def price_before(http: httpx.AsyncClient, ticker: str) -> float | None:
+    """Where the market was a moment before the alert's cross.
 
     An alert level is crossed FROM somewhere; the price after the cross has
     often bounced right back over the line, so the arrow must come from the
-    side the market arrived from, not where it sits now.
+    side the market arrived from, not where it sits now. Crypto answers from
+    Bybit's last completed minute; a ticker Bybit does not list (a MOEX share
+    like GAZP) falls back to the Moscow Exchange's public ISS API.
     """
-    result = await _get(
-        http,
-        "/v5/market/kline",
-        {"category": "linear", "symbol": symbol, "interval": "1", "limit": "2"},
-    )
-    rows = result.get("list") or []
-    # Newest first; rows[1] is the last completed minute, close at index 4.
-    return float(rows[1][4]) if len(rows) > 1 else None
+    symbol = ticker if ticker.endswith("USDT") else f"{ticker}USDT"
+    try:
+        result = await _get(
+            http,
+            "/v5/market/kline",
+            {"category": "linear", "symbol": symbol, "interval": "1", "limit": "2"},
+        )
+        rows = result.get("list") or []
+        # Newest first; rows[1] is the last completed minute, close at index 4.
+        if len(rows) > 1:
+            return float(rows[1][4])
+    # Deliberately broad: an unlisted symbol is Bybit refusing, not a crash.
+    except Exception:  # noqa: BLE001
+        log.info("no bybit price for %s, asking MOEX", symbol)
+    return await _moex_last(http, ticker.removesuffix("USDT"))
+
+
+async def _moex_last(http: httpx.AsyncClient, ticker: str) -> float | None:
+    """The last trade on the Moscow Exchange's main share board, best-effort.
+
+    The unauthenticated ISS feed runs ~15 minutes behind — old enough to sit
+    on the arriving side of a cross that just fired, which is exactly what
+    the arrow wants.
+    """
+    try:
+        response = await http.get(
+            "https://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/"
+            f"securities/{ticker}.json"
+            "?iss.meta=off&iss.only=marketdata&marketdata.columns=LAST",
+            timeout=10,
+        )
+        data = response.json().get("marketdata", {}).get("data") or []
+        last = data[0][0] if data and data[0] else None
+        return float(last) if last is not None else None
+    # Deliberately broad: no MOEX answer just means no arrow.
+    except Exception:  # noqa: BLE001
+        log.exception("no moex price for %s", ticker)
+        return None
 
 
 async def _active_symbols(http: httpx.AsyncClient) -> set[str]:

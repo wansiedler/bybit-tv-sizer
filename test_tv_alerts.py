@@ -240,7 +240,7 @@ def test_pump_orients_the_arrow_by_market_price():
 
     asked, out = asyncio.run(run())
 
-    assert asked == ["ETHUSDT"]
+    assert asked == ["ETH"]
     assert out.sent == ["ETH 📉 2,440.85, TV"]
     assert out.spoken == ["ETH down, 2,440.85, TV"]
 
