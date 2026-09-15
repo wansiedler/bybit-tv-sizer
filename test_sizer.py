@@ -36,6 +36,7 @@ def _isolate(monkeypatch):
     monkeypatch.setattr(bybit_watch, "API_SECRET", "secret")
     monkeypatch.setattr(sizer, "DRY_RUN", True)
     monkeypatch.setattr(sizer, "RISK_PCT", Decimal("0.005"))
+    monkeypatch.setattr(sizer, "EQUITY_MAX", Decimal("0"))
     monkeypatch.setattr(sizer, "FALLBACK_SL_PCT", Decimal("0"))
     monkeypatch.setattr(sizer, "MAX_LEVERAGE", Decimal("5"))
     monkeypatch.setattr(sizer, "MAKER_FEE", Decimal("0.0002"))
@@ -640,3 +641,17 @@ def test_get_equity_below_the_ceiling_is_untouched(monkeypatch):
     http.equity = "40000"
 
     assert asyncio.run(sizer.get_equity(http)) == Decimal("40000")
+
+
+def test_poll_announces_the_risk_ceiling(monkeypatch):
+    monkeypatch.setattr(sizer, "EQUITY_MAX", Decimal("100000"))
+    out = Recorder()
+
+    class Cancelling(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(sizer.poll(Cancelling(), out.send))
+
+    assert "база ≤ 100,000$" in out.sent[0]

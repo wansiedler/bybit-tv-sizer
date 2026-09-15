@@ -362,7 +362,11 @@ async def poll(http: httpx.AsyncClient, send) -> None:
     """Resize orders until cancelled. Never lets one failure end the loop."""
     mode = "dry-run" if DRY_RUN else "LIVE"
     log.info("sizing orders every %ss | risk %s%% | %s", POLL, RISK_PCT * 100, mode)
-    await send(f"⚖️ sizer up — {mode}, risk {RISK_PCT * 100}%, max leverage {MAX_LEVERAGE}x")
+    # The ceiling is worth announcing: it silently changes every size.
+    ceiling = f", база ≤ {EQUITY_MAX:,.0f}$" if EQUITY_MAX > 0 else ""
+    await send(
+        f"⚖️ sizer up — {mode}, risk {RISK_PCT * 100}%{ceiling}, max leverage {MAX_LEVERAGE}x"
+    )
     last_error = ""
     while True:
         try:
