@@ -7,6 +7,7 @@ stop-loss always risks the same fixed percentage of account equity.
 
     DRY_RUN=1               # log and announce instead of amending
     RISK_PCT=0.5            # percent of the wallet balance between entry and stop
+    RISK_EQUITY_MAX=0       # cap on the balance that percent is taken from
     FALLBACK_SL_PCT=0       # assumed stop when the order has none; 0 skips
     MAX_LEVERAGE=5          # notional ceiling, as a multiple of equity
     SYMBOLS=                # comma-separated allowlist; empty = all
@@ -40,6 +41,8 @@ load_dotenv("bipboop")
 
 DRY_RUN = os.getenv("DRY_RUN", "1").lower() not in ("0", "false", "no", "")
 RISK_PCT = Decimal(os.getenv("RISK_PCT", "0.5")) / Decimal(100)
+# Ceiling on the deposit the percent is taken from; 0 = no ceiling.
+EQUITY_MAX = Decimal(os.getenv("RISK_EQUITY_MAX", "0"))
 FALLBACK_SL_PCT = Decimal(os.getenv("FALLBACK_SL_PCT", "0")) / Decimal(100)
 MAX_LEVERAGE = Decimal(os.getenv("MAX_LEVERAGE", "5"))
 # The entry fills as a maker limit; the stop closes as a taker market order.
@@ -82,7 +85,12 @@ async def get_equity(http: httpx.AsyncClient) -> Decimal:
     accounts = result.get("list") or []
     if not accounts:
         raise RuntimeError("wallet-balance returned no accounts")
-    return Decimal(accounts[0].get("totalWalletBalance") or accounts[0].get("totalEquity"))
+    balance = Decimal(accounts[0].get("totalWalletBalance") or accounts[0].get("totalEquity"))
+    # RISK_EQUITY_MAX caps the base: past it the orders stop growing with
+    # the account. The trimmer measures against the same ceiling.
+    if EQUITY_MAX > 0:
+        return min(balance, EQUITY_MAX)
+    return balance
 
 
 async def get_open_orders(http: httpx.AsyncClient) -> list[dict]:

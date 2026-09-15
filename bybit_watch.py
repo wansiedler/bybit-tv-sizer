@@ -58,6 +58,10 @@ POLL = float(os.getenv("BYBIT_POLL", "10"))
 # strays more than a quarter away from the RISK_PCT the sizer targets.
 MIN_RR = float(os.getenv("MIN_RR", "2"))
 RISK_TARGET = float(os.getenv("RISK_PCT", "0.5")) / 100
+# A ceiling on the deposit the risk percent is taken from. With
+# RISK_EQUITY_MAX=100000 a 300k wallet still risks one percent of 100k per
+# trade, not of 300k — the position stops growing with the account. 0 = off.
+RISK_EQUITY_MAX = float(os.getenv("RISK_EQUITY_MAX", "0"))
 # The hard risk manager: positions breaking these rules get market-closed.
 # A breach is announced first and enforced only if it survives the grace
 # window — enough time to set a stop or drop the leverage after an entry.
@@ -337,7 +341,8 @@ async def trim(http: httpx.AsyncClient, open_now: dict[str, Position], send, spe
         if abs(position.price - position.stop_loss) <= 0:
             continue
         if depo is None:
-            depo = await wallet_balance(http)
+            wallet = await wallet_balance(http)
+            depo = risk_base(wallet) if wallet else wallet
         if not depo:
             return
         await _trim_cut(http, symbol, position, depo, send, speak)
@@ -834,6 +839,79 @@ async def close_position(http: httpx.AsyncClient, query: str) -> str:
     return f"✅ {base_symbol(row['symbol'])} закрывается — отчёт 💸 придёт следом"
 
 
+# The buttons that ride under an entry notice: one tap closes that share of
+# the position at market. 100% is a full exit, so it sits last and is marked.
+EXIT_SHARES = (5, 25, 50, 100)
+_TAP = "x"
+
+
+def exit_buttons(symbol: str) -> dict:
+    """The inline keyboard offering partial exits for one position."""
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text": f"{share}%" if share < 100 else "❌ 100%",
+                    "callback_data": f"{_TAP}:{symbol}:{share}",
+                }
+                for share in EXIT_SHARES
+            ]
+        ]
+    }
+
+
+async def _exit_qty(
+    http: httpx.AsyncClient, symbol: str, size: float, percent: float
+) -> float | None:
+    """What a percent button closes out of `size`; None when it is dust.
+
+    Rounded down to the lot step — a quantity the exchange would refuse
+    closes nothing at all, and half a step is worse than a whole one.
+    """
+    if percent >= 100:
+        return size
+    step, min_qty = await _lot(http, symbol)
+    if step <= 0:
+        return None
+    qty = math.floor(size * percent / 100 / step) * step
+    if qty < min_qty or qty <= 0:
+        return None
+    # A remainder too small to be closed later is not worth leaving behind.
+    if size - qty < min_qty:
+        return size
+    return qty
+
+
+async def close_fraction(http: httpx.AsyncClient, symbol: str, percent: float) -> str:
+    """Close part of one position at market — what the exit buttons do."""
+    if not enabled():
+        return _NO_KEYS
+    try:
+        result = await _get(http, _POSITIONS, {"category": "linear", "symbol": symbol})
+        rows = [r for r in result.get("list", []) if float(r.get("size") or 0) != 0]
+        if not rows:
+            return f"{base_symbol(symbol)}: позиция уже закрыта"
+        row = rows[0]
+        size = float(row["size"])
+        qty = await _exit_qty(http, symbol, size, percent)
+    # Deliberately broad: a tap must answer, not crash the command loop.
+    except Exception:  # noqa: BLE001
+        log.exception("partial close listing failed for %s", symbol)
+        return _NO_ANSWER
+    if qty is None:
+        return f"{base_symbol(symbol)}: {percent:g}% — меньше минимального лота"
+    try:
+        await _close_market(
+            http, symbol, row.get("side", ""), f"{qty:g}", int(row.get("positionIdx") or 0)
+        )
+    # Deliberately broad: the refusal text is the answer.
+    except Exception as exc:  # noqa: BLE001
+        log.exception("could not close %g%% of %s", percent, symbol)
+        return f"❌ {base_symbol(symbol)}: {exc}"
+    part = "всю позицию" if qty >= size else f"{percent:g}% ({qty:g})"
+    return f"✂️ {base_symbol(symbol)}: закрываю {part} — отчёт 💸 придёт следом"
+
+
 # Fee assumed per fill for the "net" estimate: market orders pay taker.
 TAKER_FEE = float(os.getenv("TAKER_FEE", "0.00055"))
 
@@ -1290,7 +1368,8 @@ def trade_warnings(position: Position, depo: float | None) -> list[str]:
     risk = abs(position.price - position.stop_loss) * position.size
     warns = []
     if depo and RISK_TARGET:
-        actual = risk / depo
+        # Against the capped base, the same one the sizer and trimmer aim at.
+        actual = risk / risk_base(depo)
         # Within a quarter of the target nobody wants a ping.
         if abs(actual - RISK_TARGET) > RISK_TARGET * 0.25:
             warns.append(f"⚠️ риск {actual * 100:.2f}% депо, цель {RISK_TARGET * 100:g}%")
@@ -1335,6 +1414,17 @@ async def wallet_balance(http: httpx.AsyncClient) -> float | None:
     so a position sized at RISK_PCT stays that size until it closes.
     """
     return await _account_figure(http, "totalWalletBalance")
+
+
+def risk_base(depo: float) -> float:
+    """The deposit a risk percent is measured against, RISK_EQUITY_MAX applied.
+
+    Only the risk arithmetic uses this — the notices keep reporting the real
+    wallet, so a capped account still sees its true balance and true shares.
+    """
+    if RISK_EQUITY_MAX > 0:
+        return min(depo, RISK_EQUITY_MAX)
+    return depo
 
 
 async def entry_fee(http: httpx.AsyncClient, symbol: str) -> float | None:
@@ -1702,7 +1792,8 @@ async def tick(
 
     The first call primes the snapshot silently — positions that were already
     open when the relay started are not news. An entry (or flip) goes out as
-    a chart with the notice as its caption; everything else stays text.
+    a chart with the notice as its caption and the exit buttons under it;
+    everything else stays text.
     """
     after = await positions(http)
     await guard(http, after, send, speak)
@@ -1713,13 +1804,16 @@ async def tick(
     for kind, symbol, was, now in diff(before, after):
         line, spoken_line = describe(kind, symbol, was, now)
         png = None
+        buttons = None
         if kind in ("opened", "flipped") and now is not None:
             line, png = await _entry_notice(http, symbol, now, line)
+            # Exits hang off the entry notice, where the position is news.
+            buttons = exit_buttons(symbol)
         elif kind == "closed" and was is not None:
             closed_line, spoken_line, png = await _close_notice(http, symbol, was, spoken_line)
             if closed_line is not None:
                 line = closed_line
-        if png is None or not await send_photo(line, png):
+        if png is None or not await send_photo(line, png, buttons):
             await send(line)
         await speak(spoken_line)
     return after

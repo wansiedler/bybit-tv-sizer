@@ -624,3 +624,19 @@ def test_notice_without_a_stop_price_skips_the_percent(monkeypatch):
 
     assert "stop ? →" in out.sent[0]
     assert "%) →" not in out.sent[0].split("\n")[1].split("qty")[0]
+
+
+def test_get_equity_stops_at_the_risk_ceiling(monkeypatch):
+    monkeypatch.setattr(sizer, "EQUITY_MAX", Decimal("100000"))
+    http = FakeHTTP()
+    http.equity = "300000"
+
+    assert asyncio.run(sizer.get_equity(http)) == Decimal("100000")
+
+
+def test_get_equity_below_the_ceiling_is_untouched(monkeypatch):
+    monkeypatch.setattr(sizer, "EQUITY_MAX", Decimal("100000"))
+    http = FakeHTTP()
+    http.equity = "40000"
+
+    assert asyncio.run(sizer.get_equity(http)) == Decimal("40000")

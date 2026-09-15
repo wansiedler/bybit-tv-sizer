@@ -286,6 +286,7 @@ class Recorder:
         self.sent: list[str] = []
         self.spoken: list[str] = []
         self.photos: list[str] = []
+        self.keyboards: list[dict | None] = []
         self.photo_ok = True
 
     async def send(self, text):
@@ -295,9 +296,10 @@ class Recorder:
         self.spoken.append(text)
         return True
 
-    async def send_photo(self, caption, png):
+    async def send_photo(self, caption, png, buttons=None):
         assert png.startswith(b"\x89PNG")
         self.photos.append(caption)
+        self.keyboards.append(buttons)
         return self.photo_ok
 
 
@@ -2478,3 +2480,191 @@ def test_close_kind_keeps_a_market_hand_close_manual(keyed, monkeypatch):
     http.history_rows = [{"createType": "CreateByUser", "orderType": "Market"}]
 
     assert asyncio.run(bybit_watch.close_kind(http, {"orderId": "x"})) == "руками"
+
+
+# --------------------------------------------------------------------------- #
+#  the deposit ceiling the risk percent is taken from                          #
+# --------------------------------------------------------------------------- #
+def test_risk_base_passes_the_wallet_through_uncapped(monkeypatch):
+    monkeypatch.setattr(bybit_watch, "RISK_EQUITY_MAX", 0.0)
+
+    assert bybit_watch.risk_base(300_000.0) == 300_000.0
+
+
+def test_risk_base_stops_at_the_ceiling(monkeypatch):
+    monkeypatch.setattr(bybit_watch, "RISK_EQUITY_MAX", 100_000.0)
+
+    assert bybit_watch.risk_base(300_000.0) == 100_000.0
+    assert bybit_watch.risk_base(40_000.0) == 40_000.0
+
+
+def test_trim_measures_against_the_capped_deposit(trimming, monkeypatch):
+    """A 2000$ wallet capped at 1000$ gets the same cut as a 1000$ one."""
+    monkeypatch.setattr(bybit_watch, "RISK_EQUITY_MAX", 1000.0)
+    http, out = trim_http(), Recorder()
+    http.equity_rows = [{"totalEquity": "2000", "totalWalletBalance": "2000"}]
+
+    asyncio.run(bybit_watch.trim(http, {"CLUSDT": OVERSIZED}, out.send, out.speak))
+
+    assert http.orders[0]["qty"] == "6.1"
+    assert out.sent == ["✂️ CL: риск 1.11% депо при цели 0.50% — режу 10→3.9"]
+
+
+def test_trade_warnings_measure_the_risk_against_the_cap(monkeypatch):
+    monkeypatch.setattr(bybit_watch, "RISK_EQUITY_MAX", 1000.0)
+    # 5$ of price risk: 0.5% of the capped 1000$, not 0.05% of the real depo.
+    position = Position("long", 5.0, 100.0, 500.0, stop_loss=99.0)
+
+    assert bybit_watch.trade_warnings(position, 10_000.0) == []
+
+
+# --------------------------------------------------------------------------- #
+#  exit buttons                                                                #
+# --------------------------------------------------------------------------- #
+def test_exit_buttons_offer_every_share():
+    keyboard = bybit_watch.exit_buttons("FARTCOINUSDT")
+
+    row_of = keyboard["inline_keyboard"][0]
+    assert [b["text"] for b in row_of] == ["5%", "25%", "50%", "❌ 100%"]
+    assert [b["callback_data"] for b in row_of] == [
+        "x:FARTCOINUSDT:5",
+        "x:FARTCOINUSDT:25",
+        "x:FARTCOINUSDT:50",
+        "x:FARTCOINUSDT:100",
+    ]
+
+
+def test_tick_hangs_the_exit_buttons_under_an_entry(keyed):
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[row()]]
+    http.kline_rows = KLINES
+
+    asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
+
+    assert out.keyboards == [bybit_watch.exit_buttons("FARTCOINUSDT")]
+
+
+def test_tick_sends_no_buttons_with_a_close(keyed):
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[]]
+    http.pnl_rows = [closed()]
+    http.kline_rows = KLINES
+
+    asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
+
+    assert out.keyboards == [None]
+
+
+# --------------------------------------------------------------------------- #
+#  partial closes behind the buttons                                           #
+# --------------------------------------------------------------------------- #
+def part_http(size="10", step="0.1", min_qty="0.1"):
+    http = ClosingHTTP()
+    http.position_pages = [[row(symbol="CLUSDT", size=size, price="100", value="1000")]]
+    http.instrument_pages = [
+        {"list": [{"symbol": "CLUSDT", "lotSizeFilter": {"qtyStep": step, "minOrderQty": min_qty}}]}
+    ]
+    return http
+
+
+def test_close_fraction_needs_keys():
+    assert "нет API-ключей" in asyncio.run(bybit_watch.close_fraction(FakeHTTP(), "CLUSDT", 25))
+
+
+def test_close_fraction_cuts_the_share(keyed):
+    http = part_http()
+
+    text = asyncio.run(bybit_watch.close_fraction(http, "CLUSDT", 25))
+
+    assert http.orders == [
+        {
+            "category": "linear",
+            "symbol": "CLUSDT",
+            "side": "Sell",
+            "orderType": "Market",
+            "qty": "2.5",
+            "reduceOnly": True,
+            "positionIdx": 0,
+        }
+    ]
+    assert text.startswith("✂️ CL: закрываю 25% (2.5)")
+
+
+def test_close_fraction_rounds_down_to_the_lot_step(keyed):
+    http = part_http(size="10", step="1", min_qty="1")
+
+    asyncio.run(bybit_watch.close_fraction(http, "CLUSDT", 25))
+
+    assert http.orders[0]["qty"] == "2"
+
+
+def test_close_fraction_at_a_hundred_closes_everything(keyed):
+    http = part_http()
+
+    text = asyncio.run(bybit_watch.close_fraction(http, "CLUSDT", 100))
+
+    assert http.orders[0]["qty"] == "10"
+    assert "всю позицию" in text
+    # No instrument lookup: the whole size needs no rounding.
+    assert not any("instruments-info" in url for url in http.requests)
+
+
+def test_close_fraction_takes_the_rest_when_the_remainder_is_dust(keyed):
+    """95% of 10 leaves 0.5 — below the 1 minimum, so the lot goes whole."""
+    http = part_http(size="10", step="0.1", min_qty="1")
+
+    text = asyncio.run(bybit_watch.close_fraction(http, "CLUSDT", 95))
+
+    assert http.orders[0]["qty"] == "10"
+    assert "всю позицию" in text
+
+
+def test_close_fraction_refuses_a_share_below_the_minimum(keyed):
+    http = part_http(size="10", step="1", min_qty="5")
+
+    text = asyncio.run(bybit_watch.close_fraction(http, "CLUSDT", 5))
+
+    assert "меньше минимального лота" in text
+    assert http.orders == []
+
+
+def test_close_fraction_without_a_lot_step_says_no(keyed):
+    http = part_http()
+    http.instrument_pages = [{"list": []}]
+
+    text = asyncio.run(bybit_watch.close_fraction(http, "CLUSDT", 25))
+
+    assert "меньше минимального лота" in text
+    assert http.orders == []
+
+
+def test_close_fraction_on_a_position_already_gone(keyed):
+    http = ClosingHTTP()
+    http.position_pages = [[]]
+
+    text = asyncio.run(bybit_watch.close_fraction(http, "CLUSDT", 50))
+
+    assert "уже закрыта" in text
+
+
+def test_close_fraction_survives_a_dead_api(keyed, caplog):
+    class Refusing(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise OSError("bybit down")
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        text = asyncio.run(bybit_watch.close_fraction(Refusing(), "CLUSDT", 50))
+
+    assert "не ответил" in text
+    assert "partial close listing failed" in caplog.text
+
+
+def test_close_fraction_reports_a_refusal(keyed, caplog):
+    http = part_http()
+    http.refuse_order = True
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        text = asyncio.run(bybit_watch.close_fraction(http, "CLUSDT", 50))
+
+    assert text.startswith("❌ CL:")
+    assert "could not close" in caplog.text

@@ -74,6 +74,11 @@ DRY_RUN=1
 # percent of the wallet balance (unrealised PnL excluded) that a stop-out
 # costs, fees included; the trimmer cuts positions back to the same figure
 RISK_PCT=0.5
+# Ceiling on the deposit that percent is taken from. 100000 means a 300k
+# wallet still risks 1% of 100k per trade — positions stop growing with the
+# account. 0 = no ceiling. The sizer, the trimmer and the risk warning all
+# use it; the reports keep showing the real balance.
+RISK_EQUITY_MAX=0
 # The fees the sizing budgets for: the entry (maker limit) and the stop's
 # market close (taker). Bybit derivatives non-VIP defaults.
 MAKER_FEE=0.0002

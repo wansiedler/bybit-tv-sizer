@@ -172,12 +172,23 @@ async def send_album_via_bot(http: httpx.AsyncClient, caption: str, pngs: list[b
     return True
 
 
-async def send_photo_via_bot(http: httpx.AsyncClient, caption: str, png: bytes) -> bool:
-    """Post one picture with a caption. Returns True when Telegram accepted it."""
+async def send_photo_via_bot(
+    http: httpx.AsyncClient, caption: str, png: bytes, buttons: dict | None = None
+) -> bool:
+    """Post one picture with a caption. Returns True when Telegram accepted it.
+
+    `buttons` is an inline keyboard (the exit shares under an entry notice);
+    Telegram wants it as JSON inside the multipart form.
+    """
+    import json as _json
+
+    data = {"chat_id": TARGET_CHAT_ID, "caption": caption, "parse_mode": "HTML"}
+    if buttons:
+        data["reply_markup"] = _json.dumps(buttons)
     try:
         response = await http.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-            data={"chat_id": TARGET_CHAT_ID, "caption": caption, "parse_mode": "HTML"},
+            data=data,
             files={"photo": ("chart.png", png, "image/png")},
             timeout=60,
         )
@@ -410,6 +421,7 @@ def _command_handlers(http: httpx.AsyncClient, links: str) -> commands.Handlers:
         links=links.strip(),
         ip=lambda: ip_watch.current(http),
         lev_one=lambda arg: bybit_watch.force_leverage_one(http, arg),
+        close_part=lambda symbol, percent: bybit_watch.close_fraction(http, symbol, percent),
     )
 
 
@@ -424,7 +436,9 @@ def _spawn_watchers(http: httpx.AsyncClient) -> set[asyncio.Task]:
                     # The watcher composes its own markup: HTML is safe.
                     lambda text: send_via_bot(http, text, True),
                     speaker.trade,
-                    lambda caption, png: send_photo_via_bot(http, caption, png),
+                    lambda caption, png, buttons=None: send_photo_via_bot(
+                        http, caption, png, buttons
+                    ),
                 )
             )
         )

@@ -58,7 +58,9 @@ HELP = (
     "/links — the journal and the TradingView webhook\n"
     "/test — push a sample alert through the whole chain\n"
     "/ping — answer if alive\n"
-    "/help — this list"
+    "/help — this list\n"
+    "Под уведомлением о входе — кнопки 5% · 25% · 50% · ❌100%: тап режет "
+    "позицию маркетом на эту долю."
 )
 
 
@@ -125,6 +127,44 @@ def command_of(update: dict) -> tuple[str, str] | None:
     return word.removeprefix("/").split("@")[0].lower(), rest.strip()
 
 
+def exit_tap(update: dict) -> tuple[str, str, float] | None:
+    """(callback id, symbol, percent) for an exit button the owner tapped.
+
+    The buttons are drawn by bybit_watch under an entry notice and carry
+    "x:<symbol>:<percent>". Anyone who can see the chat can tap them, so the
+    sender is checked exactly the way a typed command is.
+    """
+    query = update.get("callback_query")
+    if not query:
+        return None
+    sender = query.get("from") or {}
+    if str(sender.get("id")) != str(OWNER_ID):
+        log.warning("ignoring button tap from user %s", sender.get("id"))
+        return None
+    prefix, _, rest = str(query.get("data", "")).partition(":")
+    symbol, _, share = rest.partition(":")
+    if prefix != "x" or not symbol:
+        return None
+    try:
+        percent = float(share)
+    except ValueError:
+        log.warning("button carried no percent: %s", query.get("data"))
+        return None
+    return str(query.get("id")), symbol, percent
+
+
+async def answer_tap(http: httpx.AsyncClient, query_id: str, text: str = "") -> None:
+    """Stop the button's spinner. Telegram wants this within seconds."""
+    try:
+        await http.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery",
+            json={"callback_query_id": query_id, "text": text},
+            timeout=10,
+        )
+    except httpx.HTTPError:
+        log.exception("answerCallbackQuery failed")
+
+
 def uptime(seconds: float) -> str:
     minutes, secs = divmod(int(seconds), 60)
     hours, minutes = divmod(minutes, 60)
@@ -165,6 +205,21 @@ class Handlers:
     links: str = ""
     ip: Any = None
     lev_one: Any = None
+    close_part: Any = None
+
+
+async def _handle_tap(http: httpx.AsyncClient, update: dict, h: Handlers, send) -> bool:
+    """Act on an exit button; True when the update was one, obeyed or refused."""
+    tap = exit_tap(update)
+    if tap is None:
+        # A refused or malformed tap is still not a command: swallow it.
+        return "callback_query" in update
+    query_id, symbol, percent = tap
+    log.info("exit button: %s %g%%", symbol, percent)
+    await answer_tap(http, query_id, f"{percent:g}%")
+    if h.close_part is not None:
+        await send(await h.close_part(symbol, percent))
+    return True
 
 
 async def _status(stats: Stats, speaking: bool, handlers: Handlers, send) -> None:
@@ -255,6 +310,13 @@ async def poll(
             continue
         for update in updates:
             offset = update["update_id"] + 1
+            try:
+                if await _handle_tap(http, update, handlers or Handlers(), send):
+                    continue
+            # Deliberately broad: one bad tap must not end the loop.
+            except Exception:  # noqa: BLE001
+                log.exception("exit button failed")
+                continue
             parsed = command_of(update)
             if parsed is None:
                 continue

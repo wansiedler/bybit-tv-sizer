@@ -88,6 +88,41 @@ Stopping out afterwards costs 55.00 (entry fee on the full size) + 30.53
 (the keep's stop) = 999.51 $ — inside the 1% all in. Funding and stop
 slippage are not budgeted; at 0.01%/8h funding is noise next to 1%.
 
+## A ceiling on the deposit the risk is taken from (`RISK_EQUITY_MAX`)
+
+`RISK_PCT` is a share of the wallet, so the position grows with the account.
+`RISK_EQUITY_MAX` caps the base it is taken from:
+
+```text
+risk base = min(wallet balance, RISK_EQUITY_MAX)      # 0 = no ceiling
+```
+
+With `RISK_EQUITY_MAX=100000` and `RISK_PCT=1`, a stop-out costs 1 000 $
+whether the wallet holds 100 000 or 300 000 — above the ceiling the size
+stops scaling, below it nothing changes (a 40 000 $ wallet still risks 400).
+
+The ceiling reaches every place the percent is used: the sizer's quantity
+for limit orders, the trimmer's cut, and the «риск X% депо» warning on a
+fresh entry. Reports, charts and journal rows keep showing the real balance
+and the real shares of it — only the risk arithmetic is capped.
+
+## Exit buttons on the entry notice
+
+Every entry notice arrives with a row of buttons under the chart:
+
+```text
+[ 5% ] [ 25% ] [ 50% ] [ ❌ 100% ]
+```
+
+A tap closes that share of the position with a reduce-only market order —
+partial takes without typing. The quantity is floored to the exchange's lot
+step; a share smaller than the minimum order size is refused instead of
+silently rounding to nothing, and a remainder too small to close later is
+taken with the tap. Only `OWNER_ID` is obeyed: anyone else who can see the
+chat can tap, and gets nothing. The buttons ride on the photo, so a notice
+that falls back to plain text (no candles) carries none — `/close <тикер>`
+still closes it whole.
+
 ## Maker takes (`TP_MAKER=1`)
 
 Bybit's position take-profit fires a market order — a taker fee. With

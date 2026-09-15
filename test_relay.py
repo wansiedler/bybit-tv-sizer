@@ -269,6 +269,44 @@ def test_send_photo_reports_a_refusal(config, caplog):
     assert "sendPhoto refused" in caplog.text
 
 
+def test_send_photo_carries_the_exit_keyboard(config):
+    import json as _json
+
+    class CapturingHTTP(FakeHTTP):
+        def __init__(self):
+            super().__init__()
+            self.forms: list[dict] = []
+
+        async def post(self, url, json=None, data=None, files=None, timeout=None):
+            self.forms.append(data)
+            return self._post_response
+
+    http = CapturingHTTP()
+    buttons = {"inline_keyboard": [[{"text": "25%", "callback_data": "x:CLUSDT:25"}]]}
+
+    ok = asyncio.run(relay.send_photo_via_bot(as_client(http), "💰 entry", b"png", buttons))
+
+    assert ok is True
+    assert _json.loads(http.forms[0]["reply_markup"]) == buttons
+
+
+def test_send_photo_without_buttons_sends_no_markup(config):
+    class CapturingHTTP(FakeHTTP):
+        def __init__(self):
+            super().__init__()
+            self.forms: list[dict] = []
+
+        async def post(self, url, json=None, data=None, files=None, timeout=None):
+            self.forms.append(data)
+            return self._post_response
+
+    http = CapturingHTTP()
+
+    asyncio.run(relay.send_photo_via_bot(as_client(http), "💰 entry", b"png"))
+
+    assert "reply_markup" not in http.forms[0]
+
+
 def test_send_via_bot_html_mode_sets_parse_mode(config):
     class CapturingHTTP(FakeHTTP):
         def __init__(self):

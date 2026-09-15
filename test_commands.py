@@ -433,7 +433,7 @@ def test_poll_backs_off_when_telegram_refuses(owner, monkeypatch):
 # --------------------------------------------------------------------------- #
 #  poll                                                                        #
 # --------------------------------------------------------------------------- #
-def _run_poll(monkeypatch, batches, rec, stats=None):
+def _run_poll(monkeypatch, batches, rec, stats=None, http=None, handlers=None):
     """Drive poll() through a fixed script of getUpdates results, then stop."""
     calls: dict[str, Any] = {"offsets": []}
     script = list(batches)
@@ -459,7 +459,7 @@ def _run_poll(monkeypatch, batches, rec, stats=None):
 
     async def go():
         with pytest.raises(asyncio.CancelledError):
-            await commands.poll(None, counters, rec.send, rec.speak, True)
+            await commands.poll(http, counters, rec.send, rec.speak, True, handlers)
 
     asyncio.run(go())
     return calls
@@ -608,3 +608,128 @@ def test_status_survives_a_failed_ip_lookup(owner):
     )
 
     assert rec.sent[0].endswith("🌐 IP недоступен")
+
+
+# --------------------------------------------------------------------------- #
+#  exit buttons                                                                #
+# --------------------------------------------------------------------------- #
+def _tap(data="x:CLUSDT:25", sender="777", query_id="q1", update_id=1):
+    return {
+        "update_id": update_id,
+        "callback_query": {"id": query_id, "from": {"id": sender}, "data": data},
+    }
+
+
+class TapHTTP:
+    """Records the answerCallbackQuery posts a tap triggers."""
+
+    def __init__(self):
+        self.posts: list[dict] = []
+
+    async def post(self, url, json=None, timeout=None):
+        self.posts.append({"url": url, "json": json})
+        return None
+
+
+def test_exit_tap_reads_the_symbol_and_the_share(owner):
+    assert commands.exit_tap(_tap()) == ("q1", "CLUSDT", 25.0)
+
+
+def test_exit_tap_ignores_an_ordinary_message(owner):
+    assert commands.exit_tap(_update("/ping")) is None
+
+
+def test_exit_tap_refuses_a_stranger(owner, caplog):
+    with caplog.at_level("WARNING", logger="relay.commands"):
+        assert commands.exit_tap(_tap(sender="999")) is None
+
+    assert "button tap from user 999" in caplog.text
+
+
+@pytest.mark.parametrize("data", ["", "y:CLUSDT:25", "x::25"])
+def test_exit_tap_ignores_foreign_button_data(owner, data):
+    assert commands.exit_tap(_tap(data=data)) is None
+
+
+def test_exit_tap_ignores_a_share_that_is_not_a_number(owner, caplog):
+    with caplog.at_level("WARNING", logger="relay.commands"):
+        assert commands.exit_tap(_tap(data="x:CLUSDT:half")) is None
+
+    assert "no percent" in caplog.text
+
+
+def test_answer_tap_stops_the_spinner(owner):
+    http = TapHTTP()
+
+    asyncio.run(commands.answer_tap(http, "q1", "25%"))
+
+    assert http.posts[0]["url"].endswith("/answerCallbackQuery")
+    assert http.posts[0]["json"] == {"callback_query_id": "q1", "text": "25%"}
+
+
+def test_answer_tap_survives_a_dead_telegram(owner, caplog):
+    class Refusing:
+        async def post(self, url, json=None, timeout=None):
+            raise httpx.ConnectError("no route")
+
+    with caplog.at_level("ERROR", logger="relay.commands"):
+        asyncio.run(commands.answer_tap(Refusing(), "q1"))
+
+    assert "answerCallbackQuery failed" in caplog.text
+
+
+def test_poll_closes_the_share_a_tap_asked_for(owner, monkeypatch):
+    rec, http = Recorder(), TapHTTP()
+    asked = []
+
+    async def close_part(symbol, percent):
+        asked.append((symbol, percent))
+        return f"✂️ {symbol} {percent:g}%"
+
+    _run_poll(
+        monkeypatch,
+        [[_tap()]],
+        rec,
+        http=http,
+        handlers=commands.Handlers(close_part=close_part),
+    )
+
+    assert asked == [("CLUSDT", 25.0)]
+    assert rec.sent == ["✂️ CLUSDT 25%"]
+
+
+def test_poll_answers_a_tap_even_without_a_handler(owner, monkeypatch):
+    rec, http = Recorder(), TapHTTP()
+
+    _run_poll(monkeypatch, [[_tap()]], rec, http=http)
+
+    assert rec.sent == []
+    assert len(http.posts) == 1  # the spinner still stops
+
+
+def test_poll_swallows_a_refused_tap(owner, monkeypatch):
+    """A stranger's tap is neither obeyed nor treated as a command."""
+    rec, http = Recorder(), TapHTTP()
+
+    _run_poll(monkeypatch, [[_tap(sender="999")]], rec, http=http)
+
+    assert rec.sent == []
+    assert http.posts == []
+
+
+def test_poll_survives_a_failing_tap(owner, monkeypatch, caplog):
+    rec, http = Recorder(), TapHTTP()
+
+    async def close_part(symbol, percent):
+        raise RuntimeError("bybit is down")
+
+    with caplog.at_level("ERROR", logger="relay.commands"):
+        _run_poll(
+            monkeypatch,
+            [[_tap()]],
+            rec,
+            http=http,
+            handlers=commands.Handlers(close_part=close_part),
+        )
+
+    assert "exit button failed" in caplog.text
