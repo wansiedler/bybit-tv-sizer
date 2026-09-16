@@ -733,3 +733,36 @@ def test_poll_survives_a_failing_tap(owner, monkeypatch, caplog):
         )
 
     assert "exit button failed" in caplog.text
+
+
+# --------------------------------------------------------------------------- #
+#  /cut — the typed twin of the exit buttons                                   #
+# --------------------------------------------------------------------------- #
+def test_cut_command_reaches_the_handler(owner):
+    rec = Recorder()
+    asked = []
+
+    async def cut(arg):
+        asked.append(arg)
+        return "✂️ CL: закрываю 25% (2.5)"
+
+    asyncio.run(
+        commands.dispatch(
+            "cut", "CL 25", commands.Stats(), rec.send, rec.speak, True, commands.Handlers(cut=cut)
+        )
+    )
+
+    assert asked == ["CL 25"]
+    assert rec.sent == ["✂️ CL: закрываю 25% (2.5)"]
+
+
+def test_cut_without_a_handler_falls_through_to_help(owner):
+    rec = Recorder()
+
+    asyncio.run(commands.dispatch("cut", "CL 25", commands.Stats(), rec.send, rec.speak, True))
+
+    assert rec.sent == [commands.HELP]
+
+
+def test_cut_is_listed_in_the_help():
+    assert "/cut <ticker> <%>" in commands.HELP
