@@ -310,7 +310,7 @@ def test_tick_amends_and_announces_when_live(monkeypatch):
     assert http.amended[0]["qty"] == "0.047"
     assert out.sent == [
         "⚖️ BTCUSDT Buy limit @ 60000\n"
-        "stop 59000 (1.67%) → qty 0.001 (60$, 0.6% депо) → 0.047 (2,820$, 28.2% депо)"
+        "stop 59000 (1.67%) → qty 0.001 (60$, 0.6% depo) → 0.047 (2,820$, 28.2% depo)"
     ]
 
 
@@ -401,7 +401,7 @@ def test_tick_caps_a_grow_to_the_free_margin(monkeypatch):
 
     # cap = 0.001 + 600/60000*0.97 = 0.0107 -> 0.010 after lot rounding
     assert http.amended[0]["qty"] == "0.010"
-    assert "урезано по марже" in out.sent[0]
+    assert "capped by margin" in out.sent[0]
 
 
 def test_tick_skips_the_grow_when_no_margin_at_all(monkeypatch, caplog):
@@ -442,7 +442,7 @@ def test_tick_grows_uncapped_when_the_cap_is_unknown(monkeypatch):
     run_tick(http, out)
 
     assert http.amended[0]["qty"] == "0.047"
-    assert "урезано" not in out.sent[0]
+    assert "capped" not in out.sent[0]
 
 
 # ------------------------------------------------------------------ RR gate
@@ -654,4 +654,4 @@ def test_poll_announces_the_risk_ceiling(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(sizer.poll(Cancelling(), out.send))
 
-    assert "база ≤ 100,000$" in out.sent[0]
+    assert "base ≤ 100,000$" in out.sent[0]

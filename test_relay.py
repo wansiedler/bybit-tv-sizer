@@ -840,11 +840,11 @@ def test_run_shuts_down_on_sigterm(config, monkeypatch):
 
 def test_run_relays_alerts_and_skips_noise(config, monkeypatch):
     async def feed_messages(client):
-        await client.handler(SimpleNamespace(raw_text="Бот запущен"))
+        await client.handler(SimpleNamespace(raw_text="Bot started"))
         await client.handler(
             SimpleNamespace(
                 raw_text=(
-                    "🔔 #OPUSDT OPUSDT, Пересечение 0.10282\n"
+                    "🔔 #OPUSDT OPUSDT, Crossing 0.10282\n"
                     "-  exchange:  #BybitFutures\n"
                     "-  trend: 📈\n"
                     "-  price: 0.10277"
@@ -878,11 +878,11 @@ class FakeWatchedEvent:
 
 def test_run_relays_watched_user_messages(config, monkeypatch):
     async def feed(client):
-        await client.handlers[1](FakeWatchedEvent("сетку ставим на OP"))
+        await client.handlers[1](FakeWatchedEvent("placing a grid on OP"))
 
     http, _ = _run_relay(monkeypatch, feed)
 
-    assert http.posted[1] == "👤 @some_trader · Trading Club:\nсетку ставим на OP"
+    assert http.posted[1] == "👤 @some_trader · Trading Club:\nplacing a grid on OP"
 
 
 def test_watched_handler_skips_messages_without_text(config, monkeypatch):
@@ -934,7 +934,7 @@ def test_watched_handler_links_a_private_supergroup(config, monkeypatch):
     async def feed(client):
         await client.handlers[1](
             FakeWatchedEvent(
-                "голос пропал",
+                "the voice is gone",
                 chat=SimpleNamespace(
                     title="TF by Gussardi", username=None, megagroup=True, id=123456
                 ),
@@ -945,7 +945,7 @@ def test_watched_handler_links_a_private_supergroup(config, monkeypatch):
     http, _ = _run_relay(monkeypatch, feed)
 
     assert http.posted[1] == (
-        '👤 @some_trader · <a href="https://t.me/c/123456/42">TF by Gussardi</a>:\nголос пропал'
+        '👤 @some_trader · <a href="https://t.me/c/123456/42">TF by Gussardi</a>:\nthe voice is gone'
     )
 
 
@@ -995,7 +995,7 @@ def test_run_stops_the_audio_server_it_started(config, monkeypatch):
         await client.handler(
             SimpleNamespace(
                 raw_text=(
-                    "🔔 #OPUSDT OPUSDT, Пересечение 0.10282\n"
+                    "🔔 #OPUSDT OPUSDT, Crossing 0.10282\n"
                     "-  exchange:  #BybitFutures\n"
                     "-  trend: 📈\n"
                     "-  price: 0.10277"

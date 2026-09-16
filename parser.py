@@ -1,7 +1,7 @@
 """Parse LEXX Draco alert messages into a compact form.
 
 Input example:
-    🔔 #OPUSDT OPUSDT, Пересечение 0.10282
+    🔔 #OPUSDT OPUSDT, Crossing 0.10282
     -  exchange:  #BybitFutures
     -  trend: 📈
     -  price: 0.10277

@@ -88,8 +88,8 @@ RECV_WINDOW = "5000"
 
 _POSITIONS = "/v5/position/list"
 _ORDERS = "/v5/order/realtime"
-_NO_KEYS = "Bybit не подключён: нет API-ключей"
-_NO_ANSWER = "Bybit не ответил, попробуй ещё раз"
+_NO_KEYS = "Bybit not connected: no API keys"
+_NO_ANSWER = "Bybit did not answer, try again"
 
 
 def enabled() -> bool:
@@ -239,15 +239,15 @@ async def close_everything(http: httpx.AsyncClient) -> str:
         return _NO_ANSWER
     if not rows:
         _stopall_armed = 0.0
-        return "Открытых позиций нет — закрывать нечего"
+        return "No open positions — nothing to close"
 
     names = ", ".join(base_symbol(r["symbol"]) for r in rows)
     now = time.monotonic()
     if now - _stopall_armed > _STOPALL_WINDOW:
         _stopall_armed = now
         return (
-            f"⚠️ Закрою МАРКЕТОМ {len(rows)} поз.: {names}\n"
-            f"Повтори /stopall в течение {_STOPALL_WINDOW:.0f} секунд для подтверждения."
+            f"⚠️ Will close {len(rows)} pos. at MARKET: {names}\n"
+            f"Repeat /stopall within {_STOPALL_WINDOW:.0f} seconds to confirm."
         )
 
     _stopall_armed = 0.0
@@ -258,12 +258,12 @@ async def close_everything(http: httpx.AsyncClient) -> str:
             await _close_market(
                 http, symbol, r.get("side", ""), r["size"], int(r.get("positionIdx") or 0)
             )
-            lines.append(f"✅ {base_symbol(symbol)} закрывается")
+            lines.append(f"✅ {base_symbol(symbol)} closing")
         # Deliberately broad: one refused close must not strand the rest.
         except Exception as exc:  # noqa: BLE001
             log.exception("could not close %s", symbol)
             lines.append(f"❌ {base_symbol(symbol)}: {exc}")
-    lines.append("Отчёты 💸 с PnL придут, как позиции закроются.")
+    lines.append("💸 reports with PnL will follow as the positions close.")
     return "\n".join(lines)
 
 
@@ -296,9 +296,9 @@ _guard_closed: dict[str, str] = {}
 def _guard_violation(position: Position) -> str | None:
     """The rule a position breaks, or None. Leverage 0 means Bybit sent none."""
     if position.leverage > GUARD_MAX_LEVERAGE:
-        return f"плечо {position.leverage:g}x > {GUARD_MAX_LEVERAGE:g}x"
+        return f"leverage {position.leverage:g}x > {GUARD_MAX_LEVERAGE:g}x"
     if position.stop_loss is None:
-        return "нет стопа"
+        return "no stop"
     return None
 
 
@@ -385,14 +385,14 @@ async def _trim_cut(
             position.position_idx,
         )
         await send(
-            f"✂️ {base_symbol(symbol)}: риск {risk / depo * 100:.2f}% депо при цели "
-            f"{RISK_TARGET * 100:.2f}% — режу {position.size:g}→{want:g}"
+            f"✂️ {base_symbol(symbol)}: risk {risk / depo * 100:.2f}% depo vs target "
+            f"{RISK_TARGET * 100:.2f}% — cutting {position.size:g}→{want:g}"
         )
         await speak(f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} trimmed")
     # Deliberately broad: one refused cut must not strand the rest.
     except Exception as exc:  # noqa: BLE001
         log.exception("trim failed for %s", symbol)
-        await send(f"❌ {base_symbol(symbol)}: не смог подрезать ({exc})")
+        await send(f"❌ {base_symbol(symbol)}: could not trim ({exc})")
 
 
 # When each symbol's take was last touched: Bybit needs a moment to show a
@@ -445,7 +445,7 @@ async def _cancel_orphan_exits(
                 "/v5/order/cancel",
                 {"category": "linear", "symbol": symbol, "orderId": order["orderId"]},
             )
-            await send(f"🎯 {base_symbol(symbol)}: тейк-лимитка осталась без позиции — отменена")
+            await send(f"🎯 {base_symbol(symbol)}: take limit left without a position — cancelled")
         # Deliberately broad: one refused cancel must not strand the rest.
         except Exception:  # noqa: BLE001
             log.exception("orphan exit cancel failed for %s", symbol)
@@ -491,12 +491,12 @@ async def _repost_take(
                 "positionIdx": position.position_idx,
             },
         )
-        await send(f"🎯 {base_symbol(symbol)}: тейк {price} перевыставлен лимиткой (maker)")
+        await send(f"🎯 {base_symbol(symbol)}: take {price} reposted as a limit (maker)")
         await speak(f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} take reposted")
     # Deliberately broad: one refused repost must not strand the rest.
     except Exception as exc:  # noqa: BLE001
         log.exception("tp-maker repost failed for %s", symbol)
-        await send(f"❌ {base_symbol(symbol)}: не смог перевыставить тейк ({exc})")
+        await send(f"❌ {base_symbol(symbol)}: could not repost the take ({exc})")
 
 
 async def _resize_exit(
@@ -514,11 +514,11 @@ async def _resize_exit(
                 "qty": f"{position.size:g}",
             },
         )
-        await send(f"🎯 {base_symbol(symbol)}: тейк-лимитка подогнана под {position.size:g}")
+        await send(f"🎯 {base_symbol(symbol)}: take limit resized to {position.size:g}")
     # Deliberately broad: one refused amend must not strand the rest.
     except Exception as exc:  # noqa: BLE001
         log.exception("tp-maker amend failed for %s", symbol)
-        await send(f"❌ {base_symbol(symbol)}: не смог подогнать тейк ({exc})")
+        await send(f"❌ {base_symbol(symbol)}: could not resize the take ({exc})")
 
 
 async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, speak) -> None:
@@ -597,7 +597,7 @@ async def _cancel_naked(http: httpx.AsyncClient, naked: dict[str, dict], send, s
         symbol = order["symbol"]
         if await _grace_holds(
             key,
-            f"🛑 {base_symbol(symbol)}: лимитка без стопа — отменю через {GUARD_GRACE:.0f}с",
+            f"🛑 {base_symbol(symbol)}: limit order without a stop — cancelling in {GUARD_GRACE:.0f}s",
             f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} naked order",
             send,
             speak,
@@ -609,11 +609,13 @@ async def _cancel_naked(http: httpx.AsyncClient, naked: dict[str, dict], send, s
                 "/v5/order/cancel",
                 {"category": "linear", "symbol": symbol, "orderId": order["orderId"]},
             )
-            await send(f"🛑 {base_symbol(symbol)}: лимитка без стопа отменена риск-менеджером")
+            await send(
+                f"🛑 {base_symbol(symbol)}: limit order without a stop cancelled by the risk manager"
+            )
         # Deliberately broad: one refused cancel must not strand the rest.
         except Exception as exc:  # noqa: BLE001
             log.exception("guard cancel failed for %s", symbol)
-            await send(f"❌ {base_symbol(symbol)}: не смог отменить лимитку ({exc})")
+            await send(f"❌ {base_symbol(symbol)}: could not cancel the limit order ({exc})")
 
 
 async def _enforce_rules(
@@ -626,7 +628,7 @@ async def _enforce_rules(
             continue
         if await _grace_holds(
             symbol,
-            f"🛑 {base_symbol(symbol)}: {reason} — закрою маркетом через {GUARD_GRACE:.0f}с",
+            f"🛑 {base_symbol(symbol)}: {reason} — closing at market in {GUARD_GRACE:.0f}s",
             f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} risk breach",
             send,
             speak,
@@ -642,14 +644,16 @@ async def _enforce_rules(
             )
             _guard_closed[symbol] = reason
             note = ""
-            if reason.startswith("плечо") and await _cap_leverage(http, symbol) == "done":
-                note = " · плечо сброшено на 1x"
-            await send(f"🛑 {base_symbol(symbol)} закрыт маркетом риск-менеджером: {reason}{note}")
+            if reason.startswith("leverage") and await _cap_leverage(http, symbol) == "done":
+                note = " · leverage reset to 1x"
+            await send(
+                f"🛑 {base_symbol(symbol)} closed at market by the risk manager: {reason}{note}"
+            )
         # Deliberately broad: the guard must keep watching even when one
         # close is refused (margin mode quirks, min qty, hedged legs).
         except Exception as exc:  # noqa: BLE001
             log.exception("guard close failed for %s", symbol)
-            await send(f"❌ {base_symbol(symbol)}: риск-менеджер не смог закрыть ({exc})")
+            await send(f"❌ {base_symbol(symbol)}: the risk manager could not close ({exc})")
 
 
 async def price_before(http: httpx.AsyncClient, ticker: str) -> float | None:
@@ -759,7 +763,7 @@ async def force_leverage_one(http: httpx.AsyncClient, query: str = "") -> str:
     if not enabled():
         return _NO_KEYS
     query = query.strip()
-    if query and query.lower() not in ("all", "все", "всё"):
+    if query and query.lower() != "all":
         wanted = query.upper()
         active = [wanted if wanted.endswith("USDT") else f"{wanted}USDT"]
         rest: list[str] = []
@@ -774,7 +778,7 @@ async def force_leverage_one(http: httpx.AsyncClient, query: str = "") -> str:
             return _NO_ANSWER
     lines = await _cap_actives(http, active)
     if not active and not rest:
-        return "Нет открытых позиций и ордеров — плечо ставить некому"
+        return "No open positions or orders — nothing to set leverage on"
     if rest:
         lines.append(await _cap_the_rest(http, rest))
     return "\n".join(lines)
@@ -788,7 +792,7 @@ async def _cap_actives(http: httpx.AsyncClient, active: list[str]) -> list[str]:
         if verdict == "done":
             lines.append(f"✅ {base_symbol(symbol)} → 1x")
         elif verdict == "already":
-            lines.append(f"· {base_symbol(symbol)} уже 1x")
+            lines.append(f"· {base_symbol(symbol)} already 1x")
         else:
             lines.append(f"❌ {base_symbol(symbol)}: {verdict}")
     return lines
@@ -805,7 +809,7 @@ async def _cap_the_rest(http: httpx.AsyncClient, rest: list[str]) -> str:
             already += 1
         else:
             failed += 1
-    return f"Остальные {len(rest)} инструментов: ✅ {done} · уже 1x {already} · ❌ {failed}"
+    return f"Other {len(rest)} instruments: ✅ {done} · already 1x {already} · ❌ {failed}"
 
 
 async def _open_position_row(http: httpx.AsyncClient, query: str) -> tuple[dict | None, str]:
@@ -825,7 +829,7 @@ async def _open_position_row(http: httpx.AsyncClient, query: str) -> tuple[dict 
     matches = [r for r in rows if wanted in (r["symbol"].upper(), base_symbol(r["symbol"]).upper())]
     if not matches:
         names = ", ".join(base_symbol(r["symbol"]) for r in rows) or "—"
-        return None, f"Позиции {wanted} нет. Открыты: {names}"
+        return None, f"No {wanted} position. Open: {names}"
     return matches[0], ""
 
 
@@ -835,7 +839,7 @@ async def close_position(http: httpx.AsyncClient, query: str) -> str:
     if not enabled():
         return _NO_KEYS
     if not query.strip():
-        return "Какую позицию? Например: /close CL"
+        return "Which position? e.g. /close CL"
     row, refusal = await _open_position_row(http, query)
     if row is None:
         return refusal
@@ -847,7 +851,7 @@ async def close_position(http: httpx.AsyncClient, query: str) -> str:
     except Exception as exc:  # noqa: BLE001
         log.exception("could not close %s", row["symbol"])
         return f"❌ {base_symbol(row['symbol'])}: {exc}"
-    return f"✅ {base_symbol(row['symbol'])} закрывается — отчёт 💸 придёт следом"
+    return f"✅ {base_symbol(row['symbol'])} closing — 💸 report follows"
 
 
 async def cut_position(http: httpx.AsyncClient, query: str) -> str:
@@ -866,7 +870,7 @@ async def cut_position(http: httpx.AsyncClient, query: str) -> str:
     except ValueError:
         percent = 0.0
     if not ticker or not 0 < percent <= 100:
-        return "Сколько и чего резать? Например: /cut CL 25"
+        return "Cut what, and how much? e.g. /cut CL 25"
     row, refusal = await _open_position_row(http, ticker)
     if row is None:
         return refusal
@@ -924,7 +928,7 @@ async def close_fraction(http: httpx.AsyncClient, symbol: str, percent: float) -
         result = await _get(http, _POSITIONS, {"category": "linear", "symbol": symbol})
         rows = [r for r in result.get("list", []) if float(r.get("size") or 0) != 0]
         if not rows:
-            return f"{base_symbol(symbol)}: позиция уже закрыта"
+            return f"{base_symbol(symbol)}: position already closed"
         row = rows[0]
         size = float(row["size"])
         qty = await _exit_qty(http, symbol, size, percent)
@@ -933,7 +937,7 @@ async def close_fraction(http: httpx.AsyncClient, symbol: str, percent: float) -
         log.exception("partial close listing failed for %s", symbol)
         return _NO_ANSWER
     if qty is None:
-        return f"{base_symbol(symbol)}: {percent:g}% — меньше минимального лота"
+        return f"{base_symbol(symbol)}: {percent:g}% — below the minimum lot"
     # Claim the trimmer's cooldown before the order, not after: it polls
     # twice a second, and Bybit needs a moment to show the smaller size —
     # without this the trimmer would cut a second time off the stale one.
@@ -946,8 +950,8 @@ async def close_fraction(http: httpx.AsyncClient, symbol: str, percent: float) -
     except Exception as exc:  # noqa: BLE001
         log.exception("could not close %g%% of %s", percent, symbol)
         return f"❌ {base_symbol(symbol)}: {exc}"
-    part = "всю позицию" if qty >= size else f"{percent:g}% ({qty:g})"
-    return f"✂️ {base_symbol(symbol)}: закрываю {part} — отчёт 💸 придёт следом"
+    part = "the whole position" if qty >= size else f"{percent:g}% ({qty:g})"
+    return f"✂️ {base_symbol(symbol)}: closing {part} — 💸 report follows"
 
 
 # Fee assumed per fill for the "net" estimate: market orders pay taker.
@@ -997,7 +1001,7 @@ async def stats_report(http: httpx.AsyncClient, send_photo, arg: str = "") -> st
     try:
         days = max(1, min(int(arg), 90)) if arg.strip() else 30
     except ValueError:
-        return "Сколько дней? Например: /statistics 7"
+        return "How many days? e.g. /statistics 7"
     try:
         rows = await closed_history(http, days)
     # Deliberately broad: a chat command must answer, not crash the poller.
@@ -1005,7 +1009,7 @@ async def stats_report(http: httpx.AsyncClient, send_photo, arg: str = "") -> st
         log.exception("stats history failed")
         return _NO_ANSWER
     if not rows:
-        return f"За {days} дн. закрытых сделок нет"
+        return f"No closed trades in {days} d"
     depo = await equity(http)
 
     from datetime import date, datetime, timedelta
@@ -1021,13 +1025,13 @@ async def stats_report(http: httpx.AsyncClient, send_photo, arg: str = "") -> st
     daily = [buckets.get(today - timedelta(days=i), 0.0) for i in range(days - 1, -1, -1)]
 
     text = (
-        f"📊 за {days} дн.: сделок {len(pnls)} · win {wins}/loss {len(pnls) - wins}"
+        f"📊 last {days} d: trades {len(pnls)} · win {wins}/loss {len(pnls) - wins}"
         f" ({wins / len(pnls) * 100:.0f}%)\n"
         f"PnL <b>{_usd(total)}"
     )
     if depo:
-        text += f" ({total / depo * 100:+.2f}% депо {depo:,.0f})"
-    text += f"</b> · лучший {_usd(max(pnls))} · худший {_usd(min(pnls))}"
+        text += f" ({total / depo * 100:+.2f}% depo {depo:,.0f})"
+    text += f"</b> · best {_usd(max(pnls))} · worst {_usd(min(pnls))}"
 
     try:
         png = chart.equity_curve(daily, title=f"PnL · {days}d", depo=depo, end=today)
@@ -1081,7 +1085,7 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         log.exception("positions report failed")
         return _NO_ANSWER
     if not open_now:
-        return "Открытых позиций нет"
+        return "No open positions"
     depo = await equity(http)
     lines = []
     pngs = []
@@ -1136,17 +1140,17 @@ def _position_block(
     if position.take_profit:
         sign = 1 if position.side == "long" else -1
         at_tp = sign * (position.take_profit - position.price) * position.size - fees - funding
-        tp_depo = f"=деп{depo + at_tp:,.2f}$" if depo else ""
+        tp_depo = f"=depo{depo + at_tp:,.2f}$" if depo else ""
         exits.append(
             f"tp{position.take_profit:g}:<b>{_usd(at_tp)}{_share(at_tp, depo)}{tp_depo}</b>"
         )
     fund_note = ""
     if funding > 0:
-        fund_note = f"−фанд{_sig2(funding)}"
+        fund_note = f"−funding{_sig2(funding)}"
     elif funding < 0:
-        fund_note = f"+фанд{_sig2(-funding)}"
+        fund_note = f"+funding{_sig2(-funding)}"
     pnl = (
-        f"PnL{position.unrealised:+,.2f}−комса{_sig2(fees)}{fund_note}"
+        f"PnL{position.unrealised:+,.2f}−fees{_sig2(fees)}{fund_note}"
         f"=<b>{net:+,.2f}{_share(net, depo)}</b>"
     )
     return "\n".join([head, *exits, pnl]), rr, at_sl, at_tp
@@ -1402,7 +1406,7 @@ def trade_warnings(position: Position, depo: float | None) -> list[str]:
     the point is to hear about a rule broken while it can still be fixed.
     """
     if position.stop_loss is None:
-        return ["⚠️ без стопа"]
+        return ["⚠️ no stop"]
     risk = abs(position.price - position.stop_loss) * position.size
     warns = []
     if depo and RISK_TARGET:
@@ -1410,7 +1414,7 @@ def trade_warnings(position: Position, depo: float | None) -> list[str]:
         actual = risk / risk_base(depo)
         # Within a quarter of the target nobody wants a ping.
         if abs(actual - RISK_TARGET) > RISK_TARGET * 0.25:
-            warns.append(f"⚠️ риск {actual * 100:.2f}% депо, цель {RISK_TARGET * 100:g}%")
+            warns.append(f"⚠️ risk {actual * 100:.2f}% depo, target {RISK_TARGET * 100:g}%")
     if position.take_profit is not None and MIN_RR:
         rr = abs(position.take_profit - position.price) / abs(position.price - position.stop_loss)
         if rr < MIN_RR:
@@ -1501,9 +1505,9 @@ def _journal_meta(
 
     opened_ms = record.get("createdTime")
     opened = datetime.fromtimestamp(int(opened_ms) / 1000).strftime("%d.%m.%y") if opened_ms else ""
-    rr = f"принудительно остановлено: {forced}" if forced else ""
+    rr = f"force-stopped: {forced}" if forced else ""
     if was.stop_loss and was.take_profit:
-        rr = f"1к{abs(was.take_profit - entry) / abs(entry - was.stop_loss):.1f}"
+        rr = f"1:{abs(was.take_profit - entry) / abs(entry - was.stop_loss):.1f}"
     risk = abs(entry - was.stop_loss) * was.size if was.stop_loss else 0.0
     fact: float = round(pnl / risk, 2) if risk else round(pnl, 2)
     return opened, rr, fact
@@ -1520,8 +1524,8 @@ def journal_row(
 ) -> list:
     """One trade as a row of the trading-diary sheet.
 
-    Columns: Дата, Пара, Позиция, Результат, RR, Результат (R), Скрин,
-    Объём $, Вход, Выход, PnL, % депо, Комиссии, Деп.
+    Columns: Date, Pair, Side, Result, RR, Result (R), Screen,
+    Volume $, Entry, Exit, PnL, % depo, Fees, Depo.
     The result figure is the R multiple — PnL over the risk the stop
     carried; without a stop it falls back to net USDT. Free-text columns
     stay empty for hand-written notes.
@@ -1534,7 +1538,7 @@ def journal_row(
     return [
         opened,
         base_symbol(symbol),
-        "Лонг" if was.side == "long" else "Шорт",
+        "Long" if was.side == "long" else "Short",
         "win" if pnl >= 0 else "stop",
         rr,
         fact,
@@ -1546,13 +1550,13 @@ def journal_row(
         round(pnl / depo * 100, 2) if depo else "",
         f"{_sig2(opened_fee)}+{_sig2(closed_fee)}" if opened_fee or closed_fee else "",
         round(depo, 2) if depo else "",
-        "",  # O: Вывел/Завел — the money watcher's column
+        "",  # O: Withdrew/Deposited — the money watcher's column
         kind,
     ]
 
 
 async def close_kind(http: httpx.AsyncClient, record: dict) -> str:
-    """How the closing order came to be: стоп, тейк or руками.
+    """How the closing order came to be: stop, take or manual.
 
     Bybit's order history carries `createType` — CreateByStopLoss and
     CreateByTakeProfit mean the exchange fired a level, CreateByUser means a
@@ -1569,15 +1573,15 @@ async def close_kind(http: httpx.AsyncClient, record: dict) -> str:
         create = rows[0].get("createType") or ""
         stop_type = rows[0].get("stopOrderType") or ""
         if "StopLoss" in create or stop_type in ("StopLoss", "Stop"):
-            return "стоп"
+            return "stop"
         if "TakeProfit" in create or stop_type == "TakeProfit":
-            return "тейк"
+            return "take"
         if create in ("CreateByUser", "CreateByClosing"):
             # The maker exit is our own reduce-only limit resting at the
             # take: its fill is a take, not a hand on the button.
             if TP_MAKER and rows[0].get("reduceOnly") and rows[0].get("orderType") == "Limit":
-                return "тейк"
-            return "руками"
+                return "take"
+            return "manual"
         return ""
     # Deliberately broad: the notice must go out with or without the detail.
     except Exception:  # noqa: BLE001
@@ -1713,7 +1717,7 @@ def _exit_lines(
         # What reaching the TP pays, net of both fees: the entry fee
         # just paid and a like-sized one for the exit.
         target = abs(now.take_profit - now.price) * now.size - fees
-        tp_depo = f"=деп{depo + target:,.2f}$" if depo else ""
+        tp_depo = f"=depo{depo + target:,.2f}$" if depo else ""
         exits.append(f"tp{now.take_profit:g}:<b>{_usd(target)}{_share(target, depo)}{tp_depo}</b>")
     return at_sl, target, exits
 
@@ -1747,7 +1751,7 @@ async def _entry_notice(
     if exits:
         line += "\n" + "\n".join(exits)
     if fee:
-        line += f"\nкомса{_sig2(fee)}"
+        line += f"\nfees{_sig2(fee)}"
     # The line is HTML: a bare "<" in "RR 0.63 < 2" makes Telegram
     # refuse the whole notice, photo and text fallback both.
     for warn in trade_warnings(now, depo):
@@ -1805,18 +1809,18 @@ async def _close_notice(
         ),
     )
     forced = _guard_closed.pop(symbol, "")
-    kind = "риск-гард" if forced else await close_kind(http, record)
+    kind = "risk-guard" if forced else await close_kind(http, record)
     if kind:
         line += f"·{kind}"
     if opened_fee or closed_fee or funding:
-        costs = f"комса {_sig2(opened_fee + closed_fee)}"
+        costs = f"fees {_sig2(opened_fee + closed_fee)}"
         if funding:
-            costs += f", фанд {_sig2(funding)}"
+            costs += f", funding {_sig2(funding)}"
         line += f" ({costs})"
     entry: dict = {"row": journal_row(symbol, was, record, pnl, depo, forced, kind)}
     if png is not None:
         # The Apps Script saves it to Drive and writes the link
-        # into the «Ссылка» column of the same row.
+        # into the "Link" column of the same row.
         entry["png"] = base64.b64encode(png).decode()
         entry["name"] = f"{base_symbol(symbol)}-{record.get('updatedTime', '')}"
     await sheets.log_close(http, entry)
@@ -1955,15 +1959,15 @@ async def money_tick(http: httpx.AsyncClient, seen: set[str] | None, send) -> se
         if m["id"] in seen:
             continue
         amount = float(m["amount"])
-        word = "завел" if amount > 0 else "вывел"
+        word = "deposited" if amount > 0 else "withdrew"
         depo = await equity(http)
         line = f"💵 {word} {amount:+,.2f} {m['coin']}"
         if depo:
-            line += f" · деп {depo:,.2f}$"
+            line += f" · depo {depo:,.2f}$"
         await send(line)
         row = [
             datetime.now().strftime("%d.%m.%y"),
-            "перевод",
+            "transfer",
             "",
             "",
             "",

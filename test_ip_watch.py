@@ -79,8 +79,8 @@ def test_poll_shouts_on_a_change(monkeypatch):
     run_poll(FakeHTTP(["1.2.3.4", "5.6.7.8"]), out, monkeypatch, naps)
 
     assert out.sent == [
-        "⚠️ Внешний IP сменился: 1.2.3.4 → 5.6.7.8\n"
-        "Обнови whitelist API-ключа на Bybit, иначе бот отвалится!"
+        "⚠️ External IP changed: 1.2.3.4 → 5.6.7.8\n"
+        "Update the API key whitelist on Bybit, or the bot will drop off!"
     ]
     assert out.spoken == ["External IP changed, update the Bybit whitelist"]
 
@@ -202,8 +202,8 @@ def test_poll_shouts_once_when_the_tunnel_dies(monkeypatch):
     run_rounds(FakeHTTP([]), out, monkeypatch, 3)
 
     assert out.sent == [
-        "🚨 Туннель до 10.77.0.1:8888 не отвечает — бот отрезан от Bybit.\n"
-        "API-ключ ходит только через него. Проверь WireGuard на VPS!"
+        "🚨 Tunnel to 10.77.0.1:8888 is not answering — the bot is cut off from Bybit.\n"
+        "The API key only goes through it. Check WireGuard on the VPS!"
     ]
     assert out.spoken == ["Tunnel down, Bybit unreachable"]
 
@@ -224,7 +224,7 @@ def test_poll_announces_the_tunnel_coming_back(monkeypatch):
 
     run_rounds(FakeHTTP(["1.2.3.4"]), out, monkeypatch, 2)
 
-    assert out.sent[-1] == "✅ Туннель до 10.77.0.1:8888 снова на связи"
+    assert out.sent[-1] == "✅ Tunnel to 10.77.0.1:8888 is back up"
     assert out.spoken[-1] == "Tunnel back up"
 
 

@@ -320,7 +320,7 @@ def test_tick_announces_an_open(keyed):
 
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == ["💰📈FARTCOIN 18,749$@0.1621\n⚠️ без стопа"]
+    assert out.sent == ["💰📈FARTCOIN 18,749$@0.1621\n⚠️ no stop"]
     assert out.spoken == ["Fartcoin long opened"]
 
 
@@ -334,7 +334,7 @@ WITH_STOP = Position("long", 100.0, 0.16, 16.0, take_profit=0.19, stop_loss=0.15
 
 
 def test_trade_warnings_flags_a_missing_stop():
-    assert bybit_watch.trade_warnings(LONG, 1000.0) == ["⚠️ без стопа"]
+    assert bybit_watch.trade_warnings(LONG, 1000.0) == ["⚠️ no stop"]
 
 
 def test_trade_warnings_quiet_on_a_disciplined_trade(monkeypatch):
@@ -344,7 +344,7 @@ def test_trade_warnings_quiet_on_a_disciplined_trade(monkeypatch):
 
 def test_trade_warnings_flags_risk_drift():
     # 1 USDT of risk on 1000 USDT is 0.1% — far from the 0.5% target.
-    assert bybit_watch.trade_warnings(WITH_STOP, 1000.0) == ["⚠️ риск 0.10% депо, цель 0.5%"]
+    assert bybit_watch.trade_warnings(WITH_STOP, 1000.0) == ["⚠️ risk 0.10% depo, target 0.5%"]
 
 
 def test_trade_warnings_flags_a_thin_rr():
@@ -375,7 +375,7 @@ def disarmed(monkeypatch):
 def test_stopall_without_keys(monkeypatch, disarmed):
     monkeypatch.setattr(bybit_watch, "API_KEY", "")
 
-    assert "нет API-ключей" in asyncio.run(bybit_watch.close_everything(FakeHTTP()))
+    assert "no API keys" in asyncio.run(bybit_watch.close_everything(FakeHTTP()))
 
 
 def test_stopall_survives_a_dead_api(keyed, disarmed, caplog):
@@ -384,7 +384,7 @@ def test_stopall_survives_a_dead_api(keyed, disarmed, caplog):
             raise OSError("bybit down")
 
     with caplog.at_level("ERROR", logger="relay.bybit"):
-        assert "не ответил" in asyncio.run(bybit_watch.close_everything(Refusing()))
+        assert "did not answer" in asyncio.run(bybit_watch.close_everything(Refusing()))
 
 
 def test_stopall_with_nothing_open_disarms(keyed, monkeypatch):
@@ -392,7 +392,7 @@ def test_stopall_with_nothing_open_disarms(keyed, monkeypatch):
     http = FakeHTTP()
     http.position_pages = [[]]
 
-    assert "закрывать нечего" in asyncio.run(bybit_watch.close_everything(http))
+    assert "nothing to close" in asyncio.run(bybit_watch.close_everything(http))
     assert bybit_watch._stopall_armed == 0.0
 
 
@@ -432,7 +432,7 @@ def test_guard_warns_once_and_waits_out_the_grace_window(guarding):
     asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
     asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
 
-    assert out.sent == ["🛑 CL: нет стопа — закрою маркетом через 45с"]
+    assert out.sent == ["🛑 CL: no stop — closing at market in 45s"]
     assert out.spoken == ["CL risk breach"]
     assert http.orders == []
 
@@ -442,7 +442,7 @@ def test_guard_flags_leverage_above_the_cap(guarding):
 
     asyncio.run(bybit_watch.guard(http, {"OPUSDT": LEVERED}, out.send, out.speak))
 
-    assert out.sent == ["🛑 OP: плечо 3x > 1x — закрою маркетом через 45с"]
+    assert out.sent == ["🛑 OP: leverage 3x > 1x — closing at market in 45s"]
 
 
 def test_guard_market_closes_instantly_without_a_grace_window(guarding, monkeypatch):
@@ -462,7 +462,7 @@ def test_guard_market_closes_instantly_without_a_grace_window(guarding, monkeypa
             "positionIdx": 0,
         }
     ]
-    assert out.sent[-1] == "🛑 CL закрыт маркетом риск-менеджером: нет стопа"
+    assert out.sent[-1] == "🛑 CL closed at market by the risk manager: no stop"
 
 
 def test_guard_closes_once_the_grace_window_has_passed(guarding):
@@ -473,8 +473,8 @@ def test_guard_closes_once_the_grace_window_has_passed(guarding):
     asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
 
     assert len(http.orders) == 1
-    assert out.sent[-1] == "🛑 CL закрыт маркетом риск-менеджером: нет стопа"
-    assert bybit_watch._guard_closed["CLUSDT"] == "нет стопа"
+    assert out.sent[-1] == "🛑 CL closed at market by the risk manager: no stop"
+    assert bybit_watch._guard_closed["CLUSDT"] == "no stop"
 
 
 def test_guard_forgives_a_fixed_position(guarding):
@@ -507,7 +507,7 @@ def test_guard_reports_a_refused_close_and_backs_off(guarding, monkeypatch):
     asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
 
     # One attempt, one complaint: the retry waits out the backoff window.
-    assert out.sent == ["❌ CL: риск-менеджер не смог закрыть (order rejected)"]
+    assert out.sent == ["❌ CL: the risk manager could not close (order rejected)"]
 
 
 def test_guard_resets_leverage_after_a_leverage_close(guarding, monkeypatch):
@@ -517,7 +517,7 @@ def test_guard_resets_leverage_after_a_leverage_close(guarding, monkeypatch):
     asyncio.run(bybit_watch.guard(http, {"OPUSDT": LEVERED}, out.send, out.speak))
 
     assert out.sent == [
-        "🛑 OP закрыт маркетом риск-менеджером: плечо 3x > 1x · плечо сброшено на 1x"
+        "🛑 OP closed at market by the risk manager: leverage 3x > 1x · leverage reset to 1x"
     ]
     kinds = [(o.get("orderType"), o.get("buyLeverage")) for o in http.orders]
     assert kinds == [("Market", None), (None, "1")]  # the close, then the reset
@@ -536,7 +536,7 @@ def test_guard_close_note_absent_when_the_reset_is_refused(guarding, monkeypatch
 
     asyncio.run(bybit_watch.guard(http, {"OPUSDT": LEVERED}, out.send, out.speak))
 
-    assert out.sent == ["🛑 OP закрыт маркетом риск-менеджером: плечо 3x > 1x"]
+    assert out.sent == ["🛑 OP closed at market by the risk manager: leverage 3x > 1x"]
 
 
 def naked_order(order_id="n1", symbol="CLUSDT", **extra):
@@ -551,7 +551,7 @@ def test_guard_cancels_a_naked_limit_instantly_without_grace(guarding, monkeypat
     asyncio.run(bybit_watch.guard(http, {}, out.send, out.speak))
 
     assert http.orders == [{"category": "linear", "symbol": "CLUSDT", "orderId": "n1"}]
-    assert out.sent == ["🛑 CL: лимитка без стопа отменена риск-менеджером"]
+    assert out.sent == ["🛑 CL: limit order without a stop cancelled by the risk manager"]
 
 
 def test_guard_warns_about_a_naked_limit_inside_the_grace(guarding):
@@ -560,7 +560,7 @@ def test_guard_warns_about_a_naked_limit_inside_the_grace(guarding):
 
     asyncio.run(bybit_watch.guard(http, {}, out.send, out.speak))
 
-    assert out.sent == ["🛑 CL: лимитка без стопа — отменю через 45с"]
+    assert out.sent == ["🛑 CL: limit order without a stop — cancelling in 45s"]
     assert out.spoken == ["CL naked order"]
     assert http.orders == []
 
@@ -575,7 +575,7 @@ def test_guard_cancels_once_the_order_grace_passed(guarding):
     asyncio.run(bybit_watch.guard(http, {}, out.send, out.speak))
 
     assert len(http.orders) == 1
-    assert out.sent[-1] == "🛑 CL: лимитка без стопа отменена риск-менеджером"
+    assert out.sent[-1] == "🛑 CL: limit order without a stop cancelled by the risk manager"
 
 
 def test_guard_waits_out_the_order_grace(guarding):
@@ -624,7 +624,7 @@ def test_guard_reports_a_refused_cancel(guarding, monkeypatch):
 
     asyncio.run(bybit_watch.guard(http, {}, out.send, out.speak))
 
-    assert out.sent == ["❌ CL: не смог отменить лимитку (order rejected)"]
+    assert out.sent == ["❌ CL: could not cancel the limit order (order rejected)"]
 
 
 def test_guard_position_rules_survive_a_dead_order_listing(guarding, monkeypatch, caplog):
@@ -642,7 +642,7 @@ def test_guard_position_rules_survive_a_dead_order_listing(guarding, monkeypatch
         asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
 
     assert "guard order listing failed" in caplog.text
-    assert out.sent[-1] == "🛑 CL закрыт маркетом риск-менеджером: нет стопа"
+    assert out.sent[-1] == "🛑 CL closed at market by the risk manager: no stop"
 
 
 def test_guard_stays_dormant_when_disabled(keyed):
@@ -660,7 +660,7 @@ def test_guard_stays_dormant_when_disabled(keyed):
 def test_lev1_needs_keys():
     assert (
         asyncio.run(bybit_watch.force_leverage_one(FakeHTTP()))
-        == "Bybit не подключён: нет API-ключей"
+        == "Bybit not connected: no API keys"
     )
 
 
@@ -710,7 +710,7 @@ def test_lev1_sweeps_the_rest_of_the_exchange_after_the_actives(keyed):
 
     text = asyncio.run(bybit_watch.force_leverage_one(http))
 
-    assert text == ("✅ FARTCOIN → 1x\nОстальные 3 инструментов: ✅ 1 · уже 1x 1 · ❌ 1")
+    assert text == ("✅ FARTCOIN → 1x\nOther 3 instruments: ✅ 1 · already 1x 1 · ❌ 1")
 
 
 def test_lev1_takes_a_bare_ticker(keyed):
@@ -729,7 +729,7 @@ def test_lev1_reports_an_already_capped_symbol(keyed):
 
     text = asyncio.run(bybit_watch.force_leverage_one(Already(), "CLUSDT"))
 
-    assert text == "· CL уже 1x"
+    assert text == "· CL already 1x"
 
 
 def test_lev1_reports_a_refusal(keyed):
@@ -747,7 +747,7 @@ def test_lev1_with_nothing_open_says_so(keyed):
 
     text = asyncio.run(bybit_watch.force_leverage_one(http))
 
-    assert "некому" in text
+    assert "nothing to set" in text
     assert http.orders == []
 
 
@@ -758,7 +758,7 @@ def test_lev1_survives_a_listing_failure(keyed):
 
     text = asyncio.run(bybit_watch.force_leverage_one(Refusing()))
 
-    assert text == "Bybit не ответил, попробуй ещё раз"
+    assert text == "Bybit did not answer, try again"
 
 
 def test_stopall_arms_first_and_places_nothing(keyed, disarmed):
@@ -767,8 +767,8 @@ def test_stopall_arms_first_and_places_nothing(keyed, disarmed):
 
     text = asyncio.run(bybit_watch.close_everything(http))
 
-    assert "Закрою МАРКЕТОМ 2 поз.: FARTCOIN, OP" in text
-    assert "Повтори /stopall" in text
+    assert "Will close 2 pos. at MARKET: FARTCOIN, OP" in text
+    assert "Repeat /stopall" in text
     assert http.orders == []
 
 
@@ -783,7 +783,7 @@ def test_stopall_confirmed_closes_reduce_only(keyed, disarmed):
     text = asyncio.run(bybit_watch.close_everything(http))  # fire
 
     assert text.count("✅") == 2
-    assert "Отчёты 💸" in text
+    assert "💸 reports" in text
     assert http.orders == [
         {
             "category": "linear",
@@ -816,7 +816,7 @@ def test_stopall_confirmation_expires(keyed, disarmed, monkeypatch):
     asyncio.run(bybit_watch.close_everything(http))
     text = asyncio.run(bybit_watch.close_everything(http))
 
-    assert "Повтори /stopall" in text  # re-armed instead of firing
+    assert "Repeat /stopall" in text  # re-armed instead of firing
     assert http.orders == []
 
 
@@ -839,7 +839,7 @@ def test_stopall_reports_a_refused_close(keyed, disarmed, caplog):
 def test_close_without_keys(monkeypatch):
     monkeypatch.setattr(bybit_watch, "API_KEY", "")
 
-    assert "нет API-ключей" in asyncio.run(bybit_watch.close_position(FakeHTTP(), "CL"))
+    assert "no API keys" in asyncio.run(bybit_watch.close_position(FakeHTTP(), "CL"))
 
 
 def test_close_without_a_ticker_explains_itself(keyed):
@@ -852,7 +852,7 @@ def test_close_survives_a_dead_api(keyed, caplog):
             raise OSError("bybit down")
 
     with caplog.at_level("ERROR", logger="relay.bybit"):
-        assert "не ответил" in asyncio.run(bybit_watch.close_position(Refusing(), "CL"))
+        assert "did not answer" in asyncio.run(bybit_watch.close_position(Refusing(), "CL"))
 
 
 def test_close_unknown_ticker_lists_the_open_ones(keyed):
@@ -861,7 +861,7 @@ def test_close_unknown_ticker_lists_the_open_ones(keyed):
 
     text = asyncio.run(bybit_watch.close_position(http, "CL"))
 
-    assert "Позиции CL нет" in text
+    assert "No CL position" in text
     assert "FARTCOIN" in text
     assert http.orders == []
 
@@ -872,7 +872,7 @@ def test_close_matches_the_base_symbol_case_insensitively(keyed):
 
     text = asyncio.run(bybit_watch.close_position(http, "fartcoin"))
 
-    assert text.startswith("✅ FARTCOIN закрывается")
+    assert text.startswith("✅ FARTCOIN closing")
     assert http.orders == [
         {
             "category": "linear",
@@ -915,7 +915,7 @@ def test_positions_report_album_notes_carry_the_deposit(keyed):
     text = asyncio.run(bybit_watch.positions_report(http, send_album))
 
     assert text == ""
-    assert "=деп" in albums[0]  # the tp line carries the resulting deposit
+    assert "=depo" in albums[0]  # the tp line carries the resulting deposit
 
 
 def test_positions_report_sends_one_album(keyed):
@@ -967,7 +967,7 @@ def test_positions_report_falls_back_when_telegram_refuses_the_album(keyed):
 def test_positions_report_without_keys(monkeypatch):
     monkeypatch.setattr(bybit_watch, "API_KEY", "")
 
-    assert "нет API-ключей" in asyncio.run(bybit_watch.positions_report(FakeHTTP()))
+    assert "no API keys" in asyncio.run(bybit_watch.positions_report(FakeHTTP()))
 
 
 def test_positions_report_survives_a_dead_api(keyed, caplog):
@@ -978,14 +978,14 @@ def test_positions_report_survives_a_dead_api(keyed, caplog):
     with caplog.at_level("ERROR", logger="relay.bybit"):
         text = asyncio.run(bybit_watch.positions_report(Refusing()))
 
-    assert "не ответил" in text
+    assert "did not answer" in text
 
 
 def test_positions_report_with_nothing_open(keyed):
     http = FakeHTTP()
     http.position_pages = [[]]
 
-    assert asyncio.run(bybit_watch.positions_report(http)) == "Открытых позиций нет"
+    assert asyncio.run(bybit_watch.positions_report(http)) == "No open positions"
 
 
 def test_positions_report_lists_positions_with_depo_share(keyed):
@@ -1006,10 +1006,10 @@ def test_positions_report_lists_positions_with_depo_share(keyed):
     assert text.splitlines() == [
         "📈FARTCOIN 18,749$@0.1621 | RR2.31",
         "sl0.15:<b>-1,420.13(-14.20%)</b>",
-        "tp0.19:<b>+3,206.33(+32.06%)=деп13,206.33$</b>",
-        "PnL+512.30−комса20.62=<b>+491.68(+4.92%)</b>",
+        "tp0.19:<b>+3,206.33(+32.06%)=depo13,206.33$</b>",
+        "PnL+512.30−fees20.62=<b>+491.68(+4.92%)</b>",
         "📉OP 12$@1.2",
-        "PnL-1.50−комса0.013=<b>-1.51(-0.02%)</b>",
+        "PnL-1.50−fees0.013=<b>-1.51(-0.02%)</b>",
         "ΣPnL+510.80=<b>+490.16(+4.90%)</b>",
     ]
 
@@ -1146,7 +1146,7 @@ def test_tick_appends_the_entry_fee_when_fills_are_fresh(keyed):
 
     assert out.sent == [
         "💰📈FARTCOIN 18,749$@0.1621 | RR8.26\n"
-        "sl0.15:<b>-1,399.65</b>\ntp0.2621:<b>+11,565.98</b>\nкомса0.073"
+        "sl0.15:<b>-1,399.65</b>\ntp0.2621:<b>+11,565.98</b>\nfees0.073"
     ]
 
 
@@ -1160,8 +1160,8 @@ def test_tick_reports_the_take_target_as_a_share_of_equity(keyed):
 
     assert out.sent == [
         "💰📈FARTCOIN 18,749$@0.1621 | RR8.26\n"
-        "sl0.15:<b>-1,420.13(-7.10%)</b>\ntp0.2621:<b>+11,545.51(+57.73%)=деп31,545.51$</b>"
-        "\n⚠️ риск 7.00% депо, цель 0.5%"
+        "sl0.15:<b>-1,420.13(-7.10%)</b>\ntp0.2621:<b>+11,545.51(+57.73%)=depo31,545.51$</b>"
+        "\n⚠️ risk 7.00% depo, target 0.5%"
     ]
 
 
@@ -1198,8 +1198,8 @@ def test_tick_falls_back_to_text_when_telegram_refuses_the_photo(keyed):
 
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
-    assert out.photos == ["💰📈FARTCOIN 18,749$@0.1621\n⚠️ без стопа"]
-    assert out.sent == ["💰📈FARTCOIN 18,749$@0.1621\n⚠️ без стопа"]
+    assert out.photos == ["💰📈FARTCOIN 18,749$@0.1621\n⚠️ no stop"]
+    assert out.sent == ["💰📈FARTCOIN 18,749$@0.1621\n⚠️ no stop"]
 
 
 def test_tick_sends_a_close_chart_with_the_pnl_caption(keyed):
@@ -1210,7 +1210,7 @@ def test_tick_sends_a_close_chart_with_the_pnl_caption(keyed):
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
-    assert out.photos == ["💸<b>+512.30</b>·📈FARTCOIN (комса 0.15)"]
+    assert out.photos == ["💸<b>+512.30</b>·📈FARTCOIN (fees 0.15)"]
     assert out.sent == []
     assert out.spoken == ["Fartcoin long closed, profit 512"]
 
@@ -1221,7 +1221,7 @@ def test_journal_row_matches_the_diary_format():
 
     row = bybit_watch.journal_row("CLUSDT", was, record, -1.19)
 
-    assert row[1:6] == ["CL", "Шорт", "stop", "1к9.5", -1.0]
+    assert row[1:6] == ["CL", "Short", "stop", "1:9.5", -1.0]
     assert row[0].count(".") == 2  # DD.MM.YY
     assert row[6] == ""  # the screenshot chip is the script's to fill
     assert row[7:] == [131.0, 92.04, "", -1.19, "", "", "", "", ""]
@@ -1230,9 +1230,9 @@ def test_journal_row_matches_the_diary_format():
 @pytest.mark.parametrize(
     ("history", "expected"),
     [
-        ([{"createType": "CreateByStopLoss", "stopOrderType": "StopLoss"}], "стоп"),
-        ([{"createType": "CreateByTakeProfit", "stopOrderType": "TakeProfit"}], "тейк"),
-        ([{"createType": "CreateByUser", "stopOrderType": ""}], "руками"),
+        ([{"createType": "CreateByStopLoss", "stopOrderType": "StopLoss"}], "stop"),
+        ([{"createType": "CreateByTakeProfit", "stopOrderType": "TakeProfit"}], "take"),
+        ([{"createType": "CreateByUser", "stopOrderType": ""}], "manual"),
         ([{"createType": "CreateByAdl", "stopOrderType": ""}], ""),
         ([], ""),
     ],
@@ -1259,9 +1259,9 @@ def test_close_kind_survives_a_refusal(keyed):
 def test_journal_row_marks_a_guard_close():
     was = Position("long", 1.0, 199.12, 44.0)
 
-    row = bybit_watch.journal_row("SAMSUNGUSDT", was, {}, -0.04, forced="нет стопа")
+    row = bybit_watch.journal_row("SAMSUNGUSDT", was, {}, -0.04, forced="no stop")
 
-    assert row[4] == "принудительно остановлено: нет стопа"
+    assert row[4] == "force-stopped: no stop"
 
 
 def test_journal_row_extras_carry_the_full_arithmetic():
@@ -1273,9 +1273,9 @@ def test_journal_row_extras_carry_the_full_arithmetic():
         "closeFee": "0.0547",
     }
 
-    row = bybit_watch.journal_row("CLUSDT", was, record, -1.19, 128.16, kind="руками")
+    row = bybit_watch.journal_row("CLUSDT", was, record, -1.19, 128.16, kind="manual")
 
-    assert row[7:] == [131.0, 92.04, 91.9, -1.19, -0.93, "0.020+0.055", 128.16, "", "руками"]
+    assert row[7:] == [131.0, 92.04, 91.9, -1.19, -0.93, "0.020+0.055", 128.16, "", "manual"]
 
 
 def test_journal_row_without_a_stop_falls_back_to_usdt():
@@ -1411,7 +1411,7 @@ def test_tick_reports_pnl_on_a_close(keyed):
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == ["💸<b>+512.30</b>·📈FARTCOIN (комса 0.15)"]
+    assert out.sent == ["💸<b>+512.30</b>·📈FARTCOIN (fees 0.15)"]
     assert out.spoken == ["Fartcoin long closed, profit 512"]
 
 
@@ -1424,7 +1424,7 @@ def test_tick_close_reports_the_pnl_as_a_share_of_equity(keyed):
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == ["💸<b>+512.30</b>=<b>10,000.00$</b>(+5.12%)·📈FARTCOIN·руками (комса 0.15)"]
+    assert out.sent == ["💸<b>+512.30</b>=<b>10,000.00$</b>(+5.12%)·📈FARTCOIN·manual (fees 0.15)"]
 
 
 @pytest.mark.parametrize(
@@ -1632,10 +1632,10 @@ def test_money_tick_announces_and_journals_new_moves(keyed, monkeypatch):
 
     seen = asyncio.run(bybit_watch.money_tick(http, {"dep-t1", "wd-w1", "tr-b"}, out.send))
 
-    assert out.sent == ["💵 завел +20.00 USDT · деп 128.00$"]
+    assert out.sent == ["💵 deposited +20.00 USDT · depo 128.00$"]
     assert seen == {"dep-t1", "wd-w1", "tr-a", "tr-b"}
     row = journaled[0]["row"]
-    assert row[1] == "перевод"
+    assert row[1] == "transfer"
     assert row[13:] == [128.0, 20.0]
 
 
@@ -1649,7 +1649,7 @@ def test_money_tick_without_equity_skips_the_depo(keyed, monkeypatch):
 
     asyncio.run(bybit_watch.money_tick(money_http(), {"dep-t1", "tr-a", "tr-b"}, out.send))
 
-    assert out.sent == ["💵 вывел -100.00 USDT"]
+    assert out.sent == ["💵 withdrew -100.00 USDT"]
 
 
 def test_money_poll_survives_failures(keyed, monkeypatch, caplog):
@@ -1848,7 +1848,7 @@ def test_stats_report_without_keys(monkeypatch):
     async def send_photo(caption, png):
         raise AssertionError("nothing to send")
 
-    assert "нет API-ключей" in asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo))
+    assert "no API keys" in asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo))
 
 
 def test_stats_report_survives_a_dead_api(keyed, caplog, monkeypatch):
@@ -1861,7 +1861,7 @@ def test_stats_report_survives_a_dead_api(keyed, caplog, monkeypatch):
         raise AssertionError("nothing to send")
 
     with caplog.at_level("ERROR", logger="relay.bybit"):
-        assert "не ответил" in asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo))
+        assert "did not answer" in asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo))
 
 
 def test_stats_report_with_no_trades(keyed, monkeypatch):
@@ -1873,7 +1873,7 @@ def test_stats_report_with_no_trades(keyed, monkeypatch):
     async def send_photo(caption, png):
         raise AssertionError("nothing to send")
 
-    assert "закрытых сделок нет" in asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo))
+    assert "No closed trades" in asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo))
 
 
 def test_stats_report_sends_the_curve_with_the_figures(keyed, monkeypatch):
@@ -1900,9 +1900,9 @@ def test_stats_report_sends_the_curve_with_the_figures(keyed, monkeypatch):
     text = asyncio.run(bybit_watch.stats_report(http, send_photo))
 
     assert text == ""
-    assert shots[0].startswith("📊 за 30 дн.: сделок 2 · win 1/loss 1 (50%)")
-    assert "+3.00 (+2.26% депо 133)" in shots[0]
-    assert "лучший +5.00 · худший -2.00" in shots[0]
+    assert shots[0].startswith("📊 last 30 d: trades 2 · win 1/loss 1 (50%)")
+    assert "+3.00 (+2.26% depo 133)" in shots[0]
+    assert "best +5.00 · worst -2.00" in shots[0]
 
 
 def test_stats_report_falls_back_to_text_when_the_photo_fails(keyed, monkeypatch):
@@ -1916,7 +1916,7 @@ def test_stats_report_falls_back_to_text_when_the_photo_fails(keyed, monkeypatch
 
     text = asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo))
 
-    assert text.startswith("📊 за 30 дн.")
+    assert text.startswith("📊 last 30 d")
 
 
 def test_stats_report_survives_a_broken_curve(keyed, monkeypatch, caplog):
@@ -1934,7 +1934,7 @@ def test_stats_report_survives_a_broken_curve(keyed, monkeypatch, caplog):
     with caplog.at_level("ERROR", logger="relay.bybit"):
         text = asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo))
 
-    assert text.startswith("📊 за 30 дн.")
+    assert text.startswith("📊 last 30 d")
     assert "no equity curve" in caplog.text
 
 
@@ -1950,10 +1950,10 @@ def test_stats_report_takes_a_day_count(keyed, monkeypatch):
     async def send_photo(caption, png):
         raise AssertionError("nothing to send")
 
-    assert "За 7 дн." in asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo, "7"))
+    assert "in 7 d" in asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo, "7"))
     assert seen == [7]
-    assert "За 90 дн." in asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo, "500"))
-    assert "Например" in asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo, "неделя"))
+    assert "in 90 d" in asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo, "500"))
+    assert "e.g." in asyncio.run(bybit_watch.stats_report(FakeHTTP(), send_photo, "week"))
 
 
 @pytest.mark.parametrize(
@@ -2061,7 +2061,7 @@ def test_positions_pnl_line_uses_the_real_entry_fee(keyed):
 
     report = asyncio.run(bybit_watch.positions_report(http))
 
-    assert "−комса14.06−фанд0.40=" in report
+    assert "−fees14.06−funding0.40=" in report
 
 
 def test_positions_pnl_line_subtracts_funding(keyed):
@@ -2071,7 +2071,7 @@ def test_positions_pnl_line_subtracts_funding(keyed):
 
     report = asyncio.run(bybit_watch.positions_report(http))
 
-    assert "−комса20.62−фанд0.40=" in report
+    assert "−fees20.62−funding0.40=" in report
 
 
 def test_positions_pnl_line_adds_received_funding(keyed):
@@ -2081,7 +2081,7 @@ def test_positions_pnl_line_adds_received_funding(keyed):
 
     report = asyncio.run(bybit_watch.positions_report(http))
 
-    assert "−комса20.62+фанд0.40=" in report
+    assert "−fees20.62+funding0.40=" in report
 
 
 def test_tick_close_subtracts_funding(keyed):
@@ -2093,7 +2093,7 @@ def test_tick_close_subtracts_funding(keyed):
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": aged}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == ["💸<b>+500.00</b>·📈FARTCOIN (комса 0.15, фанд 12.30)"]
+    assert out.sent == ["💸<b>+500.00</b>·📈FARTCOIN (fees 0.15, funding 12.30)"]
 
 
 # --------------------------------------------------------------------------- #
@@ -2138,7 +2138,7 @@ def test_trim_cuts_back_to_the_target_risk(trimming):
             "positionIdx": 0,
         }
     ]
-    assert out.sent == ["✂️ CL: риск 1.11% депо при цели 0.50% — режу 10→3.9"]
+    assert out.sent == ["✂️ CL: risk 1.11% depo vs target 0.50% — cutting 10→3.9"]
     assert out.spoken == ["CL trimmed"]
 
 
@@ -2150,7 +2150,7 @@ def test_trim_cuts_even_a_small_overshoot(trimming):
     asyncio.run(bybit_watch.trim(http, {"CLUSDT": slightly}, out.send, out.speak))
 
     assert [o["qty"] for o in http.orders] == ["1.7"]
-    assert out.sent == ["✂️ CL: риск 0.67% депо при цели 0.50% — режу 6→4.3"]
+    assert out.sent == ["✂️ CL: risk 0.67% depo vs target 0.50% — cutting 6→4.3"]
 
 
 def test_trim_leaves_an_exact_position_alone(trimming):
@@ -2216,7 +2216,7 @@ def test_trim_reports_a_refused_cut(trimming):
 
     asyncio.run(bybit_watch.trim(http, {"CLUSDT": OVERSIZED}, out.send, out.speak))
 
-    assert out.sent == ["❌ CL: не смог подрезать (order rejected)"]
+    assert out.sent == ["❌ CL: could not trim (order rejected)"]
 
 
 def test_trim_stops_without_equity(trimming):
@@ -2297,7 +2297,7 @@ def test_tp_maker_reposts_the_take_as_a_limit(making):
         },
         {"category": "linear", "symbol": "CLUSDT", "takeProfit": "0", "positionIdx": 0},
     ]
-    assert out.sent == ["🎯 CL: тейк 103 перевыставлен лимиткой (maker)"]
+    assert out.sent == ["🎯 CL: take 103 reposted as a limit (maker)"]
     assert out.spoken == ["CL take reposted"]
 
 
@@ -2322,7 +2322,7 @@ def test_tp_maker_resizes_the_exit_after_a_trim(making):
     assert http.orders == [
         {"category": "linear", "symbol": "CLUSDT", "orderId": "e1", "qty": "1.5"}
     ]
-    assert out.sent == ["🎯 CL: тейк-лимитка подогнана под 1.5"]
+    assert out.sent == ["🎯 CL: take limit resized to 1.5"]
 
 
 def test_tp_maker_leaves_a_matching_exit_alone(making):
@@ -2353,7 +2353,7 @@ def test_tp_maker_cancels_an_orphaned_exit(making):
     asyncio.run(bybit_watch.tp_maker(http, {}, out.send, out.speak))
 
     assert http.orders == [{"category": "linear", "symbol": "CLUSDT", "orderId": "e1"}]
-    assert out.sent == ["🎯 CL: тейк-лимитка осталась без позиции — отменена"]
+    assert out.sent == ["🎯 CL: take limit left without a position — cancelled"]
 
 
 def test_tp_maker_orphan_cancel_survives_a_refusal(making, caplog):
@@ -2393,7 +2393,7 @@ def test_tp_maker_reports_a_refused_repost(making):
 
     asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": TAKEN}, out.send, out.speak))
 
-    assert out.sent == ["❌ CL: не смог перевыставить тейк (order rejected)"]
+    assert out.sent == ["❌ CL: could not repost the take (order rejected)"]
 
 
 def test_tp_maker_reports_a_refused_resize(making):
@@ -2403,7 +2403,7 @@ def test_tp_maker_reports_a_refused_resize(making):
 
     asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": EXITED}, out.send, out.speak))
 
-    assert out.sent == ["❌ CL: не смог подогнать тейк (order rejected)"]
+    assert out.sent == ["❌ CL: could not resize the take (order rejected)"]
 
 
 def test_tp_maker_stays_dormant_when_disabled(keyed):
@@ -2472,7 +2472,7 @@ def test_close_kind_calls_the_maker_exit_a_take(keyed, monkeypatch):
     http = FakeHTTP()
     http.history_rows = [{"createType": "CreateByUser", "reduceOnly": True, "orderType": "Limit"}]
 
-    assert asyncio.run(bybit_watch.close_kind(http, {"orderId": "x"})) == "тейк"
+    assert asyncio.run(bybit_watch.close_kind(http, {"orderId": "x"})) == "take"
 
 
 def test_close_kind_keeps_a_market_hand_close_manual(keyed, monkeypatch):
@@ -2480,7 +2480,7 @@ def test_close_kind_keeps_a_market_hand_close_manual(keyed, monkeypatch):
     http = FakeHTTP()
     http.history_rows = [{"createType": "CreateByUser", "orderType": "Market"}]
 
-    assert asyncio.run(bybit_watch.close_kind(http, {"orderId": "x"})) == "руками"
+    assert asyncio.run(bybit_watch.close_kind(http, {"orderId": "x"})) == "manual"
 
 
 # --------------------------------------------------------------------------- #
@@ -2508,7 +2508,7 @@ def test_trim_measures_against_the_capped_deposit(trimming, monkeypatch):
     asyncio.run(bybit_watch.trim(http, {"CLUSDT": OVERSIZED}, out.send, out.speak))
 
     assert http.orders[0]["qty"] == "6.1"
-    assert out.sent == ["✂️ CL: риск 1.11% депо при цели 0.50% — режу 10→3.9"]
+    assert out.sent == ["✂️ CL: risk 1.11% depo vs target 0.50% — cutting 10→3.9"]
 
 
 def test_trade_warnings_measure_the_risk_against_the_cap(monkeypatch):
@@ -2615,7 +2615,7 @@ def test_close_fraction_claims_the_cooldown_even_when_refused(keyed, caplog):
 #  /cut <ticker> <%>                                                           #
 # --------------------------------------------------------------------------- #
 def test_cut_needs_keys():
-    assert "нет API-ключей" in asyncio.run(bybit_watch.cut_position(FakeHTTP(), "CL 25"))
+    assert "no API keys" in asyncio.run(bybit_watch.cut_position(FakeHTTP(), "CL 25"))
 
 
 @pytest.mark.parametrize("query", ["", "CL", "25", "CL 0", "CL 101", "CL half", "  "])
@@ -2632,7 +2632,7 @@ def test_cut_matches_the_ticker_and_hands_the_share_over(keyed, query):
     text = asyncio.run(bybit_watch.cut_position(http, query))
 
     assert http.orders[0]["qty"] == "2.5"
-    assert text.startswith("✂️ CL: закрываю 25% (2.5)")
+    assert text.startswith("✂️ CL: closing 25% (2.5)")
 
 
 def test_cut_of_a_position_that_is_gone_lists_the_open_ones(keyed):
@@ -2640,13 +2640,13 @@ def test_cut_of_a_position_that_is_gone_lists_the_open_ones(keyed):
 
     text = asyncio.run(bybit_watch.cut_position(http, "OP 25"))
 
-    assert "Позиции OP нет" in text
+    assert "No OP position" in text
     assert "CL" in text
     assert http.orders == []
 
 
 def test_close_fraction_needs_keys():
-    assert "нет API-ключей" in asyncio.run(bybit_watch.close_fraction(FakeHTTP(), "CLUSDT", 25))
+    assert "no API keys" in asyncio.run(bybit_watch.close_fraction(FakeHTTP(), "CLUSDT", 25))
 
 
 def test_close_fraction_cuts_the_share(keyed):
@@ -2665,7 +2665,7 @@ def test_close_fraction_cuts_the_share(keyed):
             "positionIdx": 0,
         }
     ]
-    assert text.startswith("✂️ CL: закрываю 25% (2.5)")
+    assert text.startswith("✂️ CL: closing 25% (2.5)")
 
 
 def test_close_fraction_rounds_down_to_the_lot_step(keyed):
@@ -2682,7 +2682,7 @@ def test_close_fraction_at_a_hundred_closes_everything(keyed):
     text = asyncio.run(bybit_watch.close_fraction(http, "CLUSDT", 100))
 
     assert http.orders[0]["qty"] == "10"
-    assert "всю позицию" in text
+    assert "the whole position" in text
     # No instrument lookup: the whole size needs no rounding.
     assert not any("instruments-info" in url for url in http.requests)
 
@@ -2694,7 +2694,7 @@ def test_close_fraction_takes_the_rest_when_the_remainder_is_dust(keyed):
     text = asyncio.run(bybit_watch.close_fraction(http, "CLUSDT", 95))
 
     assert http.orders[0]["qty"] == "10"
-    assert "всю позицию" in text
+    assert "the whole position" in text
 
 
 def test_close_fraction_refuses_a_share_below_the_minimum(keyed):
@@ -2702,7 +2702,7 @@ def test_close_fraction_refuses_a_share_below_the_minimum(keyed):
 
     text = asyncio.run(bybit_watch.close_fraction(http, "CLUSDT", 5))
 
-    assert "меньше минимального лота" in text
+    assert "below the minimum lot" in text
     assert http.orders == []
 
 
@@ -2712,7 +2712,7 @@ def test_close_fraction_without_a_lot_step_says_no(keyed):
 
     text = asyncio.run(bybit_watch.close_fraction(http, "CLUSDT", 25))
 
-    assert "меньше минимального лота" in text
+    assert "below the minimum lot" in text
     assert http.orders == []
 
 
@@ -2722,7 +2722,7 @@ def test_close_fraction_on_a_position_already_gone(keyed):
 
     text = asyncio.run(bybit_watch.close_fraction(http, "CLUSDT", 50))
 
-    assert "уже закрыта" in text
+    assert "already closed" in text
 
 
 def test_close_fraction_survives_a_dead_api(keyed, caplog):
@@ -2733,7 +2733,7 @@ def test_close_fraction_survives_a_dead_api(keyed, caplog):
     with caplog.at_level("ERROR", logger="relay.bybit"):
         text = asyncio.run(bybit_watch.close_fraction(Refusing(), "CLUSDT", 50))
 
-    assert "не ответил" in text
+    assert "did not answer" in text
     assert "partial close listing failed" in caplog.text
 
 

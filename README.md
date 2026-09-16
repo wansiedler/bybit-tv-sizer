@@ -45,7 +45,7 @@ And it fills the Google Sheets trade journal automatically.
 With `GUARD_GRACE_SEC` above zero the guard warns first and gives the
 breach that many seconds to be fixed; at zero it acts immediately. A
 forced close is labelled everywhere — in Telegram, and in the journal as
-«принудительно остановлено» with the broken rule.
+"force-stopped" with the broken rule.
 
 ## Auto-trim: a market entry is cut back to the target risk
 
@@ -80,7 +80,7 @@ position risk:        2 108.90 $ = 2.11% of the deposit → trim
 budget for the keep:  1 000 − 2 × 55.00 = 890 $
 keep:                 890 / (2 000 + 53.90 − 55.00) → 0.445 BTC
 
-✂️ BTC: риск 2.11% депо при цели 1.00% — режу 1→0.445
+✂️ BTC: risk 2.11% depo vs target 1.00% — cutting 1→0.445
 ```
 
 Stopping out afterwards costs 55.00 (entry fee on the full size) + 30.53
@@ -102,7 +102,7 @@ whether the wallet holds 100 000 or 300 000 — above the ceiling the size
 stops scaling, below it nothing changes (a 40 000 $ wallet still risks 400).
 
 The ceiling reaches every place the percent is used: the sizer's quantity
-for limit orders, the trimmer's cut, and the «риск X% депо» warning on a
+for limit orders, the trimmer's cut, and the "risk X% depo" warning on a
 fresh entry. Reports, charts and journal rows keep showing the real balance
 and the real shares of it — only the risk arithmetic is capped.
 
@@ -128,12 +128,12 @@ The trimmer polls twice a second and Bybit needs a moment to show the
 smaller size; without the claim it would read the pre-tap size and cut a
 second time off a position already trimmed by hand.
 
-The buttons live under one notice, and a notice scrolls away. `/cut <тикер>
+The buttons live under one notice, and a notice scrolls away. `/cut <ticker>
 <%>` is the same partial exit typed out, reachable at any time:
 
 ```text
 /cut CL 25
-✂️ CL: закрываю 25% (2.5) — отчёт 💸 придёт следом
+✂️ CL: closing 25% (2.5) — 💸 report follows
 ```
 
 ## Maker takes (`TP_MAKER=1`)
@@ -154,7 +154,7 @@ ceiling, while a missed take is only a smaller win.
 Compacts LEXX Draco alerts and re-posts them through your own bot.
 
 ```text
-🔔 #OPUSDT OPUSDT, Пересечение 0.10282
+🔔 #OPUSDT OPUSDT, Crossing 0.10282
 -  exchange:  #BybitFutures
 -  trend: 📈
 -  price: 0.10277
@@ -172,7 +172,7 @@ same bot, prefixed with who wrote it and where:
 
 ```text
 👤 @some_trader · Trading Club:
-сетку ставим на OP
+placing a grid on OP
 ```
 
 ## Why a user account is involved

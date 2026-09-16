@@ -297,7 +297,7 @@ async def check() -> None:
         log.info("bot: @%s", bot["result"]["username"])
 
         sample = parse_alert(
-            "🔔 #OPUSDT OPUSDT, Пересечение 0.10282\n"
+            "🔔 #OPUSDT OPUSDT, Crossing 0.10282\n"
             "-  exchange:  #BybitFutures\n"
             "-  trend: 📈\n"
             "-  price: 0.10277"
