@@ -283,7 +283,7 @@ def test_stopall_answers_with_the_result(owner):
     rec = Recorder()
 
     async def stop_all():
-        return "⚠️ Закрою МАРКЕТОМ 2 поз.: CL, GRAM"
+        return "⚠️ Will close 2 pos. at MARKET: CL, GRAM"
 
     asyncio.run(
         commands.dispatch(
@@ -297,7 +297,7 @@ def test_stopall_answers_with_the_result(owner):
         )
     )
 
-    assert rec.sent == ["⚠️ Закрою МАРКЕТОМ 2 поз.: CL, GRAM"]
+    assert rec.sent == ["⚠️ Will close 2 pos. at MARKET: CL, GRAM"]
 
 
 def test_stopall_without_a_closer_falls_back_to_help(owner):
@@ -314,7 +314,7 @@ def test_close_passes_the_ticker(owner):
 
     async def close_one(arg):
         seen.append(arg)
-        return "✅ CL закрывается — отчёт 💸 придёт следом"
+        return "✅ CL closing — 💸 report follows"
 
     asyncio.run(
         commands.dispatch(
@@ -329,7 +329,7 @@ def test_close_passes_the_ticker(owner):
     )
 
     assert seen == ["CL"]
-    assert rec.sent == ["✅ CL закрывается — отчёт 💸 придёт следом"]
+    assert rec.sent == ["✅ CL closing — 💸 report follows"]
 
 
 def test_close_without_a_closer_falls_back_to_help(owner):
@@ -534,7 +534,7 @@ def test_statistics_sends_the_report(owner):
     rec = Recorder()
 
     async def statistics(arg):
-        return "📊 за 30 дн.: сделок 5"
+        return "📊 last 30 d: trades 5"
 
     asyncio.run(
         commands.dispatch(
@@ -548,7 +548,7 @@ def test_statistics_sends_the_report(owner):
         )
     )
 
-    assert rec.sent == ["📊 за 30 дн.: сделок 5"]
+    assert rec.sent == ["📊 last 30 d: trades 5"]
 
 
 def test_statistics_stays_silent_after_the_chart(owner):
@@ -607,7 +607,7 @@ def test_status_survives_a_failed_ip_lookup(owner):
         )
     )
 
-    assert rec.sent[0].endswith("🌐 IP недоступен")
+    assert rec.sent[0].endswith("🌐 IP unavailable")
 
 
 # --------------------------------------------------------------------------- #
@@ -744,7 +744,7 @@ def test_cut_command_reaches_the_handler(owner):
 
     async def cut(arg):
         asked.append(arg)
-        return "✂️ CL: закрываю 25% (2.5)"
+        return "✂️ CL: closing 25% (2.5)"
 
     asyncio.run(
         commands.dispatch(
@@ -753,7 +753,7 @@ def test_cut_command_reaches_the_handler(owner):
     )
 
     assert asked == ["CL 25"]
-    assert rec.sent == ["✂️ CL: закрываю 25% (2.5)"]
+    assert rec.sent == ["✂️ CL: closing 25% (2.5)"]
 
 
 def test_cut_without_a_handler_falls_through_to_help(owner):

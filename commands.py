@@ -51,17 +51,17 @@ HELP = (
     "Commands:\n"
     "/status — uptime, counters, speaker\n"
     "/positions — open Bybit positions with uPnL\n"
-    "/statistics [дней] — results with the equity curve, default 30\n"
+    "/statistics [days] — results with the equity curve, default 30\n"
     "/close <ticker> — close one position at market, e.g. /close CL\n"
-    "/cut <ticker> <%> — подрезать позу маркетом, e.g. /cut CL 25\n"
+    "/cut <ticker> <%> — trim a position at market, e.g. /cut CL 25\n"
     "/stopall — close every position at market (asks to confirm)\n"
-    "/lev1 [тикер] — принудительно 1x плечо (все открытые или один)\n"
+    "/lev1 [ticker] — force 1x leverage (every open one, or one)\n"
     "/links — the journal and the TradingView webhook\n"
     "/test — push a sample alert through the whole chain\n"
     "/ping — answer if alive\n"
     "/help — this list\n"
-    "Под уведомлением о входе — кнопки 5% · 25% · 50% · ❌100%: тап режет "
-    "позицию маркетом на эту долю."
+    "Under the entry notice — buttons 5% · 25% · 50% · ❌100%: a tap cuts "
+    "that share of the position at market."
 )
 
 
@@ -232,7 +232,7 @@ async def _status(stats: Stats, speaking: bool, handlers: Handlers, send) -> Non
             text += f"\n🌐 {await handlers.ip()}"
         # Deliberately broad: a flaky IP lookup must not eat /status.
         except Exception:  # noqa: BLE001
-            text += "\n🌐 IP недоступен"
+            text += "\n🌐 IP unavailable"
     await send(text)
     if handlers.market is not None:
         await handlers.market()

@@ -85,12 +85,12 @@ async def _announce_tunnel(up: bool, tunnel: bool | None, send, speak) -> None:
     where = f"{endpoint[0]}:{endpoint[1]}"
     if not up:
         await send(
-            f"🚨 Туннель до {where} не отвечает — бот отрезан от Bybit.\n"
-            f"API-ключ ходит только через него. Проверь WireGuard на VPS!"
+            f"🚨 Tunnel to {where} is not answering — the bot is cut off from Bybit.\n"
+            f"The API key only goes through it. Check WireGuard on the VPS!"
         )
         await speak("Tunnel down, Bybit unreachable")
     elif tunnel is not None:
-        await send(f"✅ Туннель до {where} снова на связи")
+        await send(f"✅ Tunnel to {where} is back up")
         await speak("Tunnel back up")
 
 
@@ -101,8 +101,8 @@ async def _announce_ip(http: httpx.AsyncClient, known: str | None, send, speak) 
         log.info("external ip: %s", ip)
     elif ip != known:
         await send(
-            f"⚠️ Внешний IP сменился: {known} → {ip}\n"
-            f"Обнови whitelist API-ключа на Bybit, иначе бот отвалится!"
+            f"⚠️ External IP changed: {known} → {ip}\n"
+            f"Update the API key whitelist on Bybit, or the bot will drop off!"
         )
         await speak("External IP changed, update the Bybit whitelist")
     return ip

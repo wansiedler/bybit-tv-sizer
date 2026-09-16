@@ -1,13 +1,15 @@
 from parser import base_symbol, parse_alert
 
-SAMPLE = """🔔 #OPUSDT OPUSDT, Пересечение 0.10282
+SAMPLE = """🔔 #OPUSDT OPUSDT, Crossing 0.10282
 -  exchange:  #BybitFutures
 -  trend: 📈
 -  price: 0.10277"""
 
-FLAT = "🔔 #OPUSDT OPUSDT, Пересечение 0.10282 -  exchange:  #BybitFutures -  trend: 📈 -  price: 0.10277"
+FLAT = (
+    "🔔 #OPUSDT OPUSDT, Crossing 0.10282 -  exchange:  #BybitFutures -  trend: 📈 -  price: 0.10277"
+)
 
-DOWN = """🔔 #BOMEUSDT BOMEUSDT, Пересечение 0.00412
+DOWN = """🔔 #BOMEUSDT BOMEUSDT, Crossing 0.00412
 -  exchange:  #BinanceFutures
 -  trend: 📉
 -  price: 0.00409"""
@@ -26,7 +28,7 @@ def test_down_trend():
 
 
 def test_non_alert_is_skipped():
-    assert parse_alert("Бот запущен") is None
+    assert parse_alert("Bot started") is None
     assert parse_alert("") is None
 
 

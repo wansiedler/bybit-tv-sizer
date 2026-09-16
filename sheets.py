@@ -46,7 +46,7 @@ async def log_close(http: httpx.AsyncClient, entry: dict) -> bool:
             content=json.dumps({"secret": SHEETS_SECRET, **entry}),
             headers={"Content-Type": "text/plain"},
             timeout=20,
-            follow_redirects=True,  # Apps Script answers через redirect
+            follow_redirects=True,  # Apps Script answers via a redirect
         )
         if response.status_code >= 400:
             log.error("sheets refused: %s %s", response.status_code, response.text[:200])

@@ -344,7 +344,7 @@ async def _announce_resize(
     def described(qty: Decimal) -> str:
         value = qty * entry_price
         dollars = f"{value:,.0f}$" if value >= 10 else f"{value:,.2f}$"
-        return f"{qty} ({dollars}, {value / equity * 100:.1f}% депо)"
+        return f"{qty} ({dollars}, {value / equity * 100:.1f}% depo)"
 
     stop_raw = order.get("stopLoss") or ""
     stop_text = stop_raw or "?"
@@ -354,7 +354,7 @@ async def _announce_resize(
     await send(
         f"⚖️ {order['symbol']} {order.get('side', '?')} limit @ {order['price']}\n"
         f"stop {stop_text} → qty {described(have)} → {described(want)}"
-        + (" (урезано по марже — подними плечо инструмента)" if capped else "")
+        + (" (capped by margin — raise the instrument's leverage)" if capped else "")
     )
 
 
@@ -363,7 +363,7 @@ async def poll(http: httpx.AsyncClient, send) -> None:
     mode = "dry-run" if DRY_RUN else "LIVE"
     log.info("sizing orders every %ss | risk %s%% | %s", POLL, RISK_PCT * 100, mode)
     # The ceiling is worth announcing: it silently changes every size.
-    ceiling = f", база ≤ {EQUITY_MAX:,.0f}$" if EQUITY_MAX > 0 else ""
+    ceiling = f", base ≤ {EQUITY_MAX:,.0f}$" if EQUITY_MAX > 0 else ""
     await send(
         f"⚖️ sizer up — {mode}, risk {RISK_PCT * 100}%{ceiling}, max leverage {MAX_LEVERAGE}x"
     )
