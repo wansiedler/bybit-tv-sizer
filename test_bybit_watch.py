@@ -289,8 +289,9 @@ class Recorder:
         self.keyboards: list[dict | None] = []
         self.photo_ok = True
 
-    async def send(self, text):
+    async def send(self, text, buttons=None):
         self.sent.append(text)
+        self.keyboards.append(buttons)
 
     async def speak(self, text):
         self.spoken.append(text)
@@ -2544,6 +2545,30 @@ def test_tick_hangs_the_exit_buttons_under_an_entry(keyed):
     assert out.keyboards == [bybit_watch.exit_buttons("FARTCOINUSDT")]
 
 
+def test_tick_keeps_the_buttons_when_there_is_no_chart(keyed):
+    """A fresh listing has no candles; the entry still deserves its exits."""
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[row()]]
+    http.kline_rows = []
+
+    asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
+
+    assert out.photos == []
+    assert out.keyboards == [bybit_watch.exit_buttons("FARTCOINUSDT")]
+
+
+def test_tick_keeps_the_buttons_when_telegram_refuses_the_photo(keyed):
+    """The text fallback is the same notice, so it carries the same buttons."""
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[row()]]
+    http.kline_rows = KLINES
+    out.photo_ok = False
+
+    asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
+
+    assert out.keyboards == [bybit_watch.exit_buttons("FARTCOINUSDT")] * 2
+
+
 def test_tick_sends_no_buttons_with_a_close(keyed):
     http, out = FakeHTTP(), Recorder()
     http.position_pages = [[]]
@@ -2565,6 +2590,59 @@ def part_http(size="10", step="0.1", min_qty="0.1"):
         {"list": [{"symbol": "CLUSDT", "lotSizeFilter": {"qtyStep": step, "minOrderQty": min_qty}}]}
     ]
     return http
+
+
+def test_close_fraction_claims_the_trimmers_cooldown(keyed):
+    """Bybit lags the smaller size; the trimmer polls twice a second."""
+    http = part_http()
+
+    asyncio.run(bybit_watch.close_fraction(http, "CLUSDT", 25))
+
+    assert "CLUSDT" in bybit_watch._trim_cooldown
+
+
+def test_close_fraction_claims_the_cooldown_even_when_refused(keyed, caplog):
+    http = part_http()
+    http.refuse_order = True
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        asyncio.run(bybit_watch.close_fraction(http, "CLUSDT", 25))
+
+    assert "CLUSDT" in bybit_watch._trim_cooldown
+
+
+# --------------------------------------------------------------------------- #
+#  /cut <ticker> <%>                                                           #
+# --------------------------------------------------------------------------- #
+def test_cut_needs_keys():
+    assert "нет API-ключей" in asyncio.run(bybit_watch.cut_position(FakeHTTP(), "CL 25"))
+
+
+@pytest.mark.parametrize("query", ["", "CL", "25", "CL 0", "CL 101", "CL half", "  "])
+def test_cut_without_a_ticker_and_a_share_explains_itself(keyed, query):
+    assert "/cut CL 25" in asyncio.run(bybit_watch.cut_position(FakeHTTP(), query))
+
+
+@pytest.mark.parametrize("query", ["CL 25", "cl 25%", "CLUSDT 25", "CL 25,0"])
+def test_cut_matches_the_ticker_and_hands_the_share_over(keyed, query):
+    http = part_http()
+    # Two listings: /cut resolves the ticker, close_fraction reads the size.
+    http.position_pages *= 2
+
+    text = asyncio.run(bybit_watch.cut_position(http, query))
+
+    assert http.orders[0]["qty"] == "2.5"
+    assert text.startswith("✂️ CL: закрываю 25% (2.5)")
+
+
+def test_cut_of_a_position_that_is_gone_lists_the_open_ones(keyed):
+    http = part_http()
+
+    text = asyncio.run(bybit_watch.cut_position(http, "OP 25"))
+
+    assert "Позиции OP нет" in text
+    assert "CL" in text
+    assert http.orders == []
 
 
 def test_close_fraction_needs_keys():

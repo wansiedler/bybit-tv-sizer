@@ -109,18 +109,22 @@ async def send_via_bot(
     *,
     quiet: bool = False,
     preview: bool = True,
+    buttons: dict | None = None,
 ) -> bool:
     """Post one line through the bot. Returns True when Telegram accepted it.
 
     `html` turns on Telegram's HTML parse mode — only for text we compose
     ourselves (foreign text gets escaped first); `preview` off keeps a link
-    in the text from unfurling under the message.
+    in the text from unfurling under the message; `buttons` is an inline
+    keyboard, for an entry notice that had no chart to hang one on.
     """
     payload: dict[str, object] = {"chat_id": TARGET_CHAT_ID, "text": text}
     if html:
         payload["parse_mode"] = "HTML"
     if not preview:
         payload["link_preview_options"] = {"is_disabled": True}
+    if buttons:
+        payload["reply_markup"] = buttons
     try:
         response = await http.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
@@ -412,6 +416,7 @@ def _command_handlers(http: httpx.AsyncClient, links: str) -> commands.Handlers:
         ),
         stop_all=lambda: bybit_watch.close_everything(http),
         close_one=lambda arg: bybit_watch.close_position(http, arg),
+        cut=lambda arg: bybit_watch.cut_position(http, arg),
         market=lambda: bybit_watch.market_report(
             http, lambda caption, png: send_photo_via_bot(http, caption, png)
         ),
@@ -433,8 +438,9 @@ def _spawn_watchers(http: httpx.AsyncClient) -> set[asyncio.Task]:
             asyncio.create_task(
                 bybit_watch.poll(
                     http,
-                    # The watcher composes its own markup: HTML is safe.
-                    lambda text: send_via_bot(http, text, True),
+                    # The watcher composes its own markup: HTML is safe. Only
+                    # a chartless entry notice passes buttons; the rest None.
+                    lambda text, buttons=None: send_via_bot(http, text, True, buttons=buttons),
                     speaker.trade,
                     lambda caption, png, buttons=None: send_photo_via_bot(
                         http, caption, png, buttons

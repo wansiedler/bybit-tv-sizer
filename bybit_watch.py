@@ -808,6 +808,27 @@ async def _cap_the_rest(http: httpx.AsyncClient, rest: list[str]) -> str:
     return f"Остальные {len(rest)} инструментов: ✅ {done} · уже 1x {already} · ❌ {failed}"
 
 
+async def _open_position_row(http: httpx.AsyncClient, query: str) -> tuple[dict | None, str]:
+    """One live position row by ticker, or the message saying why there is none.
+
+    The listing is fresh on every call: a ticker typed minutes ago may name
+    a position since stopped out, trimmed or flipped.
+    """
+    wanted = query.strip().upper()
+    try:
+        result = await _get(http, _POSITIONS, {"category": "linear", "settleCoin": "USDT"})
+        rows = [r for r in result.get("list", []) if float(r.get("size") or 0) != 0]
+    # Deliberately broad: a chat command must answer, not crash the poller.
+    except Exception:  # noqa: BLE001
+        log.exception("position listing failed")
+        return None, _NO_ANSWER
+    matches = [r for r in rows if wanted in (r["symbol"].upper(), base_symbol(r["symbol"]).upper())]
+    if not matches:
+        names = ", ".join(base_symbol(r["symbol"]) for r in rows) or "—"
+        return None, f"Позиции {wanted} нет. Открыты: {names}"
+    return matches[0], ""
+
+
 async def close_position(http: httpx.AsyncClient, query: str) -> str:
     """Close one position by ticker, for /close CL. No confirm: the typed
     argument is the confirmation."""
@@ -815,19 +836,9 @@ async def close_position(http: httpx.AsyncClient, query: str) -> str:
         return _NO_KEYS
     if not query.strip():
         return "Какую позицию? Например: /close CL"
-    wanted = query.strip().upper()
-    try:
-        result = await _get(http, _POSITIONS, {"category": "linear", "settleCoin": "USDT"})
-        rows = [r for r in result.get("list", []) if float(r.get("size") or 0) != 0]
-    # Deliberately broad: a chat command must answer, not crash the poller.
-    except Exception:  # noqa: BLE001
-        log.exception("close listing failed")
-        return _NO_ANSWER
-    matches = [r for r in rows if wanted in (r["symbol"].upper(), base_symbol(r["symbol"]).upper())]
-    if not matches:
-        names = ", ".join(base_symbol(r["symbol"]) for r in rows) or "—"
-        return f"Позиции {wanted} нет. Открыты: {names}"
-    row = matches[0]
+    row, refusal = await _open_position_row(http, query)
+    if row is None:
+        return refusal
     try:
         await _close_market(
             http, row["symbol"], row.get("side", ""), row["size"], int(row.get("positionIdx") or 0)
@@ -837,6 +848,29 @@ async def close_position(http: httpx.AsyncClient, query: str) -> str:
         log.exception("could not close %s", row["symbol"])
         return f"❌ {base_symbol(row['symbol'])}: {exc}"
     return f"✅ {base_symbol(row['symbol'])} закрывается — отчёт 💸 придёт следом"
+
+
+async def cut_position(http: httpx.AsyncClient, query: str) -> str:
+    """Close part of one position by ticker, for /cut CL 25.
+
+    The buttons only exist under an entry notice, and a notice scrolls away;
+    this is the same partial exit reachable at any time. The ticker is
+    matched exactly as /close matches it, then the share is handed to the
+    very function a tap calls.
+    """
+    if not enabled():
+        return _NO_KEYS
+    ticker, _, share = query.strip().rpartition(" ")
+    try:
+        percent = float(share.removesuffix("%").replace(",", "."))
+    except ValueError:
+        percent = 0.0
+    if not ticker or not 0 < percent <= 100:
+        return "Сколько и чего резать? Например: /cut CL 25"
+    row, refusal = await _open_position_row(http, ticker)
+    if row is None:
+        return refusal
+    return await close_fraction(http, row["symbol"], percent)
 
 
 # The buttons that ride under an entry notice: one tap closes that share of
@@ -900,6 +934,10 @@ async def close_fraction(http: httpx.AsyncClient, symbol: str, percent: float) -
         return _NO_ANSWER
     if qty is None:
         return f"{base_symbol(symbol)}: {percent:g}% — меньше минимального лота"
+    # Claim the trimmer's cooldown before the order, not after: it polls
+    # twice a second, and Bybit needs a moment to show the smaller size —
+    # without this the trimmer would cut a second time off the stale one.
+    _trim_cooldown[symbol] = time.monotonic()
     try:
         await _close_market(
             http, symbol, row.get("side", ""), f"{qty:g}", int(row.get("positionIdx") or 0)
@@ -1814,7 +1852,9 @@ async def tick(
             if closed_line is not None:
                 line = closed_line
         if png is None or not await send_photo(line, png, buttons):
-            await send(line)
+            # A chartless entry — a fresh listing, a refused photo — is still
+            # an entry: the fallback text carries the same exit buttons.
+            await send(line, buttons)
         await speak(spoken_line)
     return after
 

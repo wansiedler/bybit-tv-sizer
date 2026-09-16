@@ -290,6 +290,41 @@ def test_send_photo_carries_the_exit_keyboard(config):
     assert _json.loads(http.forms[0]["reply_markup"]) == buttons
 
 
+def test_send_via_bot_carries_an_inline_keyboard(config):
+    """A chartless entry notice falls back to text and keeps its buttons."""
+
+    class CapturingHTTP(FakeHTTP):
+        def __init__(self):
+            super().__init__()
+            self.payloads: list[dict] = []
+
+        async def post(self, url, json=None, data=None, files=None, timeout=None):
+            self.payloads.append(json)
+            return self._post_response
+
+    http = CapturingHTTP()
+    buttons = {"inline_keyboard": [[{"text": "25%", "callback_data": "x:CLUSDT:25"}]]}
+
+    assert asyncio.run(relay.send_via_bot(as_client(http), "entry", buttons=buttons)) is True
+    assert http.payloads[0]["reply_markup"] == buttons
+
+
+def test_send_via_bot_without_buttons_sends_no_markup(config):
+    class CapturingHTTP(FakeHTTP):
+        def __init__(self):
+            super().__init__()
+            self.payloads: list[dict] = []
+
+        async def post(self, url, json=None, data=None, files=None, timeout=None):
+            self.payloads.append(json)
+            return self._post_response
+
+    http = CapturingHTTP()
+
+    assert asyncio.run(relay.send_via_bot(as_client(http), "plain")) is True
+    assert "reply_markup" not in http.payloads[0]
+
+
 def test_send_photo_without_buttons_sends_no_markup(config):
     class CapturingHTTP(FakeHTTP):
         def __init__(self):

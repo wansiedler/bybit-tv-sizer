@@ -53,6 +53,7 @@ HELP = (
     "/positions — open Bybit positions with uPnL\n"
     "/statistics [дней] — results with the equity curve, default 30\n"
     "/close <ticker> — close one position at market, e.g. /close CL\n"
+    "/cut <ticker> <%> — подрезать позу маркетом, e.g. /cut CL 25\n"
     "/stopall — close every position at market (asks to confirm)\n"
     "/lev1 [тикер] — принудительно 1x плечо (все открытые или один)\n"
     "/links — the journal and the TradingView webhook\n"
@@ -206,6 +207,7 @@ class Handlers:
     ip: Any = None
     lev_one: Any = None
     close_part: Any = None
+    cut: Any = None
 
 
 async def _handle_tap(http: httpx.AsyncClient, update: dict, h: Handlers, send) -> bool:
@@ -260,6 +262,8 @@ async def _handled_command(command: str, arg: str, h: Handlers, send) -> bool:
         await send(await h.stop_all())
     elif command == "close" and h.close_one is not None:
         await send(await h.close_one(arg))
+    elif command == "cut" and h.cut is not None:
+        await send(await h.cut(arg))
     elif command == "lev1" and h.lev_one is not None:
         await send(await h.lev_one(arg))
     elif command == "links" and h.links:

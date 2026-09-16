@@ -119,9 +119,22 @@ partial takes without typing. The quantity is floored to the exchange's lot
 step; a share smaller than the minimum order size is refused instead of
 silently rounding to nothing, and a remainder too small to close later is
 taken with the tap. Only `OWNER_ID` is obeyed: anyone else who can see the
-chat can tap, and gets nothing. The buttons ride on the photo, so a notice
-that falls back to plain text (no candles) carries none — `/close <тикер>`
-still closes it whole.
+chat can tap, and gets nothing. A notice with no chart behind it — a fresh
+listing with no candles, or a photo Telegram refused — falls back to plain
+text and carries the same buttons.
+
+A tap also claims the auto-trimmer's cooldown before its order goes out.
+The trimmer polls twice a second and Bybit needs a moment to show the
+smaller size; without the claim it would read the pre-tap size and cut a
+second time off a position already trimmed by hand.
+
+The buttons live under one notice, and a notice scrolls away. `/cut <тикер>
+<%>` is the same partial exit typed out, reachable at any time:
+
+```text
+/cut CL 25
+✂️ CL: закрываю 25% (2.5) — отчёт 💸 придёт следом
+```
 
 ## Maker takes (`TP_MAKER=1`)
 
