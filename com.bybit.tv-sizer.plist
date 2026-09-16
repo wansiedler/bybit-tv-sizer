@@ -21,15 +21,15 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/me/lexx-relay/launchd-start.sh</string>
+        <string>/Users/me/bybit-tv-sizer/launchd-start.sh</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/Users/me/lexx-relay</string>
+    <string>/Users/me/bybit-tv-sizer</string>
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/Users/me/Library/Logs/lexx-relay-launchd.log</string>
+    <string>/Users/me/Library/Logs/bybit-tv-sizer-launchd.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/me/Library/Logs/lexx-relay-launchd.log</string>
+    <string>/Users/me/Library/Logs/bybit-tv-sizer-launchd.log</string>
 </dict>
 </plist>
