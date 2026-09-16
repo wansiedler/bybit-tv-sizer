@@ -29,7 +29,7 @@ ENV SESSION_NAME=/app/session/lexx_relay
 # Nothing here needs root. uid 1000 owns the app dir, the session volume it
 # writes the login into, and the cache directory the speech files go to.
 RUN useradd --create-home --uid 1000 relay \
-    && mkdir -p /app/session /home/relay/.cache/lexx-relay/tts \
+    && mkdir -p /app/session /home/relay/.cache/bybit-tv-sizer/tts \
     && chown -R relay:relay /app /home/relay
 USER relay
 

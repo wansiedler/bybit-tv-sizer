@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.lexx.relay</string>
+    <string>com.bybit.tv-sizer</string>
     <!-- Container mode: launchd-start.sh clears stale colima vz.pid state
          left by an unclean shutdown, waits for colima's docker daemon (its
          own LaunchAgent, com.abiosoft.colima, starts it), then brings the

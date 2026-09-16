@@ -220,15 +220,15 @@ bot for delivery.
 Non-matching messages (start-ups, errors, PnL) are skipped.
 
 On start and on shutdown the relay posts a lifecycle line through the bot
-(`🟢 lexx-relay up …` / `🔴 lexx-relay down — SIGTERM, uptime 3h12m`). SIGTERM and
+(`🟢 bybit-tv-sizer up …` / `🔴 bybit-tv-sizer down — SIGTERM, uptime 3h12m`). SIGTERM and
 SIGINT are handled: the relay says goodbye, disconnects and exits 0. Silence the
 notices with `NOTIFY_LIFECYCLE=0`, rename them with `RELAY_NAME`.
 
 ## Keep it running after reboot
 
 ```bash
-cp com.lexx.relay.plist ~/Library/LaunchAgents/
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lexx.relay.plist
+cp com.bybit.tv-sizer.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.bybit.tv-sizer.plist
 ```
 
 The agent runs `launchd-start.sh`: it first clears colima's stale `vz.pid`
@@ -247,13 +247,13 @@ start chime and then nothing, because the audio fetch hits a dead port.
 Check it came up, then watch the logs:
 
 ```bash
-launchctl print gui/$(id -u)/com.lexx.relay | grep -E 'state|pid|last exit'
-tail -f ~/Library/Logs/lexx-relay-launchd.log
-docker logs -f lexx-relay
+launchctl print gui/$(id -u)/com.bybit.tv-sizer | grep -E 'state|pid|last exit'
+tail -f ~/Library/Logs/bybit-tv-sizer-launchd.log
+docker logs -f bybit-tv-sizer
 ```
 
 Stop the relay with `docker compose down` (the agent will bring it back next
-login); retire the agent with `launchctl bootout gui/$(id -u)/com.lexx.relay`
+login); retire the agent with `launchctl bootout gui/$(id -u)/com.bybit.tv-sizer`
 followed by removing the plist from `~/Library/LaunchAgents`.
 
 `reboot.sh` says "Rebooting" on the Nest (through the running container's
@@ -263,7 +263,7 @@ makes zsh alias-expand the word that follows:
 
 ```bash
 alias sudo='sudo '
-alias reboot='/Users/me/lexx-relay/reboot.sh'
+alias reboot='/Users/me/bybit-tv-sizer/reboot.sh'
 ```
 
 Complete the Telegram login interactively at least once first — launchd
@@ -281,7 +281,7 @@ absolute paths, installed as root.
 ### When it does not come up
 
 `restart: unless-stopped` means a relay that cannot start is restarted
-forever and the only evidence is `docker logs lexx-relay` growing. Two
+forever and the only evidence is `docker logs bybit-tv-sizer` growing. Two
 failures look identical from the outside and are worth checking first:
 
 - `EOFError: EOF when reading a line` from `client.start()` — Telethon is asking

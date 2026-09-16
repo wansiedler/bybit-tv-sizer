@@ -81,7 +81,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._refuse()
             return
         body = (
-            "lexx-relay · TradingView webhook\nAlive. Alerts arrive as POST from TradingView.\n"
+            "bybit-tv-sizer · TradingView webhook\nAlive. Alerts arrive as POST from TradingView.\n"
         ).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")

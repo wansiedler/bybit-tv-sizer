@@ -43,7 +43,7 @@ TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID")
 # empty string, not a missing key, and an empty session path is nobody's
 # intent.
 SESSION = os.getenv("SESSION_NAME") or "session/lexx_relay"
-RELAY_NAME = os.getenv("RELAY_NAME", "lexx-relay")
+RELAY_NAME = os.getenv("RELAY_NAME", "bybit-tv-sizer")
 NOTIFY_LIFECYCLE = os.getenv("NOTIFY_LIFECYCLE", "1").lower() not in (
     "0",
     "false",

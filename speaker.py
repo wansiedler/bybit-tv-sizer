@@ -70,7 +70,7 @@ def exempt_from_proxy(*hosts: str) -> str:
 exempt_from_proxy(CAST_HOST, TTS_HOST)
 # Not /tmp: a predictable path in a world-writable directory is a
 # swap-the-file-under-us invitation. The directory is created 0700.
-TTS_DIR = Path(os.getenv("TTS_DIR") or Path.home() / ".cache/lexx-relay/tts")
+TTS_DIR = Path(os.getenv("TTS_DIR") or Path.home() / ".cache/bybit-tv-sizer/tts")
 SPEAK_ALERTS = os.getenv("SPEAK_ALERTS", "1").lower() not in ("0", "false", "no", "")
 # A speaker already running an app (YouTube Music, radio) hands our URL to that
 # app, which ignores it — the alert is silently swallowed. Quitting first is the

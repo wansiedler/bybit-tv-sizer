@@ -1,5 +1,5 @@
 #!/bin/bash
-# Launchd entry point for com.lexx.relay: heal colima if a reboot left it
+# Launchd entry point for com.bybit.tv-sizer: heal colima if a reboot left it
 # wedged, wait for its docker daemon, then bring the relay container up.
 #
 # The wedge: an unclean shutdown kills the vz driver before colima removes

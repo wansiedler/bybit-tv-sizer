@@ -25,7 +25,7 @@ so **only `main` is supported**. Fixes land there and nowhere else.
 ## Reporting a vulnerability
 
 Open a private security advisory:
-<https://github.com/wansiedler/lexx-relay/security/advisories/new>
+<https://github.com/wansiedler/bybit-tv-sizer/security/advisories/new>
 
 For anything involving the credentials above, revoke first and report after:
 

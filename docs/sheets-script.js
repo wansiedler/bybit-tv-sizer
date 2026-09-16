@@ -1,4 +1,4 @@
-// Apps Script web app for the lexx-relay trade journal.
+// Apps Script web app for the bybit-tv-sizer trade journal.
 // Lives in the spreadsheet (Extensions -> Apps Script), not executed here.
 // SECRET must match SHEETS_SECRET in bipboop.
 

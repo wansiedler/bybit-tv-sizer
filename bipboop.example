@@ -27,7 +27,7 @@ SESSION_NAME=session/lexx_relay
 # Lifecycle notices (start/stop) through the bot. 0 to silence.
 NOTIFY_LIFECYCLE=1
 # Name used in those notices.
-RELAY_NAME=lexx-relay
+RELAY_NAME=bybit-tv-sizer
 
 # Read alerts out loud on a Google Nest speaker. CAST_HOST is the speaker,
 # TTS_HOST is this machine as the speaker sees it (a LAN address, never

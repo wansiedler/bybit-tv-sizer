@@ -101,7 +101,7 @@ def test_get_shows_the_alive_page_only_on_the_secret_path():
 
             status, body = await asyncio.to_thread(get, "/tv/s3cret")
             assert status == 200
-            assert b"lexx-relay" in body
+            assert b"bybit-tv-sizer" in body
 
             # Every other path gets no HTTP answer at all.
             for path in ("/", "/tv/wrong", "/anything", "/tv/s3cret/"):

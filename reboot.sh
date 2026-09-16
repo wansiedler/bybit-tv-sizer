@@ -12,7 +12,7 @@ set -u
 # this script to sudo as-is.
 export DOCKER_HOST="unix:///Users/me/.colima/default/docker.sock"
 
-/usr/local/bin/docker exec lexx-relay python -c \
+/usr/local/bin/docker exec bybit-tv-sizer python -c \
     'import asyncio, speaker; asyncio.run(speaker.say("Rebooting", "reboot.mp3"))' \
     && sleep 2
 
