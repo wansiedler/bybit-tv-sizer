@@ -7,6 +7,7 @@ stop-loss always risks the same fixed percentage of account equity.
 
     DRY_RUN=1               # log and announce instead of amending
     RISK_PCT=0.5            # percent of the wallet balance between entry and stop
+    RR_FULL_RISK=3          # RR at which the full percent applies; below, it shrinks
     RISK_EQUITY_MAX=0       # cap on the balance that percent is taken from
     FALLBACK_SL_PCT=0       # assumed stop when the order has none; 0 skips
     MAX_LEVERAGE=5          # notional ceiling, as a multiple of equity
@@ -57,6 +58,10 @@ ACCOUNT_TYPE = os.getenv("ACCOUNT_TYPE", "UNIFIED")
 
 # Warn when a limit order's reward-to-risk sits below this. 0 disables.
 MIN_RR = Decimal(os.getenv("MIN_RR", "2"))
+# The reward-to-risk that earns the full RISK_PCT. A thinner RR scales the
+# risk down in proportion: at RR_FULL_RISK=3, an RR 1.5 order risks half of
+# RISK_PCT. 0 disables the scaling; an order without a take is unscaled.
+RR_FULL_RISK = Decimal(os.getenv("RR_FULL_RISK", "3"))
 
 # orderId -> (entry|stop signature, how many passes in a row have seen it)
 _settling: dict[str, tuple[str, int]] = {}
@@ -126,12 +131,38 @@ def round_step(value: Decimal, step: Decimal) -> Decimal:
     return (value / step).to_integral_value(rounding=ROUND_DOWN) * step
 
 
+def reward_to_risk(order: dict) -> Decimal | None:
+    """The order's RR from its price, stop and take; None when unmeasurable."""
+    entry = Decimal(order["price"])
+    stop_raw = order.get("stopLoss") or ""
+    tp_raw = order.get("takeProfit") or ""
+    if stop_raw in ("", "0") or tp_raw in ("", "0"):
+        return None
+    risk = abs(entry - Decimal(stop_raw))
+    if risk <= 0:
+        return None
+    return abs(Decimal(tp_raw) - entry) / risk
+
+
+def risk_share(order: dict) -> Decimal:
+    """The share of equity this order may lose: RISK_PCT, scaled by its RR.
+
+    Full RISK_PCT at RR_FULL_RISK and above; below it the share shrinks in
+    proportion, so a thin setup costs less when it fails. Without a take the
+    RR is unknown and the share is the plain RISK_PCT.
+    """
+    rr = reward_to_risk(order)
+    if RR_FULL_RISK <= 0 or rr is None or rr >= RR_FULL_RISK:
+        return RISK_PCT
+    return RISK_PCT * rr / RR_FULL_RISK
+
+
 def target_qty(order: dict, equity: Decimal, instrument: dict) -> Decimal | None:
-    """Quantity whose stop-out costs exactly RISK_PCT of equity.
+    """Quantity whose stop-out costs exactly risk_share() of equity.
 
     The cost of stopping out is the price distance plus both fees — the
     maker entry and the stop's taker market close — so the realised loss
-    stays inside RISK_PCT, matching the trimmer's arithmetic.
+    stays inside the share, matching the trimmer's arithmetic.
     """
     symbol, order_id = order["symbol"], order["orderId"][:8]
     entry = Decimal(order["price"])
@@ -155,7 +186,7 @@ def target_qty(order: dict, equity: Decimal, instrument: dict) -> Decimal | None
         return None
 
     lot = instrument["lotSizeFilter"]
-    qty = (equity * RISK_PCT) / (distance + entry * MAKER_FEE + stop * TAKER_FEE)
+    qty = (equity * risk_share(order)) / (distance + entry * MAKER_FEE + stop * TAKER_FEE)
     qty = min(qty, (equity * MAX_LEVERAGE) / entry)  # notional ceiling
     qty = min(round_step(qty, Decimal(lot["qtyStep"])), Decimal(lot["maxOrderQty"]))
 
@@ -188,14 +219,15 @@ def is_managed(order: dict) -> bool:
 
 
 def has_settled(order: dict) -> bool:
-    """True once entry and stop have held still for SETTLE_POLLS passes.
+    """True once entry, stop and take have held still for SETTLE_POLLS passes.
 
     Dragging a stop across the chart amends the order on every mouse step;
     chasing each intermediate value would burn the exchange's amend limit on
-    prices that were only being passed through.
+    prices that were only being passed through. The take counts too: it sets
+    the RR, and the RR sets the risk share.
     """
     order_id = order["orderId"]
-    signature = f"{order['price']}|{order.get('stopLoss') or ''}"
+    signature = f"{order['price']}|{order.get('stopLoss') or ''}|{order.get('takeProfit') or ''}"
     seen, count = _settling.get(order_id, ("", 0))
     count = count + 1 if signature == seen else 1
     _settling[order_id] = (signature, count)
@@ -210,16 +242,8 @@ def rr_warning(order: dict) -> str | None:
     """
     if not MIN_RR:
         return None
-    entry = Decimal(order["price"])
-    stop_raw = order.get("stopLoss") or ""
-    tp_raw = order.get("takeProfit") or ""
-    if stop_raw in ("", "0") or tp_raw in ("", "0"):
-        return None
-    risk = abs(entry - Decimal(stop_raw))
-    if risk <= 0:
-        return None
-    rr = abs(Decimal(tp_raw) - entry) / risk
-    if rr >= MIN_RR:
+    rr = reward_to_risk(order)
+    if rr is None or rr >= MIN_RR:
         return None
     return f"RR {rr:.2f} < {MIN_RR}"
 
@@ -338,8 +362,12 @@ async def _resize_order(http: httpx.AsyncClient, order: dict, equity: Decimal, s
 async def _announce_resize(
     order: dict, equity: Decimal, have: Decimal, want: Decimal, capped: bool, send
 ) -> None:
-    """The ⚖️ notice: stop distance and the quantity before and after."""
+    """The ⚖️ notice: stop distance, RR-scaled risk, quantity before and after."""
     entry_price = Decimal(order["price"])
+    share = risk_share(order)
+    risk_text = f"risk {share * 100:.2f}%"
+    if share != RISK_PCT:
+        risk_text += f" (RR {reward_to_risk(order):.2f} of {RR_FULL_RISK:g})"
 
     def described(qty: Decimal) -> str:
         value = qty * entry_price
@@ -353,7 +381,8 @@ async def _announce_resize(
         stop_text += f" ({distance_pct:.2f}%)"
     await send(
         f"⚖️ {order['symbol']} {order.get('side', '?')} limit @ {order['price']}\n"
-        f"stop {stop_text} → qty {described(have)} → {described(want)}"
+        f"stop {stop_text} | {risk_text}\n"
+        f"qty {described(have)} → {described(want)}"
         + (" (capped by margin — raise the instrument's leverage)" if capped else "")
     )
 
@@ -364,8 +393,10 @@ async def poll(http: httpx.AsyncClient, send) -> None:
     log.info("sizing orders every %ss | risk %s%% | %s", POLL, RISK_PCT * 100, mode)
     # The ceiling is worth announcing: it silently changes every size.
     ceiling = f", base ≤ {EQUITY_MAX:,.0f}$" if EQUITY_MAX > 0 else ""
+    scaling = f" at RR ≥ {RR_FULL_RISK:g}, less below" if RR_FULL_RISK > 0 else ""
     await send(
-        f"⚖️ sizer up — {mode}, risk {RISK_PCT * 100}%{ceiling}, max leverage {MAX_LEVERAGE}x"
+        f"⚖️ sizer up — {mode}, risk {RISK_PCT * 100}%{scaling}{ceiling}, "
+        f"max leverage {MAX_LEVERAGE}x"
     )
     last_error = ""
     while True:

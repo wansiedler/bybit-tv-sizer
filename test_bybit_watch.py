@@ -350,7 +350,21 @@ def test_trade_warnings_flags_risk_drift():
 def test_trade_warnings_flags_a_thin_rr():
     thin = Position("long", 100.0, 0.16, 16.0, take_profit=0.17, stop_loss=0.15)
 
-    assert bybit_watch.trade_warnings(thin, 200.0) == ["⚠️ RR 1.00 < 2"]
+    # 1 USDT on 200 is 0.5%; at RR 1 the target is a third of that.
+    assert bybit_watch.trade_warnings(thin, 200.0) == [
+        "⚠️ risk 0.50% depo, target 0.17%",
+        "⚠️ RR 1.00 < 2",
+    ]
+
+
+def test_trade_warnings_expect_the_rr_scaled_risk(monkeypatch):
+    """A thin-RR position sized down by the sizer is on target, not adrift."""
+    monkeypatch.setattr(bybit_watch, "MIN_RR", 0.0)
+    thin = Position("long", 100.0, 0.16, 16.0, take_profit=0.175, stop_loss=0.15)
+
+    # RR 1.5 -> target 0.25%; 1 USDT on 400 USDT is exactly that.
+    assert bybit_watch.trade_warnings(thin, 400.0) == []
+    assert bybit_watch.trade_warnings(thin, 200.0) == ["⚠️ risk 0.50% depo, target 0.25%"]
 
 
 def test_trade_warnings_skip_without_depo_target_or_tp(monkeypatch):

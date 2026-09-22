@@ -58,6 +58,9 @@ POLL = float(os.getenv("BYBIT_POLL", "10"))
 # strays more than a quarter away from the RISK_PCT the sizer targets.
 MIN_RR = float(os.getenv("MIN_RR", "2"))
 RISK_TARGET = float(os.getenv("RISK_PCT", "0.5")) / 100
+# The RR that earns the full RISK_TARGET; the sizer scales a thinner order's
+# risk down in proportion, and the fresh-position check expects the same.
+RR_FULL_RISK = float(os.getenv("RR_FULL_RISK", "3"))
 # A ceiling on the deposit the risk percent is taken from. With
 # RISK_EQUITY_MAX=100000 a 300k wallet still risks one percent of 100k per
 # trade, not of 300k — the position stops growing with the account. 0 = off.
@@ -1408,17 +1411,22 @@ def trade_warnings(position: Position, depo: float | None) -> list[str]:
     if position.stop_loss is None:
         return ["⚠️ no stop"]
     risk = abs(position.price - position.stop_loss) * position.size
+    rr = None
+    if position.take_profit is not None:
+        rr = abs(position.take_profit - position.price) / abs(position.price - position.stop_loss)
     warns = []
     if depo and RISK_TARGET:
-        # Against the capped base, the same one the sizer and trimmer aim at.
+        # Against the capped base, the same one the sizer and trimmer aim at,
+        # scaled by RR the way the sizer scales the order.
+        target = RISK_TARGET
+        if rr is not None and RR_FULL_RISK > 0 and rr < RR_FULL_RISK:
+            target = RISK_TARGET * rr / RR_FULL_RISK
         actual = risk / risk_base(depo)
         # Within a quarter of the target nobody wants a ping.
-        if abs(actual - RISK_TARGET) > RISK_TARGET * 0.25:
-            warns.append(f"⚠️ risk {actual * 100:.2f}% depo, target {RISK_TARGET * 100:g}%")
-    if position.take_profit is not None and MIN_RR:
-        rr = abs(position.take_profit - position.price) / abs(position.price - position.stop_loss)
-        if rr < MIN_RR:
-            warns.append(f"⚠️ RR {rr:.2f} < {MIN_RR:g}")
+        if abs(actual - target) > target * 0.25:
+            warns.append(f"⚠️ risk {actual * 100:.2f}% depo, target {target * 100:.2g}%")
+    if rr is not None and MIN_RR and rr < MIN_RR:
+        warns.append(f"⚠️ RR {rr:.2f} < {MIN_RR:g}")
     return warns
 
 
