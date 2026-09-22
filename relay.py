@@ -425,6 +425,7 @@ def _command_handlers(http: httpx.AsyncClient, links: str) -> commands.Handlers:
         ),
         links=links.strip(),
         ip=lambda: ip_watch.current(http),
+        deposit=lambda: bybit_watch.deposit_line(http),
         lev_one=lambda arg: bybit_watch.force_leverage_one(http, arg),
         close_part=lambda symbol, percent: bybit_watch.close_fraction(http, symbol, percent),
     )

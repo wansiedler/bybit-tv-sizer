@@ -49,7 +49,7 @@ SAMPLE_ALERT = "OP 📈 0.10277"
 
 HELP = (
     "Commands:\n"
-    "/status — uptime, counters, speaker\n"
+    "/status — uptime, counters, speaker, the deposit\n"
     "/positions — open Bybit positions with uPnL\n"
     "/statistics [days] — results with the equity curve, default 30\n"
     "/close <ticker> — close one position at market, e.g. /close CL\n"
@@ -205,6 +205,7 @@ class Handlers:
     statistics: Any = None
     links: str = ""
     ip: Any = None
+    deposit: Any = None
     lev_one: Any = None
     close_part: Any = None
     cut: Any = None
@@ -225,8 +226,15 @@ async def _handle_tap(http: httpx.AsyncClient, update: dict, h: Handlers, send) 
 
 
 async def _status(stats: Stats, speaking: bool, handlers: Handlers, send) -> None:
-    """/status: uptime and counters, the external IP, the market snapshot."""
+    """/status: uptime and counters, the deposit, the IP, the market snapshot."""
     text = status_text(stats, speaking)
+    if handlers.deposit is not None:
+        try:
+            text += f"\n{await handlers.deposit()}"
+        # Deliberately broad: a flaky Bybit call must not eat /status.
+        except Exception:  # noqa: BLE001
+            log.exception("no deposit figure for /status")
+            text += "\n💰 deposit unavailable"
     if handlers.ip is not None:
         try:
             text += f"\n🌐 {await handlers.ip()}"

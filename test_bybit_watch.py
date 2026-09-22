@@ -1476,6 +1476,40 @@ def test_wallet_balance_never_falls_back_to_equity(keyed):
     assert asyncio.run(bybit_watch.wallet_balance(http)) is None
 
 
+def test_deposit_line_names_the_wallet(keyed):
+    http = FakeHTTP()
+    http.equity_rows = [{"totalEquity": "1000", "totalWalletBalance": "1000"}]
+
+    assert asyncio.run(bybit_watch.deposit_line(http)) == "💰 deposit 1,000.00$"
+
+
+def test_deposit_line_names_the_open_pnl_when_equity_differs(keyed):
+    http = FakeHTTP()
+    http.equity_rows = [{"totalEquity": "1090.5", "totalWalletBalance": "1000"}]
+
+    assert asyncio.run(bybit_watch.deposit_line(http)) == (
+        "💰 deposit 1,000.00$ · equity 1,090.50$ (+90.50$ open)"
+    )
+
+
+def test_deposit_line_names_the_capped_risk_base(keyed, monkeypatch):
+    monkeypatch.setattr(bybit_watch, "RISK_EQUITY_MAX", 100000.0)
+    http = FakeHTTP()
+    http.equity_rows = [{"totalEquity": "300000", "totalWalletBalance": "300000"}]
+
+    assert asyncio.run(bybit_watch.deposit_line(http)) == (
+        "💰 deposit 300,000.00$ · risk base 100,000.00$"
+    )
+
+
+def test_deposit_line_without_a_balance_says_so(keyed):
+    class Refusing(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise OSError("bybit down")
+
+    assert asyncio.run(bybit_watch.deposit_line(Refusing())) == "💰 deposit unavailable"
+
+
 def test_equity_swallows_api_errors(keyed, caplog):
     class Refusing(FakeHTTP):
         async def get(self, url, headers=None, timeout=None):
