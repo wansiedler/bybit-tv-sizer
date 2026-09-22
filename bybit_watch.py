@@ -1466,6 +1466,26 @@ async def wallet_balance(http: httpx.AsyncClient) -> float | None:
     return await _account_figure(http, "totalWalletBalance")
 
 
+async def deposit_line(http: httpx.AsyncClient) -> str:
+    """The 💰 line under /status: the wallet, and what differs from it.
+
+    The wallet balance is the deposit every risk share is measured against.
+    Equity is named too when the open positions move it, and the capped risk
+    base when RISK_EQUITY_MAX holds the sizing below the real balance.
+    """
+    wallet = await wallet_balance(http)
+    if wallet is None:
+        return "💰 deposit unavailable"
+    line = f"💰 deposit {wallet:,.2f}$"
+    total = await equity(http)
+    if total is not None and round(total, 2) != round(wallet, 2):
+        line += f" · equity {total:,.2f}$ ({total - wallet:+,.2f}$ open)"
+    base = risk_base(wallet)
+    if base != wallet:
+        line += f" · risk base {base:,.2f}$"
+    return line
+
+
 def risk_base(depo: float) -> float:
     """The deposit a risk percent is measured against, RISK_EQUITY_MAX applied.
 

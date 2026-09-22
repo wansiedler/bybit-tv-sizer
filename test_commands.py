@@ -595,6 +595,72 @@ def test_status_appends_the_external_ip(owner):
     assert rec.sent[0].endswith("🌐 203.0.113.7")
 
 
+def test_status_appends_the_deposit(owner):
+    rec = Recorder()
+
+    async def deposit():
+        return "💰 deposit 1,000.00$"
+
+    asyncio.run(
+        commands.dispatch(
+            "status",
+            "",
+            commands.Stats(),
+            rec.send,
+            rec.speak,
+            True,
+            commands.Handlers(deposit=deposit),
+        )
+    )
+
+    assert rec.sent[0].endswith("💰 deposit 1,000.00$")
+
+
+def test_status_survives_a_failed_deposit_lookup(owner):
+    rec = Recorder()
+
+    async def deposit():
+        raise OSError("down")
+
+    asyncio.run(
+        commands.dispatch(
+            "status",
+            "",
+            commands.Stats(),
+            rec.send,
+            rec.speak,
+            True,
+            commands.Handlers(deposit=deposit),
+        )
+    )
+
+    assert rec.sent[0].endswith("💰 deposit unavailable")
+
+
+def test_status_puts_the_deposit_above_the_ip(owner):
+    rec = Recorder()
+
+    async def deposit():
+        return "💰 deposit 1,000.00$"
+
+    async def ip():
+        return "203.0.113.7"
+
+    asyncio.run(
+        commands.dispatch(
+            "status",
+            "",
+            commands.Stats(),
+            rec.send,
+            rec.speak,
+            True,
+            commands.Handlers(deposit=deposit, ip=ip),
+        )
+    )
+
+    assert rec.sent[0].endswith("💰 deposit 1,000.00$\n🌐 203.0.113.7")
+
+
 def test_status_survives_a_failed_ip_lookup(owner):
     rec = Recorder()
 
