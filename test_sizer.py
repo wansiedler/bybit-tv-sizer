@@ -45,6 +45,7 @@ def _isolate(monkeypatch):
     # Debounce off by default: the settling behaviour has its own tests.
     monkeypatch.setattr(sizer, "SETTLE_POLLS", 1)
     monkeypatch.setattr(sizer, "MIN_RR", Decimal("2"))
+    monkeypatch.setattr(sizer, "RR_FULL_RISK", Decimal("3"))
     sizer._settling.clear()
     sizer._instruments.clear()
     sizer._warned.clear()
@@ -251,6 +252,70 @@ def test_quantity_below_the_exchange_minimum_is_skipped():
     assert size(ORDER, equity="1") is None
 
 
+# ------------------------------------------------------------------ RR-scaled risk
+@pytest.mark.parametrize(
+    ("take", "share"),
+    [
+        ("63000", "0.005"),  # RR 3: the full RISK_PCT
+        ("66000", "0.005"),  # RR 6: never more than the full percent
+        ("61500", "0.0025"),  # RR 1.5: half
+        ("60600", "0.001"),  # RR 0.6: a fifth
+        ("", "0.005"),  # no take: RR unknown, unscaled
+        ("0", "0.005"),
+    ],
+)
+def test_risk_share_follows_the_rr(take, share):
+    assert sizer.risk_share(dict(ORDER, takeProfit=take)) == Decimal(share)
+
+
+def test_risk_share_scaling_can_be_disabled(monkeypatch):
+    monkeypatch.setattr(sizer, "RR_FULL_RISK", Decimal("0"))
+
+    assert sizer.risk_share(dict(ORDER, takeProfit="60600")) == Decimal("0.005")
+
+
+def test_thin_rr_shrinks_the_quantity():
+    # RR 1.5 halves the 50 USDT budget: 25 over the same stop cost -> 0.023.
+    assert size(dict(ORDER, takeProfit="61500")) == Decimal("0.023")
+    assert size(dict(ORDER, takeProfit="63000")) == Decimal("0.047")
+
+
+def test_a_moving_take_is_left_alone_until_it_holds_still(monkeypatch):
+    """The take sets the RR, so dragging it must settle like the stop."""
+    monkeypatch.setattr(sizer, "DRY_RUN", False)
+    monkeypatch.setattr(sizer, "SETTLE_POLLS", 2)
+    http, out = FakeHTTP(), Recorder()
+
+    for take in ("63000", "62000", "61500"):
+        http.orders = [dict(ORDER, takeProfit=take)]
+        run_tick(http, out)
+    assert http.amended == []
+
+    run_tick(http, out)
+    assert http.amended[0]["qty"] == "0.023"
+
+
+def test_notice_names_the_scaled_risk(monkeypatch):
+    monkeypatch.setattr(sizer, "DRY_RUN", False)
+    http, out = FakeHTTP(), Recorder()
+    http.orders = [dict(ORDER, takeProfit="61500")]
+
+    run_tick(http, out)
+
+    assert "risk 0.25% (RR 1.50 of 3)" in out.sent[-1]
+
+
+def test_notice_keeps_the_plain_risk_at_full_rr(monkeypatch):
+    monkeypatch.setattr(sizer, "DRY_RUN", False)
+    http, out = FakeHTTP(), Recorder()
+    http.orders = [dict(ORDER, takeProfit="63000")]
+
+    run_tick(http, out)
+
+    assert "risk 0.50%\n" in out.sent[-1]
+    assert "RR 3" not in out.sent[-1]
+
+
 # ------------------------------------------------------------------ order filter
 @pytest.mark.parametrize(
     ("patch", "expected"),
@@ -310,7 +375,8 @@ def test_tick_amends_and_announces_when_live(monkeypatch):
     assert http.amended[0]["qty"] == "0.047"
     assert out.sent == [
         "⚖️ BTCUSDT Buy limit @ 60000\n"
-        "stop 59000 (1.67%) → qty 0.001 (60$, 0.6% depo) → 0.047 (2,820$, 28.2% depo)"
+        "stop 59000 (1.67%) | risk 0.50%\n"
+        "qty 0.001 (60$, 0.6% depo) → 0.047 (2,820$, 28.2% depo)"
     ]
 
 
@@ -623,8 +689,8 @@ def test_notice_without_a_stop_price_skips_the_percent(monkeypatch):
 
     run_tick(http, out)
 
-    assert "stop ? →" in out.sent[0]
-    assert "%) →" not in out.sent[0].split("\n")[1].split("qty")[0]
+    assert "stop ? |" in out.sent[0]
+    assert "%)" not in out.sent[0].split("\n")[1]
 
 
 def test_get_equity_stops_at_the_risk_ceiling(monkeypatch):

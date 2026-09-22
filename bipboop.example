@@ -79,6 +79,12 @@ RISK_PCT=0.5
 # account. 0 = no ceiling. The sizer, the trimmer and the risk warning all
 # use it; the reports keep showing the real balance.
 RISK_EQUITY_MAX=0
+# The reward-to-risk that earns the full RISK_PCT. A limit order with a
+# thinner RR (read off its take and stop) risks proportionally less: at 3,
+# an RR 1.5 order risks half of RISK_PCT. Applied when the order is sized;
+# nothing chases it after the fill. 0 = always RISK_PCT. An order without a
+# take is unscaled.
+RR_FULL_RISK=3
 # The fees the sizing budgets for: the entry (maker limit) and the stop's
 # market close (taker). Bybit derivatives non-VIP defaults.
 MAKER_FEE=0.0002

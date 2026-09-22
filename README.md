@@ -106,6 +106,36 @@ for limit orders, the trimmer's cut, and the "risk X% depo" warning on a
 fresh entry. Reports, charts and journal rows keep showing the real balance
 and the real shares of it — only the risk arithmetic is capped.
 
+## A thin setup risks less (`RR_FULL_RISK`)
+
+`RISK_PCT` is what a stop-out may cost when the trade is worth it. The
+sizer reads the reward-to-risk off the limit order's take and stop and
+scales the percent down in proportion when the RR sits below
+`RR_FULL_RISK` (3 by default):
+
+```text
+risk share = RISK_PCT * min(RR / RR_FULL_RISK, 1)      # 0 = always RISK_PCT
+```
+
+With `RISK_PCT=1`: an RR 3 order risks the full 1 %, an RR 1.5 order 0.5 %,
+an RR 0.6 order 0.2 %. A better RR than 3 never risks more than the full
+percent. An order drawn without a take has no RR to read and gets the plain
+`RISK_PCT`, same as before.
+
+The scaling happens where the limit order is sized — when you draw the
+long/short in TradingView, and again if you drag the entry, stop or take
+while the order still rests. Once it fills nothing chases the RR: the
+trimmer keeps cutting to `RISK_PCT` only, and the fresh-entry "risk X%
+depo" warning simply expects the scaled figure instead of nagging about a
+position that was sized down on purpose. The ⚖️ notice names the share it
+used:
+
+```text
+⚖️ ETHUSDT Buy limit @ 3000
+stop 2970 (1.00%) | risk 0.50% (RR 1.50 of 3)
+qty 1 (3,000$, 3.0% depo) → 15.5 (46,500$, 46.5% depo)
+```
+
 ## Exit buttons on the entry notice
 
 Every entry notice arrives with a row of buttons under the chart:
