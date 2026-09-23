@@ -6,20 +6,73 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    groups:
+      # One PR for the routine bumps instead of one per action. Three open
+      # PRs for three action bumps is the state this repo was in.
+      github-actions:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    # Wait a week before proposing a freshly published version: a compromised
+    # release is usually pulled well inside that window. This repo's CI holds
+    # the keys to a live trading account, so a fresh release is not a thing to
+    # be first on.
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
 
-  # Pinned CI toolchain.
+  # Dependabot parses .pre-commit-config.yaml and follows each hook's rev,
+  # which is otherwise only refreshed by running `pre-commit autoupdate` by
+  # hand — that is, never.
+  - package-ecosystem: "pre-commit"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      pre-commit:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
+
+  # Pinned CI toolchain: requirements-ci.txt and requirements-radar.txt.
   - package-ecosystem: "pip"
     directory: "/.github"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    groups:
+      python-tools:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
 
-  # Runtime deps (telethon, httpx, python-dotenv).
+  # Runtime deps (telethon, httpx, python-dotenv). Not grouped: this is what
+  # actually ships to the host, and each bump deserves its own diff.
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "fix"
+      prefix-development: "chore"
+    labels:
+      - dependencies
 
   # python:3.14-slim base image.
   - package-ecosystem: "docker"
@@ -27,3 +80,9 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies

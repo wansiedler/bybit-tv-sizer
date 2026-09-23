@@ -1,5 +1,11 @@
 name: CI
 
+# The runner is pinned, not `ubuntu-latest`: that label migrates to Ubuntu 26
+# on 2026-10-19, and this pipeline builds the image that runs on the host
+# holding the exchange keys — the base moving under it is a change to make on
+# purpose, with a diff, not one to discover from a red run one morning.
+# Dependabot watches github-actions here and will propose the next one.
+#
 # Gating model, borrowed from the org pipelines:
 #   * hooks over CHANGED files are the blocking gate — new code must be clean,
 #     pre-existing debt in untouched files cannot red a PR;
@@ -30,7 +36,7 @@ jobs:
   #  Quality: pre-commit hook suite (ruff, mypy, bandit, yamllint, ...) #
   # ------------------------------------------------------------------ #
   quality:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
         with:
@@ -51,6 +57,80 @@ jobs:
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+
+      # Commit style over the PR's own range. The commitizen hook in
+      # .pre-commit-config.yaml is stages: [commit-msg]: it guards a local
+      # `git commit`, and only once `pre-commit install --hook-type commit-msg`
+      # has been run — `pre-commit run --all-files` below never executes it.
+      # Informational: history is fixed by a rebase, and a non-conventional
+      # subject is not a reason to block a merge.
+      - name: Commit style (commitizen)
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, subprocess
+
+          base = os.environ.get("BASE_SHA", "")
+          os.makedirs("ci-metrics", exist_ok=True)
+          out = {}
+
+          def git(*args):
+              return subprocess.run(["git", *args], capture_output=True, text=True).stdout
+
+          if not base:
+              out = {"commitstyle_skipped": "no base sha on the event"}
+          else:
+              rng = f"{base}..HEAD"
+              # Merges carry git's own "Merge branch …" subject and are not
+              # judged, but they are counted so the total reconciles with the
+              # commit count GitHub shows on the PR.
+              merges = len([x for x in git("log", "--merges", "--format=%H", rng).split() if x])
+              shas = [x for x in git("log", "--no-merges", "--format=%H", rng).split() if x]
+              judged, bad = [], []
+              for sha in shas:
+                  msg = git("log", "-1", "--format=%B", sha)
+                  row = {"sha": sha[:7], "subject": msg.split("\n")[0].strip()}
+                  judged.append(row)
+                  # The hook itself is the authority, invoked through
+                  # pre-commit rather than a `cz` of our own: that way the rev
+                  # in .pre-commit-config.yaml is the single pin, CI judges a
+                  # commit with exactly the version the author's commit-msg
+                  # hook would, and there is no second pin for dependabot to
+                  # drift out of lockstep.
+                  with open("cz-msg.txt", "w") as f:
+                      f.write(msg)
+                  rc = subprocess.run(
+                      ["pre-commit", "run", "commitizen",
+                       "--hook-stage", "commit-msg",
+                       "--commit-msg-filename", "cz-msg.txt"],
+                      capture_output=True, text=True).returncode
+                  if rc != 0:
+                      bad.append(row)
+              if not judged:
+                  out = {"commitstyle_skipped": "no non-merge commit in the range",
+                         "commitstyle_merges": merges}
+              else:
+                  out = {"commitstyle_total": len(judged), "commitstyle_merges": merges,
+                         "commitstyle_commits": judged[:50]}
+                  if bad:
+                      out["commitstyle_bad"] = bad
+
+          json.dump(out, open("ci-metrics/commitstyle.json", "w"))
+          bad_n = len(out.get("commitstyle_bad") or [])
+          total = out.get("commitstyle_total", 0)
+          if out.get("commitstyle_skipped"):
+              line = f"## ⏭️ Commit style: {out['commitstyle_skipped']}"
+          elif bad_n:
+              line = f"## ⚠️ Commit style: {bad_n}/{total} not conventional"
+          else:
+              line = f"## ✅ Commit style: {total}/{total} conventional"
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              print(line, file=f)
+              for c in (out.get("commitstyle_bad") or [])[:20]:
+                  print(f"- `{c['sha']}` {c['subject']}", file=f)
+          EOF
 
       # ---- THE blocking gate: changed files only ----
       - name: Lint changed code (blocking)
@@ -177,7 +257,7 @@ jobs:
   #  Tests: the parser is the part with logic worth pinning down        #
   # ------------------------------------------------------------------ #
   tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -342,7 +422,7 @@ jobs:
   #  actionlint: hard gate over the workflow files themselves           #
   # ------------------------------------------------------------------ #
   actionlint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
         with:
@@ -407,7 +487,7 @@ jobs:
   #  Security, which this private repo may not have.                    #
   # ------------------------------------------------------------------ #
   security:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       security-events: write
@@ -533,7 +613,7 @@ jobs:
   #  Image: the artifact that actually runs on the host                 #
   # ------------------------------------------------------------------ #
   docker:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
         with:
@@ -601,7 +681,7 @@ jobs:
           retention-days: 7
 
   secrets:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       pull-requests: read   # the action enumerates the commits of its PR
@@ -673,7 +753,7 @@ jobs:
           retention-days: 7
 
   supply-chain:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -807,12 +887,201 @@ jobs:
           path: ci-metrics/
           retention-days: 7
 
+  # ------------------------------------------------------------------ #
+  #  Radar: the slow / noisy checks. INFORMATIONAL by design — none of   #
+  #  these reds a PR. Their counts ride in the sticky CI report, where   #
+  #  a backlog is visible without being a merge blocker.                 #
+  # ------------------------------------------------------------------ #
+  python-radar:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97   # v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install radar toolchain
+        run: |
+          pip install --require-hashes --only-binary :all: -r .github/requirements-radar.lock
+
+      # One step, four tools: a crash in any of them costs its own cell, not
+      # the whole radar. Everything lands in ci-metrics/radar.json.
+      - name: Python radar (informational)
+        if: ${{ !env.ACT }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, subprocess
+
+          metrics, findings, degraded = {}, {}, []
+
+          def run(cmd, timeout=600):
+              return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+          def trim(s, n=280):
+              return " ".join(str(s).split())[:n]
+
+          # ---- pyright: whole tree, the repo's own config if it has one ----
+          try:
+              r = run(["pyright", "--outputjson", "."])
+              data = json.loads(r.stdout or "{}")
+              rows = []
+              for d in data.get("generalDiagnostics", []):
+                  if d.get("severity") not in ("error", "warning"):
+                      continue
+                  path = os.path.relpath(d.get("file", ""), os.getcwd())
+                  line = (d.get("range") or {}).get("start", {}).get("line", 0) + 1
+                  rule = d.get("rule") or d.get("severity", "?")
+                  rows.append(f"{path}:{line}  [{rule}] {trim(d.get('message'))}")
+              metrics["pyright"] = len(rows)
+              if rows:
+                  findings["pyright"] = rows[:50]
+          except Exception as exc:
+              degraded.append(f"pyright: did not run ({trim(exc, 160)})")
+
+          # ---- vulture: dead code ----
+          try:
+              r = run(["vulture", ".", "--min-confidence", "80"])
+              rows = [trim(x) for x in r.stdout.split("\n") if x.strip()]
+              metrics["vulture"] = len(rows)
+              if rows:
+                  findings["vulture"] = rows[:50]
+          except Exception as exc:
+              degraded.append(f"vulture: did not run ({trim(exc, 160)})")
+
+          # ---- deptry: imports vs declared dependencies ----
+          try:
+              run(["deptry", ".", "--json-output", "deptry.json"])
+              data = json.load(open("deptry.json"))
+              rows = [f"{d.get('location', {}).get('file', '?')}:"
+                      f"{d.get('location', {}).get('line', 0)}  "
+                      f"[{d.get('error', {}).get('code', '?')}] {trim(d.get('error', {}).get('message'))}"
+                      for d in data]
+              metrics["deptry"] = len(rows)
+              metrics["deptry_spec"] = "pyproject.toml / requirements.txt"
+              if rows:
+                  findings["deptry"] = rows[:50]
+          except Exception as exc:
+              degraded.append(f"deptry: did not run ({trim(exc, 160)})")
+
+          # ---- semgrep: bug and security patterns beyond bandit ----
+          try:
+              r = run(["semgrep", "--config", "p/python", "--json", "--quiet",
+                       "--metrics", "off", "."], timeout=900)
+              data = json.loads(r.stdout or "{}")
+              rows = [f"{x.get('path', '?')}:{x.get('start', {}).get('line', 0)}  "
+                      f"[{x.get('check_id', '?').split('.')[-1]}] "
+                      f"{trim((x.get('extra') or {}).get('message'))}"
+                      for x in data.get("results", [])]
+              metrics["semgrep"] = len(rows)
+              if data.get("errors"):
+                  metrics["semgrep_error"] = True
+              if rows:
+                  findings["semgrep"] = rows[:50]
+          except Exception as exc:
+              degraded.append(f"semgrep: did not run ({trim(exc, 160)})")
+
+          if degraded:
+              findings["radar_degraded"] = degraded
+          metrics["findings"] = findings
+          os.makedirs("ci-metrics", exist_ok=True)
+          json.dump(metrics, open("ci-metrics/radar.json", "w"))
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              print("## 🛰️ Python radar (informational)", file=f)
+              print("", file=f)
+              print("| check | findings |", file=f)
+              print("| --- | ---: |", file=f)
+              for k in ("pyright", "vulture", "deptry", "semgrep"):
+                  if k in metrics:
+                      print(f"| {k} | {metrics[k]} |", file=f)
+                  else:
+                      print(f"| {k} | ⚠️ did not run |", file=f)
+          EOF
+
+      - name: Upload metrics
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7
+        if: ${{ !cancelled() && !env.ACT }}
+        with:
+          name: ci-metrics-radar
+          path: ci-metrics/
+          retention-days: 7
+
+  # ------------------------------------------------------------------ #
+  #  Links: the README is the front door and carries dozens of them.     #
+  #  Informational — a third-party site being down is not this repo's    #
+  #  problem, but a link that has been dead for a month is.              #
+  # ------------------------------------------------------------------ #
+  link-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
+        with:
+          persist-credentials: false
+
+      - name: lychee (markdown links, informational)
+        if: ${{ !env.ACT }}
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8   # v2.9.0
+        with:
+          # `format` and `output` are action inputs, NOT args: the entrypoint
+          # refuses a run that sets either in both places
+          # ("'output' is set in args as well as in the action configuration").
+          args: >-
+            --no-progress --include-verbatim --max-retries 2
+            --exclude-path .github/workflows
+            "**/*.md"
+          format: json
+          output: lychee.json
+          fail: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Metrics for the CI report
+        if: ${{ !cancelled() && !env.ACT }}
+        run: |
+          python3 - <<'EOF'
+          import json, os
+
+          metrics, findings = {}, {}
+          try:
+              data = json.load(open("lychee.json"))
+              total = (data.get("total") or 0)
+              rows = []
+              for src, fails in (data.get("fail_map") or {}).items():
+                  for f in fails:
+                      url = f.get("url") if isinstance(f, dict) else str(f)
+                      why = (f.get("status") or {}).get("text", "") if isinstance(f, dict) else ""
+                      rows.append(f"{src}  {url} — {' '.join(str(why).split())[:160]}")
+              metrics["links_total"] = total
+              metrics["links_broken"] = len(rows)
+              if rows:
+                  findings["links"] = rows[:50]
+          except Exception as exc:
+              # No report: lychee crashed or was rate-limited. "0 broken" would
+              # be a lie.
+              findings["radar_degraded"] = [f"lychee: no report ({exc})"]
+          metrics["findings"] = findings
+          os.makedirs("ci-metrics", exist_ok=True)
+          json.dump(metrics, open("ci-metrics/links.json", "w"))
+          EOF
+
+      - name: Upload metrics
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7
+        if: ${{ !cancelled() && !env.ACT }}
+        with:
+          name: ci-metrics-links
+          path: ci-metrics/
+          retention-days: 7
+
   sonar:
     # Opt-in: SonarQube Cloud refuses a CI analysis while Automatic Analysis is
     # enabled on the project, so switch that off first, then
     #   gh variable set ENABLE_SONAR_CI --body true
     if: ${{ vars.ENABLE_SONAR_CI == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
@@ -1029,9 +1298,10 @@ jobs:
   # one line; the commit-style badge closes it.
   # ------------------------------------------------------------------ #
   report:
-    needs: [quality, tests, actionlint, security, docker, secrets, supply-chain, sonar]
+    needs: [quality, tests, actionlint, security, docker, secrets, supply-chain,
+            python-radar, link-check, sonar]
     if: ${{ always() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       actions: read          # list the CI run's jobs and download its artifacts
@@ -1069,13 +1339,20 @@ jobs:
                         pass
                 return out
 
-            hks = load(f"{CIM}/ci-metrics-hooks/*.json")        # quality lane: pre-commit, both passes
+            # hooks.json by name, not *.json: commitstyle.json sits beside it
+            # in the same artifact.
+            hks = load(f"{CIM}/ci-metrics-hooks/hooks.json")
             al  = load(f"{CIM}/ci-metrics-actionlint/*.json")   # actionlint findings
             sec = load(f"{CIM}/ci-metrics-security/*.json")     # trivy fs scan
             zz  = load(f"{CIM}/ci-metrics-supply-chain/*.json") # zizmor + pip-audit
             dk  = load(f"{CIM}/ci-metrics-docker/*.json")       # image build + smoke
             gl  = load(f"{CIM}/ci-metrics-secrets/*.json")      # gitleaks
-            cstyle = load(f"{CIM}/commitstyle.json")            # resolved here, from the PR's commits
+            rad = load(f"{CIM}/ci-metrics-radar/*.json")        # pyright, vulture, deptry, semgrep
+            lnk = load(f"{CIM}/ci-metrics-links/*.json")        # lychee
+            # The quality lane judges the commit range with the hook itself;
+            # the collect step's own pass is the fallback for a run where the
+            # lane shipped nothing (a push, or a job that died early).
+            cstyle = load(f"{CIM}/ci-metrics-hooks/commitstyle.json") or load(f"{CIM}/commitstyle.json")
             # One tests artifact per interpreter; the newest is the one the
             # image runs, so it owns the coverage line and the delta.
             pys = load_all(f"{CIM}/ci-metrics-python-*/*.json")
@@ -1155,6 +1432,7 @@ jobs:
                 "pip-audit": ("pip-audit",),
                 "secrets": ("gitleaks",),
                 "docker": ("build image", "smoke test"),
+                "links": ("lychee",),
             }
             red_txt = " ".join(str(s).lower() for k, v in gates.items() if v == "❌" for s in gsteps.get(k, []))
             warn_txt = " ".join(str(s).lower() for k, v in gates.items() if v == "⚠️" for s in gsteps.get(k, []))
@@ -1172,6 +1450,8 @@ jobs:
                 "secrets": "credentials in the history (gitleaks)",
                 "supply-chain": "workflow audit and CI toolchain CVEs (zizmor, pip-audit)",
                 "sonar": "SonarQube quality gate",
+                "python-radar": "pyright, vulture, deptry, semgrep (informational)",
+                "link-check": "md links (lychee, informational)",
             }
             def glabel(lab):
                 # the test matrix names itself: "tests (3.14)"
@@ -1258,6 +1538,11 @@ jobs:
                 "pip-audit": "known CVEs in the CI toolchain (pip-audit)",
                 "secrets": "credentials in the history (gitleaks)",
                 "docker": "image build / smoke findings",
+                "pyright": "python types (pyright)",
+                "vulture": "python dead code (vulture)",
+                "deptry": "python dependency drift (deptry)",
+                "semgrep": "security / bug patterns (semgrep)",
+                "links": "broken links in md files (lychee)",
             }
             def rd(title, n):
                 name = LABEL.get(title, title)
@@ -1274,10 +1559,22 @@ jobs:
             if "zizmor" in zz: radar_add("zizmor", rd("zizmor", zz["zizmor"]))
             if "pip_audit" in zz: radar_add("pip-audit", rd("pip-audit", zz["pip_audit"]))
             if "secrets" in gl: radar_add("secrets", rd("secrets", gl["secrets"]))
+            # The informational radar lane: none of these reds a PR.
+            for key in ("pyright", "vulture", "deptry", "semgrep"):
+                if key in rad:
+                    cell_ = rd(key, rad[key])
+                    if key == "semgrep" and rad.get("semgrep_error"):
+                        cell_ += " (engine errors)"
+                    radar_add(key, cell_)
+            # deptry names what it judged against, so the cell does too.
+            if rad.get("deptry_spec"):
+                LABEL["deptry"] = f"python dependency drift vs {rad['deptry_spec']} (deptry)"
+            if "links_total" in lnk:
+                radar_add("links", rd("links", lnk.get("links_broken", 0)))
 
             # A partial scan is not a clean one.
             degraded = []
-            for src in (hks, al, sec, zz, dk, gl, py):
+            for src in (hks, al, sec, zz, dk, gl, py, rad, lnk):
                 for x in (src.get("findings") or {}).get("radar_degraded") or []:
                     if x not in degraded:
                         degraded.append(x)
@@ -1418,6 +1715,9 @@ jobs:
             fold("actionlint", F(al, "actionlint"), al.get("actionlint", 0))
             fold("secrets", F(gl, "secrets"), gl.get("secrets", 0))
             fold("docker", F(dk, "docker"), dk.get("docker_findings", 0))
+            for key in ("pyright", "vulture", "deptry", "semgrep"):
+                fold(key, F(rad, key), rad.get(key, 0))
+            fold("links", F(lnk, "links"), lnk.get("links_broken", 0))
             # Failing tests: a name is not a path, so its own head.
             tf = F(py, "tests")
             if tf:

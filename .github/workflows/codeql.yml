@@ -27,7 +27,7 @@ concurrency:
 jobs:
   analyze:
     if: ${{ vars.ENABLE_CODE_SCANNING == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       security-events: write

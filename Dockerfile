@@ -33,4 +33,19 @@ RUN useradd --create-home --uid 1000 relay \
     && chown -R relay:relay /app /home/relay
 USER relay
 
+# Liveness, not readiness: the relay holds the TTS port for the whole of its
+# life, so a socket that no longer accepts means the process is wedged rather
+# than busy. Trivy DS-0026 asks for this; the reason to want it is that a
+# hung relay currently looks identical to an idle one from the outside.
+#
+# This marks the container unhealthy — it does NOT restart it. `restart:
+# unless-stopped` in docker-compose.yml only acts on exit, so a wedged relay
+# stays up and unhealthy until something acts on that. Wiring the restart is
+# a separate decision.
+#
+# start-period covers the Telegram login and the first cast handshake, which
+# together take a few seconds on a cold start.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD python -c "import os, socket; socket.create_connection(('127.0.0.1', int(os.environ.get('TTS_PORT', '8422'))), 3).close()"
+
 CMD ["python", "relay.py"]
