@@ -10,7 +10,7 @@
 deptry==0.25.1
 
 # Bug and security patterns beyond bandit's rule set (p/python registry).
-semgrep==1.176.1
+semgrep==1.177.0
 
 # Dead code: functions, imports and variables nothing reaches.
 vulture==2.16
