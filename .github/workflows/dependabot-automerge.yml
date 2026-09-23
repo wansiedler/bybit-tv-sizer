@@ -42,6 +42,12 @@ jobs:
 
       # The runner-only ecosystems. A bad bump here reds the pipeline; it
       # cannot reach the host.
+      #
+      # Both spellings of the directory: fetch-metadata reports it as it
+      # appears in the branch name, and Dependabot writes a leading dot there
+      # as "dot-", so `/.github` arrives as `/dot-github`. Matching only the
+      # literal path armed nothing at all — a failure that fails closed, and
+      # so went unnoticed until a bump sat waiting for a click.
       - name: Arm auto-merge (runner-only bumps, minor and patch)
         if: >-
           (steps.meta.outputs.update-type == 'version-update:semver-patch' ||
@@ -49,7 +55,8 @@ jobs:
           (steps.meta.outputs.package-ecosystem == 'github_actions' ||
            steps.meta.outputs.package-ecosystem == 'pre_commit' ||
            (steps.meta.outputs.package-ecosystem == 'pip' &&
-            steps.meta.outputs.directory == '/.github'))
+            (steps.meta.outputs.directory == '/.github' ||
+             steps.meta.outputs.directory == '/dot-github')))
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -66,7 +73,8 @@ jobs:
             (steps.meta.outputs.package-ecosystem == 'github_actions' ||
              steps.meta.outputs.package-ecosystem == 'pre_commit' ||
              (steps.meta.outputs.package-ecosystem == 'pip' &&
-              steps.meta.outputs.directory == '/.github')))
+              (steps.meta.outputs.directory == '/.github' ||
+               steps.meta.outputs.directory == '/dot-github'))))
         env:
           ECOSYSTEM: ${{ steps.meta.outputs.package-ecosystem }}
           DIRECTORY: ${{ steps.meta.outputs.directory }}
