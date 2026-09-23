@@ -1,0 +1,102 @@
+name: Dependabot relock
+
+# Dependabot edits a requirements .txt and never the .lock beside it. Every job
+# and the image install from the .lock, so a bump that lands alone changes
+# nothing except making the manifest untrue — that is how ruff was declared
+# 0.16.7 while 0.16.4 ran, and telethon was declared >=1.45.0 while the image
+# shipped 1.44.0.
+#
+# The blocking check in the quality lane makes that visible; this job makes it
+# stop happening, by recompiling the lock on the PR that moved the manifest.
+#
+# Known cost: once anything but Dependabot commits to its branch, Dependabot
+# stops maintaining the PR — "@dependabot rebase" and its automatic rebases no
+# longer apply. Auto-merge should land these within the hour, and a stale one
+# is closed and reopened rather than rebased.
+#
+# The commit goes through the contents API rather than `git push`, so the
+# checkout never persists credentials and nothing has to be suppressed in the
+# workflow audit.
+
+on:
+  pull_request:
+    paths:
+      - "requirements.txt"
+      - ".github/requirements-ci.txt"
+      - ".github/requirements-radar.txt"
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: relock-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  relock:
+    if: ${{ github.event.pull_request.user.login == 'dependabot[bot]' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write   # the recompiled lock is committed to the PR's branch
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7   # v10.2.0
+
+      - name: Recompile any lock whose manifest moved
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          # python-version pins the resolution target, matching the header the
+          # existing locks carry — the floor this repo supports, not whatever
+          # the runner happens to ship.
+          pairs=(
+            "requirements.txt:requirements.lock"
+            ".github/requirements-ci.txt:.github/requirements-ci.lock"
+            ".github/requirements-radar.txt:.github/requirements-radar.lock"
+          )
+          changed=0
+          for pair in "${pairs[@]}"; do
+            txt="${pair%%:*}"; lock="${pair##*:}"
+            [ -f "$txt" ] && [ -f "$lock" ] || continue
+            uv pip compile "$txt" --generate-hashes --python-version 3.12 -o "$lock" --quiet
+            if git diff --quiet -- "$lock"; then
+              echo "unchanged: $lock"
+              continue
+            fi
+            echo "recompiled: $lock"
+            # The blob sha of what the branch currently holds; the API refuses
+            # the write without it, which is what stops a race from silently
+            # overwriting a newer lock.
+            blob=$(git rev-parse "HEAD:$lock")
+            gh api --method PUT "repos/$GITHUB_REPOSITORY/contents/$lock" \
+              -f message="ci: recompile $lock for the bumped manifest" \
+              -f branch="$BRANCH" \
+              -f sha="$blob" \
+              -f content="$(base64 < "$lock" | tr -d '\n')" \
+              --silent
+            changed=$((changed + 1))
+          done
+
+          {
+            if [ "$changed" -eq 0 ]; then
+              echo "## ✅ Locks already match their manifests"
+              echo ""
+              echo "Nothing to recompile — the bump did not move a pinned version."
+            else
+              echo "## 🔁 Recompiled $changed lock file(s)"
+              echo ""
+              echo "Committed to \`$BRANCH\`. Dependabot no longer maintains this"
+              echo "branch now that something else has committed to it: close and"
+              echo "reopen the PR instead of asking it to rebase."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
