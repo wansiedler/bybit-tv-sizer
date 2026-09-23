@@ -1,0 +1,83 @@
+name: Dependabot auto-merge
+
+# Arms auto-merge on a Dependabot PR whose bump is routine, so the queue of
+# action and toolchain bumps stops needing a human click each. GitHub still
+# holds the merge until every required check is green — auto-merge is a
+# standing instruction, not a bypass.
+#
+# What is NOT armed here, deliberately: the runtime dependencies at / and the
+# base image. Those are what actually ships to the host that holds the Bybit
+# keys, and a version of telethon or httpx nobody looked at should not reach a
+# live trading account because CI was green. The CI toolchain, the pre-commit
+# hooks and the pinned actions only ever run inside a runner, so a bad bump
+# there costs a red pipeline, not money.
+#
+# Majors are never armed, in any ecosystem: a major is a behaviour change by
+# definition and deserves the diff being read.
+#
+# The token: a Dependabot-triggered run gets a read-only GITHUB_TOKEN by
+# DEFAULT, and the permissions block below lifts it — this is GitHub's own
+# documented recipe for exactly this job. (A pull_request from a FORK is a
+# different case: there the token is read-only and no permissions block can
+# raise it. Nothing here runs for forks, and `if` pins the actor anyway.)
+
+on: pull_request
+
+permissions:
+  contents: read
+
+jobs:
+  automerge:
+    runs-on: ubuntu-24.04
+    if: ${{ github.event.pull_request.user.login == 'dependabot[bot]' }}
+    permissions:
+      contents: write        # arm auto-merge
+      pull-requests: write   # `gh pr merge --auto` acts on the PR itself
+    steps:
+      - name: Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98   # v3.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The runner-only ecosystems. A bad bump here reds the pipeline; it
+      # cannot reach the host.
+      - name: Arm auto-merge (runner-only bumps, minor and patch)
+        if: >-
+          (steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+           steps.meta.outputs.update-type == 'version-update:semver-minor') &&
+          (steps.meta.outputs.package-ecosystem == 'github_actions' ||
+           steps.meta.outputs.package-ecosystem == 'pre_commit' ||
+           (steps.meta.outputs.package-ecosystem == 'pip' &&
+            steps.meta.outputs.directory == '/.github'))
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge --auto --squash "$PR_URL"
+
+      # Everything else is left for a human. Said in the run Summary and not
+      # as a PR comment on purpose: this job re-runs on every push to the
+      # branch, and Dependabot rebases its PRs, so a comment here would grow
+      # into a column of identical notices.
+      - name: Say why it was left for a human
+        if: >-
+          !((steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+             steps.meta.outputs.update-type == 'version-update:semver-minor') &&
+            (steps.meta.outputs.package-ecosystem == 'github_actions' ||
+             steps.meta.outputs.package-ecosystem == 'pre_commit' ||
+             (steps.meta.outputs.package-ecosystem == 'pip' &&
+              steps.meta.outputs.directory == '/.github')))
+        env:
+          ECOSYSTEM: ${{ steps.meta.outputs.package-ecosystem }}
+          DIRECTORY: ${{ steps.meta.outputs.directory }}
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+        run: |
+          case "$UPDATE_TYPE" in
+            *semver-major) why="a major is a behaviour change — read the diff" ;;
+            *) why="this one ships to the host that holds the exchange keys" ;;
+          esac
+          {
+            echo "## 🔒 Auto-merge not armed"
+            echo ""
+            echo "\`$ECOSYSTEM\` at \`$DIRECTORY\`, $UPDATE_TYPE — $why."
+          } >> "$GITHUB_STEP_SUMMARY"

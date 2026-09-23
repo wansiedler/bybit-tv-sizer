@@ -1,0 +1,21 @@
+# The radar toolchain: the slow, noisy or heavyweight checks that must not
+# sit in the blocking lanes. Kept apart from requirements-ci.txt on purpose —
+# semgrep drags a large dependency tree (pydantic, mcp) behind it, and
+# pinning that into the toolchain every other job installs would make a
+# semgrep bump a pipeline-wide event. Dependabot watches /.github, so this
+# file gets its own reviewable bump PRs.
+
+# Imports vs declared dependencies: this repo keeps requirements.txt,
+# requirements.lock and pyproject.toml, and nothing else compares them.
+deptry==0.25.1
+
+# Bug and security patterns beyond bandit's rule set (p/python registry).
+semgrep==1.176.1
+
+# Dead code: functions, imports and variables nothing reaches.
+vulture==2.16
+
+# Second type checker. It disagrees with mypy often enough to be worth a
+# radar cell; the nodejs extra bundles node, or pyright downloads one
+# through nodeenv on every run.
+pyright[nodejs]==1.1.414
