@@ -989,3 +989,698 @@ jobs:
         if: ${{ env.SONAR_TOKEN == '' }}
         run: |
           echo "## ⏭️ Sonar: skipped (no SONAR_TOKEN secret)" >> "$GITHUB_STEP_SUMMARY"
+
+  # ------------------------------------------------------------------ #
+  #  Report: the run's ONE post on the pull request                      #
+  # ------------------------------------------------------------------ #
+  #
+  # Aggregates the per-job ci-metrics-* artifacts of this run into the run
+  # Summary and one sticky comment on the PR, folding its earlier selves as
+  # OUTDATED so the current report always sits at the bottom of the thread.
+  # Ported from Navflex/.github's ci-report.yml, which is a reusable workflow
+  # the caller invokes with `needs:` on every producing lane — the same shape
+  # as this job.
+  #
+  # Last, with `needs:` on every lane, so the artifacts it reads are all
+  # uploaded by the time it runs; `if: always()` because a red run is exactly
+  # the one worth reporting.
+  #
+  # Known limit: a pull request from a FORK cannot be commented on from here.
+  # "The GITHUB_TOKEN has read-only permissions in pull requests from forked
+  # repositories", and no permissions block raises it — the report still
+  # lands in the run Summary, it just does not reach the conversation. The
+  # alternative is a separate workflow_run workflow, which does reach forks
+  # but is a trigger zizmor rates high and that this repo, with no outside
+  # contributors, has no reason to carry.
+  #
+  # The ci-metrics-* contract every lane above follows, so that a finding
+  # reaches the comment rather than only the log:
+  #   * counts top-level (`"zizmor": 3`), the first 50 rows under
+  #     findings.<tool> as "<path>[:<line>]  <message>" — one folded table
+  #     per tool, locations linked into the head commit;
+  #   * a tool that did not run, crashed without findings or scanned only
+  #     part of the tree ships NO count and one row under
+  #     findings.radar_degraded ("<tool>: <why>"), so "skipped" never reads
+  #     as "clean".
+  #
+  # Layout: the Gates fold and the finding lists of whatever failed sit above
+  # the divider; tests, coverage and its delta against the default branch
+  # below it; the informational radars after that, clean cells folded behind
+  # one line; the commit-style badge closes it.
+  # ------------------------------------------------------------------ #
+  report:
+    needs: [quality, tests, actionlint, security, docker, secrets, supply-chain, sonar]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read          # list the CI run's jobs and download its artifacts
+      pull-requests: write   # the sticky comment
+    steps:
+      - name: Compose and post the report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          BLOB_URL: ${{ github.server_url }}/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha || github.sha }}/
+          REPORT_EXPAND: failed
+          REPORT_PY: |
+            import glob, html, json, os, re, urllib.parse, urllib.request
+
+            CIM = os.environ["CIM"]
+
+            def load(pattern):
+                for p in sorted(glob.glob(pattern)):
+                    try:
+                        return json.load(open(p))
+                    except Exception:
+                        pass
+                return {}
+
+            def load_all(pattern):
+                out = []
+                for p in sorted(glob.glob(pattern)):
+                    try:
+                        out.append(json.load(open(p)))
+                    except Exception:
+                        pass
+                return out
+
+            hks = load(f"{CIM}/ci-metrics-hooks/*.json")        # quality lane: pre-commit, both passes
+            al  = load(f"{CIM}/ci-metrics-actionlint/*.json")   # actionlint findings
+            sec = load(f"{CIM}/ci-metrics-security/*.json")     # trivy fs scan
+            zz  = load(f"{CIM}/ci-metrics-supply-chain/*.json") # zizmor + pip-audit
+            dk  = load(f"{CIM}/ci-metrics-docker/*.json")       # image build + smoke
+            gl  = load(f"{CIM}/ci-metrics-secrets/*.json")      # gitleaks
+            cstyle = load(f"{CIM}/commitstyle.json")            # resolved here, from the PR's commits
+            # One tests artifact per interpreter; the newest is the one the
+            # image runs, so it owns the coverage line and the delta.
+            pys = load_all(f"{CIM}/ci-metrics-python-*/*.json")
+            pys.sort(key=lambda d: [int(x) for x in str(d.get("py", "0")).split(".")])
+            py = pys[-1] if pys else {}
+            base = load(f"{CIM}/base/*.json")
+
+            # Informational gates report success to the jobs API: each job ships
+            # its failed step ids, keyed by display name -> a warning cell.
+            outcomes = {}
+            for p in glob.glob(f"{CIM}/ci-metrics-outcomes-*/*.json"):
+                try:
+                    o = json.load(open(p))
+                except Exception:
+                    continue
+                if o.get("failed_steps"):
+                    outcomes.setdefault(o.get("name") or o.get("job", "?"), []).extend(o["failed_steps"])
+
+            marker = "<!-- ci-report -->"
+            L = [marker, "## 🧪 CI report", ""]
+            EXPAND = (os.environ.get("REPORT_EXPAND") or "none").strip().lower()
+            OPEN_TOP = " open" if EXPAND in ("all", "failed") else ""
+            OPEN_ALL = " open" if EXPAND == "all" else ""
+            RUN = os.environ.get("RUN_URL", "")
+            SUMMARY = f"[run Summary]({RUN})" if RUN else "run Summary"
+
+            try:
+                missing = [m for m in open(f"{CIM}/missing.txt").read().split("\n") if m]
+            except Exception:
+                missing = []
+            if missing:
+                L.append("⚠️ **Report incomplete** — could not fetch: "
+                         + ", ".join(f"`{m}`" for m in missing)
+                         + f" (transient API failure, 3 attempts). The gates' own verdicts are in the {SUMMARY}.")
+                L.append("")
+
+            try:
+                jobs = json.load(open(f"{CIM}/jobs.json"))
+            except Exception:
+                jobs = []
+            # This job is in that list and is still running while it reads it:
+            # left in, it would render as a pending gate and drag the verdict
+            # to "still running" on every green run.
+            jobs = [j for j in jobs if "report" not in j.get("name", "")]
+            failed = [j for j in jobs if j.get("conclusion") == "failure"]
+
+            # ---- Gates: one cell per job that can fail the run.
+            rank = {"❌": 4, "⚠️": 3, "⏳": 2, "✅": 1, "⏭️": 0}
+            gates, gsteps = {}, {}
+            for j in jobs:
+                c = j.get("conclusion")
+                lab = j["name"].split(" / ")[-1]
+                warn = outcomes.get(lab) or []
+                icon = "✅" if c == "success" else ("❌" if c == "failure" else ("⏭️" if c in ("skipped", "neutral") else "⏳"))
+                if warn and icon == "✅":
+                    icon = "⚠️"
+                # A skipped job asserts nothing; a dependency-skip is covered by
+                # the dependency's own ❌.
+                if icon == "⏭️":
+                    continue
+                if lab not in gates or rank[icon] > rank[gates[lab]]:
+                    gates[lab] = icon
+                if c == "failure":
+                    gsteps.setdefault(lab, []).extend(j.get("steps") or [])
+                if warn:
+                    gsteps.setdefault(lab, []).extend(warn)
+
+            # ---- What blocks, above the divider: a finding list whose tool failed
+            # a step belongs with the Gates, not with the tech debt.
+            GATE_HINTS = {
+                "hooks_gate": ("lint changed code",),
+                "hooks": ("full-tree hooks",),
+                "python_tests": ("pytest",),
+                "actionlint": ("actionlint",),
+                "trivy": ("trivy", "scan results"),
+                "zizmor": ("zizmor",),
+                "pip-audit": ("pip-audit",),
+                "secrets": ("gitleaks",),
+                "docker": ("build image", "smoke test"),
+            }
+            red_txt = " ".join(str(s).lower() for k, v in gates.items() if v == "❌" for s in gsteps.get(k, []))
+            warn_txt = " ".join(str(s).lower() for k, v in gates.items() if v == "⚠️" for s in gsteps.get(k, []))
+            claimed = {t: "❌" for t, hs in GATE_HINTS.items() if any(h in red_txt for h in hs)}
+            claimed.update({t: "⚠️" for t, hs in GATE_HINTS.items()
+                            if t not in claimed and any(h in warn_txt for h in hs)})
+
+            # Job leaf -> what a green cell asserts: what was checked, the tool in
+            # parentheses. Unknown names render raw.
+            GATE_LABEL = {
+                "quality": "pre-commit hooks, changed files and full tree",
+                "actionlint": "workflow syntax / shellcheck (actionlint)",
+                "security": "vulnerable deps, secrets, misconfig (trivy fs)",
+                "docker": "image builds and starts (docker + trivy image)",
+                "secrets": "credentials in the history (gitleaks)",
+                "supply-chain": "workflow audit and CI toolchain CVEs (zizmor, pip-audit)",
+                "sonar": "SonarQube quality gate",
+            }
+            def glabel(lab):
+                # the test matrix names itself: "tests (3.14)"
+                m = re.fullmatch(r"tests \((\d+\.\d+)\)", lab)
+                if m:
+                    return f"python tests (pytest + coverage, py{m[1]})"
+                return GATE_LABEL.get(lab, lab)
+
+            def gcell(lab):
+                st = ", ".join(dict.fromkeys(gsteps.get(lab, []))) if gates[lab] in ("❌", "⚠️") else ""
+                return f"{glabel(lab)} {gates[lab]}" + (f" ({st})" if st else "")
+
+            # Sorted by label: the API lists jobs in scheduling order, which
+            # changes run to run.
+            if gates:
+                order = sorted(gates, key=lambda k: glabel(k).lower())
+                n = len(order)
+                reds = [k for k in order if gates[k] == "❌"]
+                gwarn = [k for k in order if gates[k] == "⚠️"]
+                pend = [k for k in order if gates[k] == "⏳"]
+                names = lambda ks: html.escape(", ".join(glabel(k) for k in ks), quote=False)
+                if reds:
+                    verdict = f"❌ {len(reds)}/{n} failed: {names(reds)}"
+                elif gwarn:
+                    verdict = f"⚠️ {n - len(gwarn)}/{n} green · {len(gwarn)} with warnings: {names(gwarn)}"
+                elif pend:
+                    verdict = f"⏳ {n - len(pend)}/{n} green · {len(pend)} still running"
+                else:
+                    verdict = f"✅ {n}/{n} green"
+                L += [f"<details{OPEN_TOP if (reds or gwarn) else OPEN_ALL}>",
+                      f"<summary><b>Gates:</b> {verdict}</summary>", ""]
+                L += [f"- {gcell(k)}" for k in order]
+                # The trailing blank closes the HTML block: without it the lines
+                # below sit inside it and render their markdown literally.
+                L += ["", "</details>", ""]
+            if any(v == "⚠️" for v in gates.values()):
+                L.append("_⚠️ = step(s) failed under an informational gate (job green by design)._")
+            if failed and not any((hks, py, al, sec, zz, dk, gl)):
+                L.append(f"_Gates failed before metrics were collected — details in the {SUMMARY}._")
+
+            top_at = len(L)
+            L += ["", "---", ""]
+            mid = len(L)   # the metrics section starts here; dropped when nothing lands in it
+
+            # ---- Tests, one line per interpreter: the matrix is the point.
+            for d in pys:
+                t = d.get("tests")
+                if not t:
+                    continue
+                bad = bool((d.get("findings") or {}).get("tests")) or bool(d.get("tests_failed"))
+                L.append(f"**Tests (py{d.get('py', '?')}):** {'⚠️ ' if bad else ''}{t}")
+            # Coverage of the interpreter the image runs, with the delta against
+            # the last green run of the default branch.
+            if "pycov" in py:
+                s = f"**Coverage (py{py.get('py', '?')}):** {py['pycov']}%"
+                if "pycov" in base:
+                    d = round(py["pycov"] - base["pycov"], 1)
+                    arrow = "▲" if d > 0 else ("▼" if d < 0 else "＝")
+                    s += f" ({base['pycov']}% → {py['pycov']}%, {arrow}{abs(d)})" if d else " (＝)"
+                elif base:
+                    s += " (no baseline on the default branch yet)"
+                L.append(s)
+                # Per-file, folded: the number without the files is not actionable.
+                rows = (py.get("findings") or {}).get("coverage_files") or []
+                if rows:
+                    L += ["", f"<details{OPEN_ALL}>",
+                          f"<summary>Coverage per file: {len(rows)} file(s)</summary>", "",
+                          "| file | statements | missed | covered |", "| --- | ---: | ---: | ---: |"]
+                    L += [str(r) for r in rows]
+                    L += ["", "</details>", ""]
+            if dk.get("docker"):
+                L.append(f"**Image:** {'✅' if dk['docker'] == 'green' else '❌'} {dk.get('docker_note', dk['docker'])}")
+
+            # ---- Radars: one cell per informational tool; >0 is ⚠️ with a folded
+            # list. One label per check, shared by the radar cell and its fold
+            # title, so the count and the list read the same.
+            LABEL = {
+                "hooks_gate": "pre-commit hooks on the changed files (the blocking gate)",
+                "hooks": "pre-commit hooks (full tree)",
+                "python_tests": "failing tests",
+                "actionlint": "workflow syntax / shellcheck (actionlint)",
+                "trivy": "vulnerable dependencies, secrets, misconfig (trivy)",
+                "zizmor": "workflow security audit (zizmor)",
+                "pip-audit": "known CVEs in the CI toolchain (pip-audit)",
+                "secrets": "credentials in the history (gitleaks)",
+                "docker": "image build / smoke findings",
+            }
+            def rd(title, n):
+                name = LABEL.get(title, title)
+                return f"{name} ✅" if not n else f"{name} {n} ⚠️"
+            radar = []
+            def radar_add(title, cell_):
+                # a tool whose step failed a gate is reported above the line
+                if title not in claimed:
+                    radar.append((title, cell_))
+            if "hooks" in hks: radar_add("hooks", rd("hooks", hks["hooks"]))
+            if "hooks_gate" in hks: radar_add("hooks_gate", rd("hooks_gate", hks["hooks_gate"]))
+            if "actionlint" in al: radar_add("actionlint", rd("actionlint", al["actionlint"]))
+            if "trivy" in sec: radar_add("trivy", rd("trivy", sec["trivy"]))
+            if "zizmor" in zz: radar_add("zizmor", rd("zizmor", zz["zizmor"]))
+            if "pip_audit" in zz: radar_add("pip-audit", rd("pip-audit", zz["pip_audit"]))
+            if "secrets" in gl: radar_add("secrets", rd("secrets", gl["secrets"]))
+
+            # A partial scan is not a clean one.
+            degraded = []
+            for src in (hks, al, sec, zz, dk, gl, py):
+                for x in (src.get("findings") or {}).get("radar_degraded") or []:
+                    if x not in degraded:
+                        degraded.append(x)
+
+            warns, degraded_lines = [], []
+            if radar or degraded:
+                warns = [(t, c) for t, c in radar if "⚠️" in c]
+                greens = [c for t, c in radar if "⚠️" not in c]
+                dirty = bool(warns) or bool(degraded)
+                if len(L) == mid:
+                    del L[mid - 3:]   # empty metrics section: no "--- ---" band
+                L += ["", "---", ""]
+                if greens:
+                    # "Awesome" only when nothing is flagged AND nothing was
+                    # skipped: a degraded check makes "no tech debt" unearned.
+                    lead = "Repo radars clean" if dirty else "Awesome, no tech debt detected"
+                    L += [f"<details{OPEN_ALL}>",
+                          f"<summary><b>{lead}:</b> {len(greens)} check(s) ✅</summary>", ""]
+                    L += [f"- {c}" for c in greens]
+                    L += ["", "</details>"]
+                if degraded:
+                    flat = lambda x: html.escape(" ".join(str(x).split()).replace("|", " ").replace("`", " ")[:300], quote=False)
+                    floor = " — the counts above are a floor, not a total" if radar else ""
+                    degraded_lines = [f"_⚠️ {len(degraded)} check(s) did not run or ran partially{floor}:_", ""]
+                    degraded_lines += [f"- {flat(x)}" for x in degraded[:8]]
+                    if len(degraded) > 8:
+                        degraded_lines.append(f"- …+{len(degraded) - 8} more")
+
+            # ---- Commit style: a badge at the foot of the report, its commits
+            # folded under it. Resolved from the PR's own commits (see the collect
+            # step) — this repo has no commitizen hook to ship a verdict.
+            def badge(label, msg, color, href):
+                src = "https://img.shields.io/static/v1?" + urllib.parse.urlencode(
+                    {"label": label, "message": msg, "color": color, "style": "flat"})
+                alt = html.escape(f"{label}: {msg}", quote=True)
+                return f'<a href="{href}"><img alt="{alt}" src="{src}"></a>'
+            CC_URL = "https://www.conventionalcommits.org/"
+            cstyle_head, cstyle_block, cstyle_bad = None, [], False
+            def commit_rows(commits):
+                rows = ["| commit | subject |", "| --- | --- |"]
+                for c in commits:
+                    subj = str(c.get("subject", "")).replace("|", " ").replace("`", " ").replace("\n", " ")[:120]
+                    rows.append(f"| `{c.get('sha', '?')}` | {subj} |")
+                return rows
+            if cstyle.get("commitstyle_bad"):
+                bad = cstyle["commitstyle_bad"]
+                total = cstyle.get("commitstyle_total")
+                of = f"/{total}" if total else ""
+                mg = f" · +{cstyle['commitstyle_merges']} merge not judged" if cstyle.get("commitstyle_merges") else ""
+                cstyle_head = badge("Commit style", f"{len(bad)}{of} not conventional{mg}", "important", CC_URL)
+                cstyle_bad = True
+                # The rule and the fix first — that is what the reader acts on;
+                # the offending commits follow as the table.
+                cstyle_block = ["These commit messages are not in the best shape.",
+                                "",
+                                "Please use this format:",
+                                "**type(scope): subject — e.g. fix(sizer): round the qty down**",
+                                "Type: `build` `ci` `docs` `feat` `fix` `perf` `refactor` `style` `test` `chore` `revert` `bump`",
+                                "Scope is one token (no spaces): `tv-alerts`, not `tv alerts`",
+                                "Subject has no trailing period",
+                                "",
+                                "Fix:",
+                                "",
+                                "```bash",
+                                "git rebase -i <base>        # mark the listed commits: reword",
+                                "git push --force-with-lease",
+                                "```",
+                                ""]
+                cstyle_block += commit_rows(bad[:50])
+            elif cstyle.get("commitstyle_skipped"):
+                # Nothing was judged: a note, not a green signature — "all
+                # conventional" and "not checked" differ.
+                cstyle_head = badge("Commit style", "not judged (" + str(cstyle["commitstyle_skipped"])[:80] + ")", "lightgrey", CC_URL)
+            elif cstyle.get("commitstyle_total"):
+                t = cstyle["commitstyle_total"]
+                mg = f" · +{cstyle['commitstyle_merges']} merge not judged" if cstyle.get("commitstyle_merges") else ""
+                cstyle_head = badge("Commit style", f"{t}/{t} conventional{mg}", "success", CC_URL)
+                if cstyle.get("commitstyle_commits"):
+                    cstyle_block = commit_rows(cstyle["commitstyle_commits"][:50])
+            def column(head, rows, open_):
+                if not head:
+                    return []
+                if not rows:
+                    return [head, ""]
+                return [f"<details{open_}>", f"<summary>{head}</summary>", "", *rows, "", "</details>", ""]
+            cols = ["", *column(cstyle_head, cstyle_block, OPEN_TOP if cstyle_bad else OPEN_ALL)] if cstyle_head else []
+            footer = ["", f"→ full report: [run Summary]({RUN})"] if RUN else []
+
+            # ---- Folded finding lists: one <details> of at most CAP rows per
+            # warning. GitHub caps a comment at 65536 bytes: blocks are added
+            # until the budget runs out, the rest is counted in a trailing note.
+            # The Summary gets everything.
+            LIMIT = 65536 - 1024
+            CAP = 50
+            def cell(v, n=160):
+                return str(v).replace("|", " ").replace("`", " ").replace("\r", " ").replace("\n", " ")[:n]
+            def is_dir_row(r):
+                return r.startswith("| **")
+            def block(title, rows, total, head, tail, icon="⚠️", open_=False):
+                shown = sum(1 for r in rows if not is_dir_row(r))
+                more = f" — first {shown}" if shown < total else ""
+                return ["", f"<details{' open' if open_ else ''}>",
+                        f"<summary>{icon} {LABEL.get(title, title)}: {total} finding(s){more}</summary>",
+                        "", *head, *rows, *tail, "</details>"]
+            # Finding row = "<path>[:<line>[:<col>]]  <rest>" -> two-column table,
+            # the location a permalink into the PR head (12-char sha: the budget).
+            BLOB = re.sub(r"/blob/([0-9a-f]{40})/$", lambda m: "/blob/" + m[1][:12] + "/", os.environ.get("BLOB_URL", ""))
+            LOC = re.compile(r"^(?P<path>(?!/)(?:[\w@%+=.~/-]| (?! ))+)(?::(?P<line>\d+))?(?::\d+)?(?::(?=\s)|(?=  |$))")
+            def finding(v):
+                return html.escape(cell(v, 200), quote=False)
+            def linkify(row):
+                row = row.strip()
+                if row.startswith("—"):
+                    return "—", finding(row[1:].strip()) or "—"
+                m = LOC.match(row)
+                # A path needs a slash or a dot, unless an explicit ":<line>"
+                # follows (Dockerfile:1).
+                if not m or not ("/" in m["path"] or "." in m["path"] or m["line"]):
+                    return "—", finding(row)
+                path, line = m["path"], m["line"]
+                text = path + (f":{line}" if line else "")
+                url = BLOB + urllib.parse.quote(path, safe="/") + (f"#L{line}" if line else "")
+                loc = f"[`{cell(text, 200)}`]({url})" if BLOB else f"`{cell(text, 200)}`"
+                return loc, finding(row[m.end():].strip()) or "—"
+            TABLE = (["| location | finding |", "| --- | --- |"], [""])
+            folds = []
+            def fold(title, rows, total, head=TABLE[0], tail=TABLE[1]):
+                rows = list(dict.fromkeys(str(r) for r in rows if str(r).strip()))[:CAP]
+                out = ["| " + " | ".join(linkify(r)) + " |" for r in rows]
+                if total > 0 and out:
+                    folds.append((title, out, total, head, tail))
+            def F(src, key):
+                return (src.get("findings") or {}).get(key) or []
+
+            fold("trivy", F(sec, "trivy"), sec.get("trivy", 0))
+            fold("zizmor", F(zz, "zizmor"), zz.get("zizmor", 0))
+            fold("pip-audit", F(zz, "pip_audit"), zz.get("pip_audit", 0))
+            fold("actionlint", F(al, "actionlint"), al.get("actionlint", 0))
+            fold("secrets", F(gl, "secrets"), gl.get("secrets", 0))
+            fold("docker", F(dk, "docker"), dk.get("docker_findings", 0))
+            # Failing tests: a name is not a path, so its own head.
+            tf = F(py, "tests")
+            if tf:
+                TF = (["| test | failure |", "| --- | --- |"], [""])
+                tf_rows = []
+                for r in tf[:CAP]:
+                    nm, _, why = str(r).partition("  ")
+                    tf_rows.append(f"| `{cell(nm, 120)}` | {finding(why.strip()) or '—'} |")
+                folds.append(("python_tests", tf_rows, max(py.get("tests_failed", 0), len(tf)), *TF))
+            # The blocking diff gate first (what the author must fix), the
+            # full-tree backlog after it — same shape, own key.
+            HK = (["| hook | lines | first finding |", "| --- | ---: | --- |"], [""])
+            for key in ("hooks_gate", "hooks"):
+                rows = F(hks, key)
+                if not rows:
+                    continue
+                hk_rows = [f"| `{cell(r.get('hook', '?'), 80)}` | {r.get('lines', 0)} | {finding(r.get('first', ''))} |"
+                           for r in rows[:CAP]]
+                entry = (key, hk_rows, hks.get(key, len(rows)), *HK)
+                if key == "hooks_gate":
+                    folds.insert(0, entry)   # the one list the author has to act on
+                else:
+                    folds.append(entry)
+
+            # Failed gates' lists move up next to Gates, whole, before the
+            # Summary copy is taken.
+            top = [f for f in folds if f[0] in claimed]
+            folds = [f for f in folds if f[0] not in claimed]
+            if top:
+                top_lines = []
+                for name, rows, total, head, tail in top:
+                    top_lines += block(name, rows, total, head, tail, icon=claimed[name], open_=bool(OPEN_TOP))
+                L[top_at:top_at] = top_lines
+            # A ⚠️ count whose producer shipped no rows has no fold to carry it.
+            orphans = [c for t, c in warns if t not in {f[0] for f in folds}]
+            if orphans:
+                L.append("**Tech debt:** " + " · ".join(orphans))
+
+            L_summary = list(L)   # the run Summary has no 64k limit
+            for name, rows, total, head, tail in folds:
+                L_summary += block(name, rows, total, head, tail, open_=bool(OPEN_ALL))
+            budget = LIMIT - len("\n".join(L + degraded_lines + cols + footer).encode()) - 512
+            omitted = 0
+            for name, rows, total, head, tail in folds:
+                frame = len("\n".join(block(name, [], total, head, tail)).encode()) + 1
+                keep, size = [], 0
+                for r in rows:
+                    rb = len(r.encode()) + 1
+                    if frame + size + rb > budget:
+                        break
+                    keep.append(r)
+                    size += rb
+                if not keep:
+                    omitted += 1
+                    continue
+                L += block(name, keep, total, head, tail, open_=bool(OPEN_ALL))
+                budget -= frame + size
+            if omitted:
+                L += ["", f"_…{omitted} finding list(s) did not fit GitHub's comment limit — see the {SUMMARY}._"]
+            if degraded_lines:
+                L += ["", *degraded_lines]
+                L_summary += ["", *degraded_lines]
+            L += cols
+            L_summary += cols
+            L += footer
+            L_summary += footer
+            body = "\n".join(L)
+            summary_body = "\n".join(L_summary)
+            # Last resort for a body some other block pushed over the limit: cut
+            # whole lines, keep the footer.
+            if len(body.encode()) > LIMIT:
+                keep, used = [], len("\n".join(["", "_…report truncated to fit GitHub's comment limit._"] + footer).encode()) + 64
+                for line in L:
+                    lb = len(line.encode()) + 1
+                    if used + lb > LIMIT:
+                        break
+                    keep.append(line)
+                    used += lb
+                body = "\n".join(keep + ["", "_…report truncated to fit GitHub's comment limit._"] + footer)
+
+            # The report always goes to the run Summary, every list open; the
+            # sticky comment below needs a PR.
+            with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+                f.write(summary_body.replace(marker, "").replace("<details>", "<details open>").lstrip() + "\n")
+
+            repo = os.environ["GITHUB_REPOSITORY"]
+            pr = os.environ.get("PR_NUMBER", "")
+            token = os.environ["GH_TOKEN"]
+            if not pr:
+                print("::notice::no PR associated with this commit — report written to the run Summary only")
+                raise SystemExit(0)
+
+            def req(url, method="GET", data=None):
+                r = urllib.request.Request(url, method=method, headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "bybit-tv-sizer-ci"})
+                if data is not None:
+                    r.data = json.dumps(data).encode()
+                with urllib.request.urlopen(r) as resp:
+                    return json.load(resp) if resp.length != 0 else None
+
+            def gql(query, variables):
+                r = urllib.request.Request("https://api.github.com/graphql", method="POST", headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "bybit-tv-sizer-ci"})
+                r.data = json.dumps({"query": query, "variables": variables}).encode()
+                with urllib.request.urlopen(r) as resp:
+                    return json.load(resp)
+
+            try:
+                # Stale-run guard: a slow older run must not fold the newer report
+                # and leave an obsolete verdict as the bottom comment.
+                head = os.environ.get("HEAD_SHA", "")
+                live = req(f"https://api.github.com/repos/{repo}/pulls/{pr}")
+                cur = live.get("head", {}).get("sha", "")
+                if head and cur and head != cur:
+                    print(f"::notice::skipping report: run is for {head[:7]}, PR head moved to {cur[:7]}")
+                    raise SystemExit(0)
+                if live.get("state") != "open":
+                    print(f"::notice::skipping report: PR #{pr} is {live.get('state')}")
+                    raise SystemExit(0)
+                # Fold every previous report as OUTDATED; the current one lands at
+                # the BOTTOM. Only comments a bot authored — never a participant's
+                # that quotes the marker.
+                page, stale = 1, []
+                while True:
+                    cs = req(f"https://api.github.com/repos/{repo}/issues/{pr}/comments?per_page=100&page={page}")
+                    stale += [c["node_id"] for c in cs
+                              if marker in (c.get("body") or "")
+                              and ((c.get("user") or {}).get("login") or "").endswith("[bot]")]
+                    if len(cs) < 100:
+                        break
+                    page += 1
+                # Skip comments already folded (quadratic GraphQL churn otherwise).
+                if stale:
+                    try:
+                        q = "query($ids:[ID!]!){nodes(ids:$ids){... on IssueComment{id isMinimized}}}"
+                        state = {}
+                        for i in range(0, len(stale), 100):
+                            resp = gql(q, {"ids": stale[i:i + 100]})
+                            for item in (resp.get("data") or {}).get("nodes") or []:
+                                if item:
+                                    state[item["id"]] = item.get("isMinimized", False)
+                        stale = [nid for nid in stale if not state.get(nid, False)]
+                    except Exception as le:
+                        print(f"::warning::minimized-state lookup failed ({le}) — folding all candidates")
+                folded = 0
+                for nid in stale:
+                    # GraphQL reports mutation failures inside a 200 response —
+                    # count a fold only when isMinimized is confirmed.
+                    try:
+                        resp = gql("mutation($id:ID!){minimizeComment(input:{subjectId:$id,classifier:OUTDATED})"
+                                   "{minimizedComment{isMinimized}}}", {"id": nid})
+                        ok = (not resp.get("errors")) and (resp.get("data") or {}).get(
+                            "minimizeComment", {}).get("minimizedComment", {}).get("isMinimized")
+                        if ok:
+                            folded += 1
+                        else:
+                            print(f"::warning::could not minimize old report {nid}: {resp.get('errors')}")
+                    except Exception as me:
+                        print(f"::warning::could not minimize old report {nid}: {me}")
+                req(f"https://api.github.com/repos/{repo}/issues/{pr}/comments", "POST", {"body": body})
+                print(f"posted the report (minimized {folded}/{len(stale)} outdated)")
+            except SystemExit:
+                pass
+            except Exception as e:
+                print(f"::warning::could not post the CI report ({e})")
+        run: |
+          set -e
+          # Per-job scratch under RUNNER_TEMP.
+          CIM="${RUNNER_TEMP:-/tmp}/cim"; export CIM
+          rm -rf "${CIM}" && mkdir -p "${CIM}"
+
+          # A pull_request run carries the number; a push resolves it from the
+          # commit, and reports to the Summary alone when there is none.
+          if [ -z "${PR_NUMBER:-}" ]; then
+            PR_NUMBER=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/pulls?per_page=1" \
+              -q '.[0].number // empty' 2>/dev/null || true)
+          fi
+          export PR_NUMBER
+
+          # fetch <out> <api path...>: 3 attempts; a miss is named in the report,
+          # never silent.
+          fetch() {
+            local out=$1; shift; local n
+            for n in 1 2 3; do
+              if gh api "$@" > "$out" 2> "${CIM}"/fetch.err; then return 0; fi
+              [ "$n" -lt 3 ] && sleep $((n * 10))
+            done
+            return 1
+          }
+          : > "${CIM}"/missing.txt
+
+          # The CI run's own metrics artifacts.
+          if fetch "${CIM}"/artifacts.json "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100"; then
+            jq -r '.artifacts[] | select(.name | startswith("ci-metrics-")) | "\(.id) \(.name)"' "${CIM}"/artifacts.json \
+            | while read -r id name; do
+                if fetch "${CIM}/$name.zip" "repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" \
+                   && unzip -o -q "${CIM}/$name.zip" -d "${CIM}/$name"; then continue; fi
+                echo "::warning::ci-report: could not fetch artifact $name (id $id) after 3 attempts"
+                echo "$name" >> "${CIM}"/missing.txt
+              done
+          else
+            echo "::warning::ci-report: could not list the run's artifacts after 3 attempts"
+            echo "artifact list" >> "${CIM}"/missing.txt
+          fi
+
+          # Delta baseline: the newest tests artifact of the last green CI run on
+          # the default branch.
+          base_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=$DEFAULT_BRANCH&status=success&per_page=1" \
+            -q '.workflow_runs[0].id' 2>/dev/null) || true
+          if [ -n "$base_run" ] && [ "$base_run" != "null" ]; then
+            bid=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$base_run/artifacts?per_page=100" \
+              -q '[.artifacts[] | select(.name | startswith("ci-metrics-python-"))] | sort_by(.name) | last | .id' 2>/dev/null) || true
+            if [ -n "$bid" ] && [ "$bid" != "null" ]; then
+              fetch "${CIM}"/base.zip "repos/$GITHUB_REPOSITORY/actions/artifacts/$bid/zip" \
+                && unzip -o -q "${CIM}"/base.zip -d "${CIM}"/base 2>/dev/null || true
+            fi
+          fi
+
+          # Commit style, judged here: this repo has no commitizen hook to ship a
+          # verdict with the other metrics. Merges are not judged (git writes
+          # their subject), but they are counted so the total reconciles with the
+          # PR's commit count.
+          if [ -n "$PR_NUMBER" ]; then
+            if fetch "${CIM}"/commits.json "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/commits?per_page=100"; then
+              python3 - <<'PYEOF' || true
+          import json, os, re
+          CIM = os.environ["CIM"]
+          TYPES = "build|ci|docs|feat|fix|perf|refactor|style|test|chore|revert|bump"
+          RX = re.compile(rf"^(?:{TYPES})(?:\([^\s()]+\))?!?: .+[^.]$")
+          commits = json.load(open(f"{CIM}/commits.json"))
+          judged, bad, merges = [], [], 0
+          for c in commits:
+              subject = (c.get("commit", {}).get("message") or "").split("\n")[0].strip()
+              row = {"sha": (c.get("sha") or "")[:7], "subject": subject}
+              if len(c.get("parents") or []) > 1:
+                  merges += 1
+                  continue
+              judged.append(row)
+              if not RX.match(subject):
+                  bad.append(row)
+          out = {"commitstyle_total": len(judged), "commitstyle_merges": merges,
+                 "commitstyle_commits": judged[:50]}
+          if bad:
+              out["commitstyle_bad"] = bad
+          if not judged:
+              out = {"commitstyle_skipped": "no non-merge commit in the PR", "commitstyle_merges": merges}
+          json.dump(out, open(f"{CIM}/commitstyle.json", "w"))
+          PYEOF
+            fi
+          fi
+
+          # The CI run's job conclusions and failed step names.
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=100" \
+            -q '[.jobs[] | {name, conclusion, steps: [.steps[] | select(.conclusion=="failure") | .name]}]' \
+            > "${CIM}"/jobs.json || echo '[]' > "${CIM}"/jobs.json
+
+          # The composer rides in a step env value, not in this run: script.
+          # actionlint pipes every `run:` to shellcheck through a pipe and
+          # deadlocks once the script crosses ~64 KiB.
+          py="${CIM}/report.py"
+          printf '%s\n' "$REPORT_PY" > "$py"
+          python3 "$py"
