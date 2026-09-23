@@ -75,6 +75,9 @@ jobs:
           rc=$?
           set -e
           echo "$out"
+          # Kept for the metrics step: the CI report turns each failed hook into
+          # a row, and a variable does not survive the step boundary.
+          printf '%s\n' "$out" > hooks-gate.log
           if [ "$rc" -ne 0 ]; then
             {
               echo "## ❌ Diff gate (blocking)"
@@ -98,6 +101,7 @@ jobs:
           rc=$?
           set -e
           echo "$out"
+          printf '%s\n' "$out" > hooks-tree.log
           if [ "$rc" -ne 0 ]; then
             findings=$(grep -vE "Passed$|Skipped$" <<< "$out" || true)
             {
@@ -110,6 +114,64 @@ jobs:
             exit "$rc"
           fi
           echo "## ✅ Full-tree hooks: clean" >> "$GITHUB_STEP_SUMMARY"
+
+      # ci-metrics contract for the CI report: one row per FAILED hook, so the
+      # PR comment names what to fix instead of pointing at the job log.
+      - name: Metrics for the CI report
+        if: ${{ !cancelled() }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, re
+
+          # "ruff....................Failed" — pre-commit pads the name with dots.
+          HEAD = re.compile(r"^(?P<name>.+?)\.{3,}(?P<status>Passed|Failed|Skipped|No files to check)", re.I)
+
+          def hooks(path):
+              """[{hook, lines, first}] for every hook that failed."""
+              try:
+                  raw = open(path, encoding="utf-8", errors="replace").read().split("\n")
+              except OSError:
+                  return None
+              out, cur = [], None
+              for line in raw:
+                  m = HEAD.match(line)
+                  if m:
+                      cur = {"hook": m["name"].strip(), "body": []} if m["status"].lower() == "failed" else None
+                      if cur:
+                          out.append(cur)
+                      continue
+                  # "- hook id: x" / "- exit code: 1" are plumbing, not findings.
+                  if cur is not None and line.strip() and not line.startswith("- "):
+                      cur["body"].append(line.rstrip())
+              return [{"hook": h["hook"], "lines": len(h["body"]),
+                       "first": (h["body"][0] if h["body"] else "")[:300]} for h in out]
+
+          metrics, findings, degraded = {}, {}, []
+          for path, key, what in (("hooks-gate.log", "hooks_gate", "the blocking diff gate"),
+                                  ("hooks-tree.log", "hooks", "the full-tree pass")):
+              rows = hooks(path)
+              if rows is None:
+                  # No log at all: the step died before pre-commit spoke. A missing
+                  # section would read as "clean" — say it was not run instead.
+                  degraded.append(f"pre-commit ({what}): no output captured — the step failed before the hooks ran")
+                  continue
+              metrics[key] = len(rows)
+              if rows:
+                  findings[key] = rows[:50]
+          if degraded:
+              findings["radar_degraded"] = degraded
+          metrics["findings"] = findings
+          os.makedirs("ci-metrics", exist_ok=True)
+          json.dump(metrics, open("ci-metrics/hooks.json", "w"))
+          EOF
+
+      - name: Upload metrics
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7
+        if: ${{ !cancelled() && !env.ACT }}
+        with:
+          name: ci-metrics-hooks
+          path: ci-metrics/
+          retention-days: 7
 
   # ------------------------------------------------------------------ #
   #  Tests: the parser is the part with logic worth pinning down        #
@@ -140,7 +202,9 @@ jobs:
       - name: pytest with coverage
         run: |
           set +e
-          out=$(pytest --cov --cov-report=term-missing --cov-report=xml --color=no 2>&1)
+          # --junitxml: the CI report names the failing tests, and parsing the
+          # terminal output for them is guesswork.
+          out=$(pytest --cov --cov-report=term-missing --cov-report=xml --color=no --junitxml=junit.xml 2>&1)
           rc=$?
           set -e
           echo "$out"
@@ -196,6 +260,78 @@ jobs:
           path: coverage.xml
           retention-days: 30
 
+      # ci-metrics contract for the CI report: the counts line, the failing
+      # tests and the per-file coverage table the PR comment folds.
+      - name: Metrics for the CI report
+        if: ${{ !cancelled() }}
+        env:
+          PY_VERSION: ${{ matrix.python-version }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, xml.etree.ElementTree as ET
+
+          py = os.environ["PY_VERSION"]
+          metrics = {"py": py, "tests_label": f"python tests (py{py})"}
+          findings, degraded = {}, []
+
+          try:
+              root = ET.parse("junit.xml").getroot()
+              # pytest writes <testsuites><testsuite>; older versions the suite alone.
+              suite = root.find("testsuite") if root.tag == "testsuites" else root
+              total = int(suite.get("tests", 0))
+              fails = int(suite.get("failures", 0))
+              errs = int(suite.get("errors", 0))
+              skips = int(suite.get("skipped", 0))
+              took = float(suite.get("time", 0))
+              metrics["tests"] = (f"{total - fails - errs - skips}/{total} passed, "
+                                  f"{errs} errors, {fails} failures"
+                                  + (f", {skips} skipped" if skips else "")
+                                  + f" in {took:.1f}s")
+              metrics["tests_failed"] = fails + errs
+              rows = []
+              for case in suite.iter("testcase"):
+                  for bad in list(case.findall("failure")) + list(case.findall("error")):
+                      name = f"{case.get('classname', '')}::{case.get('name', '')}".strip(":")
+                      why = " ".join((bad.get("message") or bad.text or "").split())
+                      rows.append(f"{name}  {why[:300]}")
+              if rows:
+                  findings["tests"] = rows[:50]
+          except Exception as exc:
+              # No junit.xml: pytest died before writing it (a collection error,
+              # an install failure). "no tests" would read as a green suite.
+              degraded.append(f"pytest (py{py}): no junit report ({exc})")
+
+          try:
+              root = ET.parse("coverage.xml").getroot()
+              metrics["pycov"] = round(float(root.get("line-rate", 0)) * 100, 1)
+              rows = []
+              for cls in sorted(root.iter("class"), key=lambda c: c.get("filename")):
+                  found = cls.find("lines")
+                  lines = list(found) if found is not None else []
+                  missed = sum(1 for line in lines if line.get("hits") == "0")
+                  rate = float(cls.get("line-rate", 0)) * 100
+                  mark = "✅" if rate == 100 else ("⚠️" if rate else "❌")
+                  rows.append(f"| `{cls.get('filename')}` | {len(lines)} | {missed} | {mark} {rate:.0f}% |")
+              if rows:
+                  findings["coverage_files"] = rows
+          except Exception as exc:
+              degraded.append(f"coverage (py{py}): no report ({exc})")
+
+          if degraded:
+              findings["radar_degraded"] = degraded
+          metrics["findings"] = findings
+          os.makedirs("ci-metrics", exist_ok=True)
+          json.dump(metrics, open("ci-metrics/python.json", "w"))
+          EOF
+
+      - name: Upload metrics
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7
+        if: ${{ !cancelled() && !env.ACT }}
+        with:
+          name: ci-metrics-python-${{ matrix.python-version }}
+          path: ci-metrics/
+          retention-days: 7
+
       # relay.py imports telethon/httpx at module level; a broken import must
       # not wait for a container restart at 3am to be discovered. chat_id.py is
       # deliberately excluded: it is a script, and importing it calls Telegram.
@@ -232,6 +368,37 @@ jobs:
           else
             echo "## ✅ actionlint: clean" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      # ci-metrics contract for the CI report.
+      - name: Metrics for the CI report
+        if: ${{ always() && !env.ACT }}
+        run: |
+          python3 - <<'EOF'
+          import json, os
+
+          metrics, findings = {}, {}
+          try:
+              errs = json.load(open("actionlint-errors.json")) or []
+              metrics["actionlint"] = len(errs)
+              rows = [f"{e.get('file', '?')}:{e.get('line', 0)}  {e.get('message', '')}" for e in errs]
+              if rows:
+                  findings["actionlint"] = rows[:50]
+          except Exception as exc:
+              # The action did not run or wrote nothing parseable: no count, one
+              # degraded row — a missing number must not read as zero findings.
+              findings["radar_degraded"] = [f"actionlint: no result file ({exc})"]
+          metrics["findings"] = findings
+          os.makedirs("ci-metrics", exist_ok=True)
+          json.dump(metrics, open("ci-metrics/actionlint.json", "w"))
+          EOF
+
+      - name: Upload metrics
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7
+        if: ${{ always() && !env.ACT }}
+        with:
+          name: ci-metrics-actionlint
+          path: ci-metrics/
+          retention-days: 7
 
   # ------------------------------------------------------------------ #
   #  Security: Trivy filesystem scan (vulns, secrets, misconfig)        #
@@ -299,6 +466,49 @@ jobs:
                   print(f"\n_…{len(results)-50} more in the trivy-report artifact._", file=out)
           EOF
 
+      # ci-metrics contract for the CI report: the same SARIF, as rows the PR
+      # comment can link into the tree.
+      - name: Metrics for the CI report
+        if: ${{ always() }}
+        run: |
+          python3 - <<'EOF'
+          import json, os
+
+          metrics, findings = {}, {}
+          try:
+              sarif = json.load(open("trivy-results.sarif"))
+              results = [r for run in sarif.get("runs", []) for r in run.get("results", [])]
+              metrics["trivy"] = len(results)
+              rows = []
+              for r in results:
+                  loc, line = "", 0
+                  try:
+                      phys = r["locations"][0]["physicalLocation"]
+                      loc = phys["artifactLocation"]["uri"]
+                      line = (phys.get("region") or {}).get("startLine", 0)
+                  except Exception:
+                      pass
+                  where = f"{loc}:{line}" if loc and line else (loc or "—")
+                  msg = " ".join(((r.get("message") or {}).get("text") or "").split())
+                  rows.append(f"{where}  [{r.get('ruleId', '?')}] {msg[:280]}")
+              if rows:
+                  findings["trivy"] = rows[:50]
+          except Exception as exc:
+              # A scan that could not be parsed is not a clean scan.
+              findings["radar_degraded"] = [f"trivy: could not parse the SARIF ({exc})"]
+          metrics["findings"] = findings
+          os.makedirs("ci-metrics", exist_ok=True)
+          json.dump(metrics, open("ci-metrics/security.json", "w"))
+          EOF
+
+      - name: Upload metrics
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7
+        if: ${{ always() && !env.ACT }}
+        with:
+          name: ci-metrics-security
+          path: ci-metrics/
+          retention-days: 7
+
       - name: Upload Trivy report (artifact)
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7
         if: ${{ always() && !env.ACT }}
@@ -333,6 +543,7 @@ jobs:
         if: ${{ !env.ACT }}
 
       - name: Build image
+        id: build
         if: ${{ !env.ACT }}
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a   # v7
         with:
@@ -346,6 +557,7 @@ jobs:
       # No .env in CI, so the relay must fail on missing config, not on a
       # broken image. --help exercises the entrypoint without credentials.
       - name: Smoke test the image
+        id: smoke
         if: ${{ !env.ACT }}
         run: |
           docker run --rm lexx-relay:ci python relay.py --help
@@ -360,6 +572,34 @@ jobs:
           format: table
           severity: CRITICAL,HIGH
           exit-code: "0"   # base-image CVEs are informational, not a merge blocker
+
+      # ci-metrics contract for the CI report: the image is the artifact that
+      # actually runs on the host, so its verdict gets a line of its own.
+      - name: Metrics for the CI report
+        if: ${{ always() && !env.ACT }}
+        env:
+          BUILD: ${{ steps.build.outcome }}
+          SMOKE: ${{ steps.smoke.outcome }}
+        run: |
+          python3 - <<'EOF'
+          import json, os
+
+          build, smoke = os.environ.get("BUILD", ""), os.environ.get("SMOKE", "")
+          green = build == "success" and smoke == "success"
+          note = "builds and starts" if green else f"build {build or 'skipped'} · smoke {smoke or 'skipped'}"
+          metrics = {"docker": "green" if green else "red", "docker_note": note, "findings": {}}
+          os.makedirs("ci-metrics", exist_ok=True)
+          json.dump(metrics, open("ci-metrics/docker.json", "w"))
+          EOF
+
+      - name: Upload metrics
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7
+        if: ${{ always() && !env.ACT }}
+        with:
+          name: ci-metrics-docker
+          path: ci-metrics/
+          retention-days: 7
+
   secrets:
     runs-on: ubuntu-latest
     permissions:
@@ -372,10 +612,66 @@ jobs:
           persist-credentials: false
 
       - name: gitleaks
+        id: gitleaks
         if: ${{ !env.ACT }}
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e   # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ci-metrics contract for the CI report. The action's report file is the
+      # only place the leaks are named; without it a red step can still say how
+      # many, but never which — that is a degraded radar, not a clean one.
+      - name: Metrics for the CI report
+        if: ${{ always() && !env.ACT }}
+        env:
+          OUTCOME: ${{ steps.gitleaks.outcome }}
+        run: |
+          python3 - <<'EOF'
+          import glob, json, os
+
+          metrics, findings = {}, {}
+          report = next(iter(glob.glob("results.sarif") + glob.glob("gitleaks-report.json")), "")
+          rows = []
+          try:
+              if not report:
+                  raise FileNotFoundError("no gitleaks report in the workspace")
+              data = json.load(open(report))
+              if report.endswith(".sarif"):
+                  results = [r for run in data.get("runs", []) for r in run.get("results", [])]
+                  for r in results:
+                      loc, line = "", 0
+                      try:
+                          phys = r["locations"][0]["physicalLocation"]
+                          loc = phys["artifactLocation"]["uri"]
+                          line = (phys.get("region") or {}).get("startLine", 0)
+                      except Exception:
+                          pass
+                      msg = " ".join(((r.get("message") or {}).get("text") or "").split())
+                      rows.append(f"{loc}:{line}  [{r.get('ruleId', '?')}] {msg[:280]}")
+              else:
+                  for r in data:
+                      rows.append(f"{r.get('File', '?')}:{r.get('StartLine', 0)}  "
+                                  f"[{r.get('RuleID', '?')}] {r.get('Description', '')[:280]}")
+              metrics["secrets"] = len(rows)
+              if rows:
+                  findings["secrets"] = rows[:50]
+          except Exception as exc:
+              outcome = os.environ.get("OUTCOME", "")
+              why = "the scan failed" if outcome == "failure" else str(exc)
+              findings["radar_degraded"] = [f"gitleaks: no machine-readable report ({why})"]
+          metrics["findings"] = findings
+          os.makedirs("ci-metrics", exist_ok=True)
+          json.dump(metrics, open("ci-metrics/secrets.json", "w"))
+          EOF
+
+      - name: Upload metrics
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7
+        if: ${{ always() && !env.ACT }}
+        with:
+          name: ci-metrics-secrets
+          path: ci-metrics/
+          retention-days: 7
+
   supply-chain:
     runs-on: ubuntu-latest
     permissions:
@@ -403,6 +699,7 @@ jobs:
           rc=$?
           set -e
           echo "$out"
+          printf '%s\n' "$out" > zizmor.log
           {
             echo "## $([ $rc -eq 0 ] && echo '✅' || echo '❌') zizmor"
             echo ""
@@ -422,6 +719,7 @@ jobs:
           rc=$?
           set -e
           echo "$out"
+          printf '%s\n' "$out" > pip-audit.log
           if [ "$rc" -ne 0 ]; then
             echo "::warning::pip-audit findings in the CI toolchain (non-blocking)"
             {
@@ -434,6 +732,81 @@ jobs:
           else
             echo "## ✅ pip-audit: no known CVEs" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      # ci-metrics contract for the CI report.
+      - name: Metrics for the CI report
+        if: ${{ !cancelled() }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, re
+
+          metrics, findings, degraded = {}, {}, []
+
+          # zizmor --format plain: "error[rule]: message" followed by
+          # "  --> path:line:col". The location line is what makes the row
+          # clickable in the PR comment.
+          RULE = re.compile(r"^(?:error|warning)\[(?P<rule>[^\]]+)\]:\s*(?P<msg>.*)$")
+          ARROW = re.compile(r"^\s*-->\s*(?P<loc>\S+)")
+          try:
+              lines = open("zizmor.log", encoding="utf-8", errors="replace").read().split("\n")
+              rows, pending = [], None
+              for line in lines:
+                  m = RULE.match(line)
+                  if m:
+                      if pending:
+                          rows.append(f"—  [{pending['rule']}] {pending['msg'][:280]}")
+                      pending = {"rule": m["rule"], "msg": m["msg"]}
+                      continue
+                  a = ARROW.match(line)
+                  if a and pending:
+                      rows.append(f"{a['loc']}  [{pending['rule']}] {pending['msg'][:280]}")
+                      pending = None
+              if pending:
+                  rows.append(f"—  [{pending['rule']}] {pending['msg'][:280]}")
+              metrics["zizmor"] = len(rows)
+              if rows:
+                  findings["zizmor"] = rows[:50]
+          except OSError as exc:
+              degraded.append(f"zizmor: no output captured ({exc})")
+
+          # pip-audit's table: a header, a dashed rule, then one row per
+          # advisory. Anything before the rule is chatter.
+          try:
+              lines = open("pip-audit.log", encoding="utf-8", errors="replace").read().split("\n")
+              rows, started = [], False
+              for line in lines:
+                  if set(line.strip()) == {"-"} and line.strip():
+                      started = True
+                      continue
+                  if not started or not line.strip():
+                      continue
+                  cols = line.split()
+                  if len(cols) < 3:
+                      continue
+                  name, version, vuln = cols[0], cols[1], cols[2]
+                  fix = " ".join(cols[3:]) or "no fix listed"
+                  rows.append(f"—  {name} {version}: {vuln} (fix: {fix})")
+              metrics["pip_audit"] = len(rows)
+              if rows:
+                  findings["pip_audit"] = rows[:50]
+          except OSError as exc:
+              degraded.append(f"pip-audit: no output captured ({exc})")
+
+          if degraded:
+              findings["radar_degraded"] = degraded
+          metrics["findings"] = findings
+          os.makedirs("ci-metrics", exist_ok=True)
+          json.dump(metrics, open("ci-metrics/supply-chain.json", "w"))
+          EOF
+
+      - name: Upload metrics
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a   # v7
+        if: ${{ !cancelled() && !env.ACT }}
+        with:
+          name: ci-metrics-supply-chain
+          path: ci-metrics/
+          retention-days: 7
+
   sonar:
     # Opt-in: SonarQube Cloud refuses a CI analysis while Automatic Analysis is
     # enabled on the project, so switch that off first, then
