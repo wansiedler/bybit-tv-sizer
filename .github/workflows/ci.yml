@@ -906,6 +906,14 @@ jobs:
 
       - name: Install radar toolchain
         run: |
+          # The project's own dependencies go in too, not just the tools.
+          # Without them pyright resolves no third-party import and deptry
+          # cannot map a distribution to the module it provides (Pillow ->
+          # PIL), so both spend their findings restating that the venv is
+          # empty. pyaes (a telethon dep) publishes no wheel; its sdist stays
+          # hash-pinned, same as the other lanes.
+          pip install --require-hashes --only-binary :all: --no-binary pyaes -r requirements.lock
+          pip install --require-hashes --only-binary :all: -r .github/requirements-ci.lock
           pip install --require-hashes --only-binary :all: -r .github/requirements-radar.lock
 
       # One step, four tools: a crash in any of them costs its own cell, not
@@ -914,7 +922,13 @@ jobs:
         if: ${{ !env.ACT }}
         run: |
           python3 - <<'EOF'
-          import json, os, subprocess
+          import glob, json, os, subprocess
+
+          # The modules that ship, in the order the tools want them. The suite
+          # is excluded from pyright and vulture on purpose (see each below);
+          # deptry and semgrep still read the whole tree.
+          SRC = sorted(f for f in glob.glob("*.py")
+                       if not f.startswith("test_") and f != "conftest.py")
 
           metrics, findings, degraded = {}, {}, []
 
@@ -924,9 +938,15 @@ jobs:
           def trim(s, n=280):
               return " ".join(str(s).split())[:n]
 
-          # ---- pyright: whole tree, the repo's own config if it has one ----
+          # ---- pyright: the shipped modules, not the tests ----
+          # The suite drives the code with duck-typed doubles — FakeHTTP where
+          # an httpx.AsyncClient is declared — which pyright is structurally
+          # right to reject and which nobody intends to fix: that is what the
+          # doubles are for. Judged over the tree it reported 242 of those and
+          # 15 findings about the code that ships, which is a radar reporting
+          # its own configuration. Scoped to the modules instead.
           try:
-              r = run(["pyright", "--outputjson", "."])
+              r = run(["pyright", "--outputjson", *SRC])
               data = json.loads(r.stdout or "{}")
               rows = []
               for d in data.get("generalDiagnostics", []):
@@ -942,9 +962,13 @@ jobs:
           except Exception as exc:
               degraded.append(f"pyright: did not run ({trim(exc, 160)})")
 
-          # ---- vulture: dead code ----
+          # ---- vulture: dead code, again the modules only ----
+          # A pytest fixture is requested by naming it in the signature and is
+          # then never referenced in the body, so vulture calls every fixture
+          # parameter an unused variable: 297 findings over the tree, 0 over
+          # the modules. All 297 said "this is a pytest suite".
           try:
-              r = run(["vulture", ".", "--min-confidence", "80"])
+              r = run(["vulture", *SRC, "--min-confidence", "80"])
               rows = [trim(x) for x in r.stdout.split("\n") if x.strip()]
               metrics["vulture"] = len(rows)
               if rows:
@@ -954,7 +978,17 @@ jobs:
 
           # ---- deptry: imports vs declared dependencies ----
           try:
-              run(["deptry", ".", "--json-output", "deptry.json"])
+              # The dev manifests have to be named or every `import pytest`
+              # reads as an undeclared dependency; DEP004 then says the suite
+              # imports a dev dependency, which is what a suite is for. The
+              # tests stay in scope so a genuinely undeclared import in them
+              # still surfaces.
+              run(["deptry", ".",
+                   "--requirements-files", "requirements.txt",
+                   "--requirements-files-dev",
+                   ".github/requirements-ci.txt,.github/requirements-radar.txt",
+                   "--per-rule-ignores", "DEP004=pytest",
+                   "--json-output", "deptry.json"])
               data = json.load(open("deptry.json"))
               rows = [f"{d.get('location', {}).get('file', '?')}:"
                       f"{d.get('location', {}).get('line', 0)}  "
