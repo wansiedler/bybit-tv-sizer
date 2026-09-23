@@ -52,6 +52,86 @@ jobs:
         run: |
           pip install --require-hashes --only-binary :all: -r .github/requirements-ci.lock
 
+      # A manifest that names a version the lock does not carry is a manifest
+      # nothing reads: every job and the image install from the .lock.
+      # Dependabot edits the .txt and never the .lock, so without this the two
+      # drift apart silently — ruff was declared 0.16.7 while 0.16.4 ran for
+      # weeks, and telethon was declared >=1.45.0 while the image shipped
+      # 1.44.0. Blocking: a lie in a manifest is not a style nit.
+      - name: Manifests match their locks (blocking)
+        run: |
+          python3 - <<'EOF'
+          import re
+          import sys
+
+          from packaging.requirements import Requirement
+          from packaging.utils import canonicalize_name
+          from packaging.version import InvalidVersion, Version
+
+          PAIRS = [
+              ("requirements.txt", "requirements.lock"),
+              (".github/requirements-ci.txt", ".github/requirements-ci.lock"),
+              (".github/requirements-radar.txt", ".github/requirements-radar.lock"),
+          ]
+          LOCKED = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)==(?P<ver>[^\s\\;]+)")
+
+          def read(path):
+              try:
+                  return open(path, encoding="utf-8").read().split("\n")
+              except OSError:
+                  return None
+
+          bad, checked = [], 0
+          for txt_path, lock_path in PAIRS:
+              txt, lock = read(txt_path), read(lock_path)
+              if txt is None or lock is None:
+                  continue
+              locked = {}
+              for line in lock:
+                  m = LOCKED.match(line.strip())
+                  if m:
+                      locked[canonicalize_name(m["name"])] = m["ver"]
+              for line in txt:
+                  line = line.strip()
+                  if not line or line.startswith(("#", "-")):
+                      continue
+                  try:
+                      req = Requirement(line)
+                  except Exception:
+                      continue
+                  checked += 1
+                  have = locked.get(canonicalize_name(req.name))
+                  if have is None:
+                      bad.append(f"`{txt_path}`: **{req.name}** is declared but absent from `{lock_path}`")
+                      continue
+                  if not req.specifier:
+                      continue
+                  # Satisfaction, not presence: Dependabot moves the floor in
+                  # the .txt, and "the package is in the lock" is exactly the
+                  # answer that misses that.
+                  try:
+                      ok = Version(have) in req.specifier
+                  except InvalidVersion:
+                      continue
+                  if not ok:
+                      bad.append(f"`{txt_path}`: **{req.name}{req.specifier}** but `{lock_path}` pins **{have}**")
+
+          import os
+          out = open(os.environ["GITHUB_STEP_SUMMARY"], "a")
+          if bad:
+              print("## \u274c Manifest and lock disagree", file=out)
+              print("", file=out)
+              for b in bad:
+                  print(f"- {b}", file=out)
+              print("", file=out)
+              print("The install reads the lock, so the manifest is the one being ignored.", file=out)
+              print("Regenerate: `uv pip compile <txt> --generate-hashes --python-version 3.12 -o <lock>`", file=out)
+              for b in bad:
+                  print(f"::error::{b}")
+              sys.exit(1)
+          print(f"## \u2705 Every manifest pin is satisfied by its lock ({checked} requirements)", file=out)
+          EOF
+
       - name: Cache pre-commit environments
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9   # v6
         with:
