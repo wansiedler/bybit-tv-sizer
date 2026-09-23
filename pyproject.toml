@@ -1,4 +1,4 @@
-# Ruff config lives in ruff.toml; this file carries mypy and pytest.
+# Ruff config lives in ruff.toml; this file carries mypy, pyright and pytest.
 
 [tool.mypy]
 python_version = "3.12"
@@ -14,6 +14,28 @@ warn_unreachable = true
 strict_equality = true
 disallow_untyped_defs = false
 disallow_incomplete_defs = false
+
+# pyright runs on the informational radar only — it never reds a PR. It is
+# here because mypy cannot see telethon or pychromecast at all: with
+# ignore_missing_imports above, everything those libraries touch is Any and
+# goes unchecked. pyright does read what type information they ship, which is
+# the one area mypy has no opinion about.
+#
+# The cost is that telethon's own types are imprecise, and the two rules
+# below carried nothing but that imprecision — 11 of pyright's 15 findings on
+# the shipped modules:
+#
+#   reportGeneralTypeIssues     `await client.start()` — start() returns the
+#                               client, telethon's sync/async dual API
+#   reportAttributeAccessIssue  `me.username` — get_me() is typed
+#                               User | InputPeerUser, and the latter has none
+#
+# Neither is a defect in this repo, and neither is going to be fixed here, so
+# reporting them every run trains the reader to ignore the radar. Off. What
+# survives is the code's own imprecision, which is the part worth seeing.
+[tool.pyright]
+reportGeneralTypeIssues = "none"
+reportAttributeAccessIssue = "none"
 
 [tool.pytest.ini_options]
 testpaths = ["."]
