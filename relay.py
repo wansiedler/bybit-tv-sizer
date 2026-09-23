@@ -291,6 +291,11 @@ async def check() -> None:
     async with httpx.AsyncClient() as http:
         bot = (await http.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=15)).json()
         if not bot.get("ok"):
+            # `bot` is the getMe error body ({"ok": false, "error_code": 401,
+            # "description": "Unauthorized"}), never the token itself. The
+            # rule matches the word "token" in the message, not what is
+            # logged. The marker has to sit on the line directly above.
+            # nosemgrep: python-logger-credential-disclosure
             log.error("bot token rejected: %s", bot)
             await client.disconnect()
             sys.exit(1)
