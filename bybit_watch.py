@@ -1543,6 +1543,29 @@ async def entry_fee(http: httpx.AsyncClient, symbol: str) -> float | None:
         return None
 
 
+# The journal is a Russian-language document: its headers are Russian and it
+# is read as one. Telegram and the logs stay English (a74056e), so the sheet's
+# words live here and only here — the notice keeps the English `kind`, the row
+# that goes to the sheet gets its translation.
+_SHEET_RU = {
+    "stop": "стоп",
+    "take": "тейк",
+    "manual": "руками",
+    "risk-guard": "риск-гард",
+    "no stop": "нет стопа",
+}
+
+
+def _ru(word: str) -> str:
+    """A journal cell in the sheet's language; unknown text passes through."""
+    if word in _SHEET_RU:
+        return _SHEET_RU[word]
+    # The leverage breach carries its numbers, so only the lead word turns.
+    if word.startswith("leverage "):
+        return "плечо " + word.removeprefix("leverage ")
+    return word
+
+
 def _journal_meta(
     was: Position, record: dict, entry: float, pnl: float, forced: str
 ) -> tuple[str, str, float]:
@@ -1555,7 +1578,7 @@ def _journal_meta(
 
     opened_ms = record.get("createdTime")
     opened = datetime.fromtimestamp(int(opened_ms) / 1000).strftime("%d.%m.%y") if opened_ms else ""
-    rr = f"force-stopped: {forced}" if forced else ""
+    rr = f"принудительно остановлено: {_ru(forced)}" if forced else ""
     if was.stop_loss and was.take_profit:
         rr = f"1:{abs(was.take_profit - entry) / abs(entry - was.stop_loss):.1f}"
     risk = abs(entry - was.stop_loss) * was.size if was.stop_loss else 0.0
@@ -1588,7 +1611,7 @@ def journal_row(
     return [
         opened,
         base_symbol(symbol),
-        "Long" if was.side == "long" else "Short",
+        "Лонг" if was.side == "long" else "Шорт",
         "win" if pnl >= 0 else "stop",
         rr,
         fact,
@@ -1601,7 +1624,7 @@ def journal_row(
         f"{_sig2(opened_fee)}+{_sig2(closed_fee)}" if opened_fee or closed_fee else "",
         round(depo, 2) if depo else "",
         "",  # O: Withdrew/Deposited — the money watcher's column
-        kind,
+        _ru(kind),
     ]
 
 
@@ -2021,10 +2044,14 @@ async def money_tick(http: httpx.AsyncClient, seen: set[str] | None, send) -> se
         if depo:
             line += f" · depo {depo:,.2f}$"
         await send(line)
+        # "transfer" said nothing a reader could not already see; the
+        # direction is what the eye wants, and the sign of column O is a poor
+        # place to learn it from. The coin follows, for the day the account
+        # holds more than one.
         row = [
             datetime.now().strftime("%d.%m.%y"),
-            "transfer",
-            "",
+            "ввод" if amount > 0 else "вывод",
+            m["coin"],
             "",
             "",
             "",
@@ -2037,6 +2064,7 @@ async def money_tick(http: httpx.AsyncClient, seen: set[str] | None, send) -> se
             "",
             round(depo, 2) if depo else "",
             round(amount, 2),
+            "",  # P: Закрытие — a transfer has no closing kind
         ]
         await sheets.log_close(http, {"row": row})
     return seen | ids
