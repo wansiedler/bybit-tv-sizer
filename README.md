@@ -469,10 +469,23 @@ the close notice turns the equity figure into a link straight at that row —
 the link and nothing else; the notice still goes out.
 
 Rows are reset to the default format as they are appended. `appendRow`
-inherits the format of the row above, and the WEEK TOTAL banner is
+inherits the format of the row above, and the ИТОГ НЕДЕЛИ banner is
 white-on-green: without the reset, every trade booked after a weekly summary
 came out white on white — the values present, invisible, with only column P
 readable because the banner never painted that far.
+
+The sheet is written in Russian. Its headers are Russian and it is read as
+one document, so the cells match: `Лонг` / `Шорт`, `стоп` / `тейк` / `руками`
+/ `риск-гард`, `ввод` / `вывод`, and the `ИТОГО` / `ИТОГ НЕДЕЛИ` banners the
+Apps Script writes. This is the one place the repo is not English — Telegram
+notices, logs and code stay as they are, and the translation happens in
+`_ru()` at the edge, where a row is built for the sheet and nowhere else.
+
+The banner wording is load-bearing, not decoration: `weekSummary_` finds the
+start of the current week by scanning column A for the previous banner, and
+the `ИТОГО` formulas exclude those rows with `"<>ИТОГ*"`. Rename the banner
+without renaming the scan and every weekly total silently sums the whole
+journal from row 3.
 
 The script itself lives in the spreadsheet, not in this repo; the reference
 copy is in [docs/sheets-script.js](docs/sheets-script.js). It handles four

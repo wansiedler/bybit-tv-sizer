@@ -1277,7 +1277,7 @@ def test_journal_row_matches_the_diary_format():
 
     row = bybit_watch.journal_row("CLUSDT", was, record, -1.19)
 
-    assert row[1:6] == ["CL", "Short", "stop", "1:9.5", -1.0]
+    assert row[1:6] == ["CL", "Шорт", "stop", "1:9.5", -1.0]
     assert row[0].count(".") == 2  # DD.MM.YY
     assert row[6] == ""  # the screenshot chip is the script's to fill
     assert row[7:] == [131.0, 92.04, "", -1.19, "", "", "", "", ""]
@@ -1317,7 +1317,37 @@ def test_journal_row_marks_a_guard_close():
 
     row = bybit_watch.journal_row("SAMSUNGUSDT", was, {}, -0.04, forced="no stop")
 
-    assert row[4] == "force-stopped: no stop"
+    assert row[4] == "принудительно остановлено: нет стопа"
+
+
+@pytest.mark.parametrize(
+    ("word", "cell"),
+    [
+        ("stop", "стоп"),
+        ("take", "тейк"),
+        ("manual", "руками"),
+        ("risk-guard", "риск-гард"),
+        ("no stop", "нет стопа"),
+        # The leverage breach carries its own numbers: only the lead word turns.
+        ("leverage 3x > 1x", "плечо 3x > 1x"),
+        # Anything the table does not know reaches the sheet unchanged rather
+        # than becoming an empty cell.
+        ("something new", "something new"),
+    ],
+)
+def test_sheet_cells_speak_the_journal_s_language(word, cell):
+    assert bybit_watch._ru(word) == cell
+
+
+def test_journal_row_names_a_long_in_russian():
+    row = bybit_watch.journal_row(
+        "CLUSDT",
+        bybit_watch.Position("long", 1.0, 92.0, 92.0, stop_loss=91.0, take_profit=101.5),
+        {"avgEntryPrice": "92.0", "createdTime": "1700000000000", "avgExitPrice": "101.5"},
+        1.0,
+    )
+
+    assert row[2] == "Лонг"
 
 
 def test_journal_row_extras_carry_the_full_arithmetic():
@@ -1331,7 +1361,7 @@ def test_journal_row_extras_carry_the_full_arithmetic():
 
     row = bybit_watch.journal_row("CLUSDT", was, record, -1.19, 128.16, kind="manual")
 
-    assert row[7:] == [131.0, 92.04, 91.9, -1.19, -0.93, "0.020+0.055", 128.16, "", "manual"]
+    assert row[7:] == [131.0, 92.04, 91.9, -1.19, -0.93, "0.020+0.055", 128.16, "", "руками"]
 
 
 def test_journal_row_without_a_stop_falls_back_to_usdt():
@@ -1774,8 +1804,37 @@ def test_money_tick_announces_and_journals_new_moves(keyed, monkeypatch):
     assert out.sent == ["💵 deposited +20.00 USDT · depo 128.00$"]
     assert seen == {"dep-t1", "wd-w1", "tr-a", "tr-b"}
     row = journaled[0]["row"]
-    assert row[1] == "transfer"
-    assert row[13:] == [128.0, 20.0]
+    assert row[1] == "ввод"
+    assert row[2] == "USDT"
+    assert len(row) == 16
+    assert row[13:] == [128.0, 20.0, ""]  # N депо, O сумма, P пусто
+
+
+def test_money_tick_labels_a_withdrawal_as_such(keyed, monkeypatch):
+    """The direction is a word in column B, not the sign of column O."""
+    out = Recorder()
+    journaled = []
+
+    async def fake_log_close(http, entry):
+        journaled.append(entry)
+        return {"ok": True}
+
+    monkeypatch.setattr(bybit_watch.sheets, "log_close", fake_log_close)
+    http = FakeHTTP()
+    http.deposit_rows = []
+    http.transfer_rows = []
+    http.withdraw_rows = [
+        {"withdrawId": "w9", "amount": "125.52", "coin": "USDT", "status": "success"}
+    ]
+    http.equity_rows = [{"totalEquity": "1.29", "totalAvailableBalance": "1.29"}]
+
+    asyncio.run(bybit_watch.money_tick(http, set(), out.send))
+
+    row = journaled[0]["row"]
+    assert row[1] == "вывод"
+    assert row[2] == "USDT"
+    assert row[14] == -125.52
+    assert out.sent == ["💵 withdrew -125.52 USDT · depo 1.29$"]
 
 
 def test_money_tick_without_equity_skips_the_depo(keyed, monkeypatch):

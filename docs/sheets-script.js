@@ -19,13 +19,13 @@ function doPost(e) {
     return ContentService.createTextOutput("ok");
   }
   if (d.totals) {
-    if (String(sheet.getRange(2, 1).getValue()) !== "TOTAL") sheet.insertRowBefore(2);
-    sheet.getRange(2, 1).setValue("TOTAL");
+    if (String(sheet.getRange(2, 1).getValue()) !== "ИТОГО") sheet.insertRowBefore(2);
+    sheet.getRange(2, 1).setValue("ИТОГО");
     sheet.getRange(2, 4).setFormula(
-      '=COUNTIFS(D3:D,"win",A3:A,"<>*TOTAL*")&" / "&COUNTIFS(D3:D,"stop",A3:A,"<>*TOTAL*")');
-    sheet.getRange(2, 6).setFormula('=SUMIF(A3:A,"<>*TOTAL*",F3:F)');
-    sheet.getRange(2, 11).setFormula('=SUMIF(A3:A,"<>*TOTAL*",K3:K)');
-    sheet.getRange(2, 12).setFormula('=SUMIF(A3:A,"<>*TOTAL*",L3:L)');
+      '=COUNTIFS(D3:D,"win",A3:A,"<>ИТОГ*")&" / "&COUNTIFS(D3:D,"stop",A3:A,"<>ИТОГ*")');
+    sheet.getRange(2, 6).setFormula('=SUMIF(A3:A,"<>ИТОГ*",F3:F)');
+    sheet.getRange(2, 11).setFormula('=SUMIF(A3:A,"<>ИТОГ*",K3:K)');
+    sheet.getRange(2, 12).setFormula('=SUMIF(A3:A,"<>ИТОГ*",L3:L)');
     sheet.getRange(2, 1, 1, COLS).setFontWeight("bold")
       .setBackground("#434343").setFontColor("#ffffff");
     sheet.setFrozenRows(2);
@@ -83,7 +83,7 @@ function weekSummary_(sheet) {
   const a = sheet.getRange(3, 1, last - 2, 1).getValues();
   let start = 3;
   for (let i = 0; i < a.length; i++) {
-    if (String(a[i][0]).startsWith("WEEK TOTAL")) start = i + 4;
+    if (String(a[i][0]).startsWith("ИТОГ НЕДЕЛИ")) start = i + 4;
   }
   if (start > last) return;
   const rows = sheet.getRange(start, 1, last - start + 1, 6).getValues();
@@ -94,7 +94,7 @@ function weekSummary_(sheet) {
     sumR += Number(r[5]) || 0;
   });
   const row = last + 1;
-  sheet.appendRow(["WEEK TOTAL", "", "", sumR >= 0 ? "WIN" : "LOSS",
+  sheet.appendRow(["ИТОГ НЕДЕЛИ", "", "", sumR >= 0 ? "WIN" : "LOSS",
                    "win " + wins + " / stop " + losses,
                    Math.round(sumR * 100) / 100]);
   sheet.getRange(row, 1, 1, COLS).setBackground("#38761d").setFontColor("#ffffff");
