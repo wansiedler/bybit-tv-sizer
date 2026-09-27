@@ -286,6 +286,7 @@ class Recorder:
         self.sent: list[str] = []
         self.spoken: list[str] = []
         self.photos: list[str] = []
+        self.photo_bytes: list[bytes] = []
         self.keyboards: list[dict | None] = []
         self.photo_ok = True
 
@@ -300,6 +301,7 @@ class Recorder:
     async def send_photo(self, caption, png, buttons=None):
         assert png.startswith(b"\x89PNG")
         self.photos.append(caption)
+        self.photo_bytes.append(png)
         self.keyboards.append(buttons)
         return self.photo_ok
 
@@ -1229,6 +1231,46 @@ def test_tick_sends_a_close_chart_with_the_pnl_caption(keyed):
     assert out.spoken == ["Fartcoin long closed, profit 512"]
 
 
+def test_close_draws_every_timeframe_and_pastes_them_into_one(keyed, monkeypatch):
+    """The journal has one screenshot column, so the pair arrives as one image."""
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[]]
+    http.pnl_rows = [closed()]
+    http.kline_rows = KLINES
+    asked: list[str] = []
+
+    async def _one(_http, _symbol, _was, _record, exit_note="", interval=""):
+        asked.append(interval)
+        return b"\x89PNG" + interval.encode()
+
+    monkeypatch.setattr(bybit_watch, "CLOSE_INTERVALS", ["15", "240"])
+    monkeypatch.setattr(bybit_watch, "close_chart", _one)
+    monkeypatch.setattr(bybit_watch.chart, "side_by_side", lambda pngs: b"|".join(pngs))
+
+    asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
+
+    assert asked == ["15", "240"]
+    assert out.photo_bytes == [b"\x89PNG15|\x89PNG240"]
+
+
+def test_close_sends_the_single_chart_when_only_one_timeframe_draws(keyed, monkeypatch):
+    """A timeframe that fails to render is dropped, not allowed to blank the rest."""
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[]]
+    http.pnl_rows = [closed()]
+    http.kline_rows = KLINES
+
+    async def _one(_http, _symbol, _was, _record, exit_note="", interval=""):
+        return b"\x89PNG15" if interval == "15" else None
+
+    monkeypatch.setattr(bybit_watch, "CLOSE_INTERVALS", ["15", "240"])
+    monkeypatch.setattr(bybit_watch, "close_chart", _one)
+
+    asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
+
+    assert out.photo_bytes == [b"\x89PNG15"]
+
+
 def test_journal_row_matches_the_diary_format():
     was = Position("short", 1.42, 92.0, 131.0, take_profit=84.1, stop_loss=92.88)
     record = {"avgEntryPrice": "92.04", "createdTime": "1788719433000", "closedPnl": "x"}
@@ -1439,6 +1481,55 @@ def test_tick_close_reports_the_pnl_as_a_share_of_equity(keyed):
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
     assert out.sent == ["💸<b>+512.30</b>=<b>10,000.00$</b>(+5.12%)·📈FARTCOIN·manual (fees 0.15)"]
+
+
+def test_tick_close_links_the_figure_at_the_journal_row(keyed, monkeypatch):
+    """The equity figure carries the deep link to the row just appended."""
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[]]
+    http.pnl_rows = [closed() | {"orderId": "o1"}]
+    http.equity_rows = [{"totalEquity": "10000"}]
+    http.history_rows = [{"createType": "CreateByUser", "stopOrderType": ""}]
+
+    async def _journaled(_http, _entry):
+        return {"ok": True, "row": 42, "gid": 7}
+
+    monkeypatch.setattr(bybit_watch.sheets, "log_close", _journaled)
+    monkeypatch.setattr(bybit_watch.sheets, "JOURNAL_URL", "https://docs.google.com/d/x/edit")
+
+    asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
+
+    assert out.sent == [
+        '💸<b>+512.30</b>=<a href="https://docs.google.com/d/x/edit#gid=7&range=A42">'
+        "<b>10,000.00$</b>(+5.12%)</a>·📈FARTCOIN·manual (fees 0.15)"
+    ]
+
+
+def test_tick_close_stays_unlinked_when_the_journal_refuses(keyed, monkeypatch):
+    """A dead sheet costs the link, never the notice."""
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[]]
+    http.pnl_rows = [closed() | {"orderId": "o1"}]
+    http.equity_rows = [{"totalEquity": "10000"}]
+    http.history_rows = [{"createType": "CreateByUser", "stopOrderType": ""}]
+
+    async def _refused(_http, _entry):
+        return None
+
+    monkeypatch.setattr(bybit_watch.sheets, "log_close", _refused)
+    monkeypatch.setattr(bybit_watch.sheets, "JOURNAL_URL", "https://docs.google.com/d/x/edit")
+
+    asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
+
+    assert out.sent == ["💸<b>+512.30</b>=<b>10,000.00$</b>(+5.12%)·📈FARTCOIN·manual (fees 0.15)"]
+
+
+@pytest.mark.parametrize(
+    ("interval", "label"),
+    [("15", "15m"), ("60", "1h"), ("240", "4h"), ("90", "90m")],
+)
+def test_timeframe_label_reads_in_hours_past_the_hour(interval, label):
+    assert bybit_watch._timeframe_label(interval) == label
 
 
 @pytest.mark.parametrize(

@@ -463,6 +463,17 @@ Redeploys of the script must go through Deploy → **Manage deployments** →
 edit → **New version** — a fresh "New deployment" changes the `/exec` URL and
 breaks `SHEETS_URL`.
 
+The script answers an appended trade with its row number and sheet id, and
+the close notice turns the equity figure into a link straight at that row —
+`JOURNAL_URL` is what it is built from. A sheet that refuses the write costs
+the link and nothing else; the notice still goes out.
+
+Rows are reset to the default format as they are appended. `appendRow`
+inherits the format of the row above, and the WEEK TOTAL banner is
+white-on-green: without the reset, every trade booked after a weekly summary
+came out white on white — the values present, invisible, with only column P
+readable because the banner never painted that far.
+
 The script itself lives in the spreadsheet, not in this repo; the reference
 copy is in [docs/sheets-script.js](docs/sheets-script.js). It handles four
 payloads: `{row: [...]}` appends a trade (with an optional base64 `png`
