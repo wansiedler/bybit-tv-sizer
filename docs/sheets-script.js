@@ -4,6 +4,11 @@
 
 const SECRET = "put-your-own-long-random-string-here"; // pragma: allowlist secret
 
+// Columns a trade row occupies, A..P. The banner rows below paint this same
+// width: painting fewer left column P out of the TOTAL and WEEK bands, which
+// is why it stayed readable while the rest of a row went white.
+const COLS = 16;
+
 function doPost(e) {
   const d = JSON.parse(e.postData.contents);
   if (d.secret !== SECRET) return ContentService.createTextOutput("no");
@@ -21,7 +26,7 @@ function doPost(e) {
     sheet.getRange(2, 6).setFormula('=SUMIF(A3:A,"<>*TOTAL*",F3:F)');
     sheet.getRange(2, 11).setFormula('=SUMIF(A3:A,"<>*TOTAL*",K3:K)');
     sheet.getRange(2, 12).setFormula('=SUMIF(A3:A,"<>*TOTAL*",L3:L)');
-    sheet.getRange(2, 1, 1, 15).setFontWeight("bold")
+    sheet.getRange(2, 1, 1, COLS).setFontWeight("bold")
       .setBackground("#434343").setFontColor("#ffffff");
     sheet.setFrozenRows(2);
     return ContentService.createTextOutput("ok");
@@ -31,19 +36,28 @@ function doPost(e) {
     return ContentService.createTextOutput("ok");
   }
   sheet.appendRow(d.row);
+  const r = sheet.getLastRow();
+  // appendRow inherits the format of the row above it. The WEEK TOTAL banner
+  // paints white-on-green, so every trade appended after one came out white
+  // on white: the values were there, invisible, and only column P — outside
+  // the band that was painted — stayed readable. Reset what we just wrote.
+  sheet.getRange(r, 1, 1, COLS)
+    .setBackground(null).setFontColor(null).setFontWeight("normal");
   if (d.png) {
     const blob = Utilities.newBlob(Utilities.base64Decode(d.png), "image/png",
                                    (d.name || "trade") + ".png");
     const file = folder_().createFile(blob);
     file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-    const r = sheet.getLastRow();
     try {
       chip_(sheet, r, 7, file.getUrl());
     } catch (err) {
       sheet.getRange(r, 7).setValue(file.getUrl());
     }
   }
-  return ContentService.createTextOutput("ok");
+  // The row number and the sheet id go back so the close notice can link the
+  // figure it just announced straight at the row it landed in.
+  return ContentService.createTextOutput(
+    JSON.stringify({ ok: true, row: r, gid: sheet.getSheetId() }));
 }
 
 function chip_(sheet, row, col, url) {
@@ -83,7 +97,7 @@ function weekSummary_(sheet) {
   sheet.appendRow(["WEEK TOTAL", "", "", sumR >= 0 ? "WIN" : "LOSS",
                    "win " + wins + " / stop " + losses,
                    Math.round(sumR * 100) / 100]);
-  sheet.getRange(row, 1, 1, 15).setBackground("#38761d").setFontColor("#ffffff");
+  sheet.getRange(row, 1, 1, COLS).setBackground("#38761d").setFontColor("#ffffff");
 }
 
 function authTest() { folder_(); }

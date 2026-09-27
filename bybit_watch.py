@@ -87,6 +87,13 @@ CHART_INTERVAL = os.getenv("CHART_INTERVAL", "15")
 # How many bars of context a chart shows. Bybit caps one request at 1000
 # bars, so anything above that is fetched in pages.
 CHART_BARS = min(int(os.getenv("CHART_BARS", "1800")), 3000)
+# Timeframes a CLOSE chart is drawn on, in minutes. The working one first,
+# the slower one for context. They are pasted into a single wide picture, so
+# Telegram shows them next to each other and the journal keeps its one
+# screenshot column.
+CLOSE_INTERVALS = [
+    x.strip() for x in os.getenv("CLOSE_INTERVALS", f"{CHART_INTERVAL},240").split(",") if x.strip()
+]
 RECV_WINDOW = "5000"
 
 _POSITIONS = "/v5/position/list"
@@ -1357,20 +1364,35 @@ async def entry_chart(
         return None
 
 
+def _timeframe_label(interval: str) -> str:
+    """Bybit counts minutes; a chart reads better in hours past the hour."""
+    minutes = int(interval)
+    if minutes >= 60 and minutes % 60 == 0:
+        return f"{minutes // 60}h"
+    return f"{minutes}m"
+
+
 async def close_chart(
-    http: httpx.AsyncClient, symbol: str, was: Position, record: dict, exit_note: str = ""
+    http: httpx.AsyncClient,
+    symbol: str,
+    was: Position,
+    record: dict,
+    exit_note: str = "",
+    interval: str = "",
 ) -> bytes | None:
     """A PNG of the finished trade: entry to exit, zone colored by outcome.
 
     The closed-pnl record carries no TP/SL, so those come from the last
-    position snapshot and are drawn as lines. Every chart stays on
-    CHART_INTERVAL, whatever the trade's length; Bybit caps one kline
-    request at 1000 bars, so a trade longer than that shows its most
-    recent stretch, with the entry clamped to the left edge.
+    position snapshot and are drawn as lines. A chart stays on one timeframe
+    — CHART_INTERVAL unless `interval` names another — whatever the trade's
+    length; Bybit caps one kline request at 1000 bars, so a trade longer than
+    that shows its most recent stretch, with the entry clamped to the left
+    edge.
     """
+    interval = interval or CHART_INTERVAL
     try:
         opened, closed = int(record["createdTime"]), int(record["updatedTime"])
-        span = int(CHART_INTERVAL) * 60_000
+        span = int(interval) * 60_000
         trade_bars = (closed - opened) // span
         # Lead-in fills the frame up to CHART_BARS of context around the trade.
         lead = max(CHART_BARS - trade_bars - 3, 8)
@@ -1378,7 +1400,7 @@ async def close_chart(
         times, candles = await _klines(
             http,
             symbol,
-            CHART_INTERVAL,
+            interval,
             bars,
             start=opened - lead * span,
             end=closed + 3 * span,
@@ -1393,7 +1415,7 @@ async def close_chart(
             entry_index=_bar_of(times, opened),
             exit_at=(_bar_of(times, closed), float(record["avgExitPrice"])),
             pad_right=2,
-            timeframe=f"{CHART_INTERVAL}m",
+            timeframe=_timeframe_label(interval),
             notes=chart.Notes(exit=exit_note),
         )
     # Deliberately broad: a chart is garnish, never worth losing the notice.
@@ -1818,26 +1840,39 @@ async def _close_notice(
     funding = await accrued_funding(http, symbol, was.created_ms)
     pnl = float(record["closedPnl"]) - funding
     depo = await equity(http)
-    # Net first, ticker after: the money is the news.
-    line = f"💸<b>{_usd(pnl)}</b>"
-    if depo:
-        line += f"=<b>{depo:,.2f}$</b>{_share(pnl, depo)}"
-    line += f"·{_arrow(was.side)}{base_symbol(symbol)}"
     opened_fee = float(record.get("openFee") or 0)
     closed_fee = float(record.get("closeFee") or 0)
     spoken_line += f", {'profit' if pnl >= 0 else 'loss'} {abs(pnl):.0f}"
     total_fees = opened_fee + closed_fee
-    png = await close_chart(
-        http,
-        symbol,
-        was,
-        record,
-        exit_note=(
-            f"PnL {pnl + total_fees:+,.2f} - fee {total_fees:.2f} = {pnl:+,.2f}{_share(pnl, depo)}"
-        ),
+    exit_note = (
+        f"PnL {pnl + total_fees:+,.2f} - fee {total_fees:.2f} = {pnl:+,.2f}{_share(pnl, depo)}"
     )
+    # One picture per timeframe, then one picture out of them: the journal has
+    # a single screenshot column, and Telegram reads better with the pair side
+    # by side than as two attachments.
+    drawn = []
+    for interval in CLOSE_INTERVALS:
+        one = await close_chart(http, symbol, was, record, exit_note=exit_note, interval=interval)
+        if one is not None:
+            drawn.append(one)
+    png = chart.side_by_side(drawn) if len(drawn) > 1 else next(iter(drawn), None)
     forced = _guard_closed.pop(symbol, "")
     kind = "risk-guard" if forced else await close_kind(http, record)
+    entry: dict = {"row": journal_row(symbol, was, record, pnl, depo, forced, kind)}
+    if png is not None:
+        # The Apps Script saves it to Drive and writes the link
+        # into the "Link" column of the same row.
+        entry["png"] = base64.b64encode(png).decode()
+        entry["name"] = f"{base_symbol(symbol)}-{record.get('updatedTime', '')}"
+    # The journal goes first so the notice can point at the row it produced;
+    # a refusal only costs the link, never the notice.
+    link = sheets.row_link(await sheets.log_close(http, entry))
+    # Net first, ticker after: the money is the news.
+    line = f"💸<b>{_usd(pnl)}</b>"
+    if depo:
+        share = f"<b>{depo:,.2f}$</b>{_share(pnl, depo)}"
+        line += "=" + (f'<a href="{link}">{share}</a>' if link else share)
+    line += f"·{_arrow(was.side)}{base_symbol(symbol)}"
     if kind:
         line += f"·{kind}"
     if opened_fee or closed_fee or funding:
@@ -1845,13 +1880,6 @@ async def _close_notice(
         if funding:
             costs += f", funding {_sig2(funding)}"
         line += f" ({costs})"
-    entry: dict = {"row": journal_row(symbol, was, record, pnl, depo, forced, kind)}
-    if png is not None:
-        # The Apps Script saves it to Drive and writes the link
-        # into the "Link" column of the same row.
-        entry["png"] = base64.b64encode(png).decode()
-        entry["name"] = f"{base_symbol(symbol)}-{record.get('updatedTime', '')}"
-    await sheets.log_close(http, entry)
     return line, spoken_line, png
 
 

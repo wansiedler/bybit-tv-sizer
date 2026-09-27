@@ -55,6 +55,11 @@ BYBIT_POLL=0.5
 CHART_INTERVAL=15
 # Bars of context on a chart (max 3000; fetched in pages of 1000).
 CHART_BARS=1800
+# Timeframes a CLOSE chart is drawn on, in minutes, comma separated. Each is
+# rendered and the lot is pasted into one wide picture — Telegram shows them
+# side by side and the journal keeps its single screenshot column. Defaults
+# to CHART_INTERVAL plus 4h.
+CLOSE_INTERVALS=15,240
 # The hard risk manager: a position with no stop, or with leverage above
 # MAX_LEVERAGE, gets one warning and then a reduce-only market close.
 # 1 = on, 0 = off. Needs a Trade-capable key to actually close.
