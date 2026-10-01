@@ -89,7 +89,7 @@ class Refused(Exception):
 
 async def fetch_updates(http: httpx.AsyncClient, offset: int | None) -> list[dict]:
     """One long poll. Raises Refused when Telegram rejects the request."""
-    params: dict[str, object] = {"timeout": POLL_TIMEOUT}
+    params: dict[str, int] = {"timeout": POLL_TIMEOUT}
     if offset is not None:
         params["offset"] = offset
     response = await http.get(
