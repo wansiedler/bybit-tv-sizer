@@ -47,6 +47,7 @@ def _default_config(monkeypatch, tmp_path):
     bybit_watch._tp_cooldown.clear()
     bybit_watch._guard_seen.clear()
     bybit_watch._guard_closed.clear()
+    bybit_watch._entry_levels.clear()
     # One attempt, no waiting: the retry loop is exercised by its own tests.
     monkeypatch.setattr(bybit_watch, "PNL_RETRIES", 1)
     monkeypatch.setattr(bybit_watch, "PNL_RETRY_SEC", 0.0)
