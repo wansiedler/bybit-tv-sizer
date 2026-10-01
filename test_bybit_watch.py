@@ -1273,6 +1273,7 @@ def test_close_sends_the_single_chart_when_only_one_timeframe_draws(keyed, monke
 
 def test_journal_row_matches_the_diary_format():
     was = Position("short", 1.42, 92.0, 131.0, take_profit=84.1, stop_loss=92.88)
+    bybit_watch.remember_levels("CLUSDT", was)
     record = {"avgEntryPrice": "92.04", "createdTime": "1788719433000", "closedPnl": "x"}
 
     row = bybit_watch.journal_row("CLUSDT", was, record, -1.19)
@@ -1364,15 +1365,30 @@ def test_journal_row_extras_carry_the_full_arithmetic():
     assert row[7:] == [131.0, 92.04, 91.9, -1.19, -0.93, "0.020+0.055", 128.16, "", "руками"]
 
 
-def test_journal_row_without_a_stop_falls_back_to_usdt():
+def test_journal_row_without_a_stop_leaves_the_r_column_empty():
     was = Position("long", 1.0, 100.0, 100.0)
 
     row = bybit_watch.journal_row("CLUSDT", was, {}, 5.4321)
 
     assert row[0] == ""
     assert row[4] == ""
+    # No stop, no risk, no R. The USDT that used to land here made the
+    # column's own total add R to dollars.
+    assert row[5] == ""
     assert row[3] == "win"
-    assert row[5] == 5.43  # plain net USDT, no risk to divide by
+    assert row[10] == 5.43  # the money is in the PnL column, where it belongs
+
+
+def test_journal_row_ignores_levels_remembered_for_an_earlier_position():
+    """A symbol traded twice must not borrow the first trade's stop."""
+    first = Position("long", 1.0, 100.0, 100.0, take_profit=120.0, stop_loss=90.0, created_ms=1)
+    bybit_watch.remember_levels("CLUSDT", first)
+    second = Position("long", 1.0, 100.0, 100.0, created_ms=2)
+
+    row = bybit_watch.journal_row("CLUSDT", second, {}, 5.0)
+
+    assert row[4] == ""
+    assert row[5] == ""
 
 
 def test_bar_of_clamps_to_the_fetched_range(keyed):
@@ -2944,3 +2960,202 @@ def test_close_fraction_reports_a_refusal(keyed, caplog):
 
     assert text.startswith("❌ CL:")
     assert "could not close" in caplog.text
+
+
+# --- a position closed in pieces -------------------------------------------
+#
+# Six trims and a final close left the journal reporting the last slice only:
+# 30.81 of a trade that made 116.73. Bybit files one record per closing
+# execution and offers nothing to group them by, so the pieces are found by
+# the average entry price they share.
+
+
+def piece(pnl, size, exit_price, entry="88.90755643", side="Sell", fee="1.5"):
+    import time as _time
+
+    return {
+        "closedPnl": pnl,
+        "closedSize": size,
+        "avgEntryPrice": entry,
+        "avgExitPrice": exit_price,
+        "side": side,
+        "openFee": fee,
+        "closeFee": fee,
+        "createdTime": "1700000000000",
+        "updatedTime": str(int(_time.time() * 1000)),
+    }
+
+
+def test_same_position_takes_the_run_sharing_the_entry():
+    rows = [
+        piece("30.81", "229.02", "89.14"),
+        piece("17.13", "76.33", "89.23"),
+        piece("-11.49", "103.72", "91.59", entry="91.58"),  # the trade before
+        piece("6.16", "31.65", "89.20"),  # same entry, but past the boundary
+    ]
+
+    group = bybit_watch._same_position(rows)
+
+    assert [row["closedPnl"] for row in group] == ["30.81", "17.13"]
+
+
+def test_same_position_stops_at_a_flip():
+    rows = [piece("1", "1", "2"), piece("2", "1", "2", side="Buy")]
+
+    assert len(bybit_watch._same_position(rows)) == 1
+
+
+def test_same_position_of_nothing_is_nothing():
+    assert bybit_watch._same_position([]) == []
+
+
+def test_merge_closes_adds_the_pieces_up():
+    group = [
+        piece("30.81", "229.02", "89.14", fee="11.20"),
+        piece("17.13", "76.33", "89.23", fee="3.74"),
+    ]
+
+    merged = bybit_watch.merge_closes(group)
+
+    assert merged["closedPnl"] == pytest.approx(47.94)
+    assert merged["closedSize"] == pytest.approx(305.35)
+    assert merged["openFee"] == pytest.approx(14.94)
+    assert merged["closeFee"] == pytest.approx(14.94)
+    # Weighted by size, not the arithmetic mean of the two prices.
+    assert merged["avgExitPrice"] == pytest.approx(89.16249, abs=1e-5)
+    assert merged["closes"] == 2
+
+
+def test_merge_closes_survives_a_zero_sized_record():
+    """A record with no size must not divide the weighted exit by zero."""
+    merged = bybit_watch.merge_closes([piece("0", "0", "89.14")])
+
+    assert merged["closedSize"] == 0
+    assert merged["avgExitPrice"] == "89.14"  # left as Bybit wrote it
+
+
+def test_closed_group_collects_the_whole_position(keyed):
+    http = FakeHTTP()
+    http.pnl_rows = [piece("30.81", "229.02", "89.14"), piece("17.13", "76.33", "89.23")]
+
+    group = asyncio.run(bybit_watch.closed_group(http, "HYPEUSDT"))
+
+    assert len(group) == 2
+    assert "limit=50" in http.requests[-1]
+
+
+def test_closed_group_is_empty_when_bybit_never_writes_it(keyed):
+    http = FakeHTTP()
+
+    assert asyncio.run(bybit_watch.closed_group(http, "HYPEUSDT")) == []
+
+
+def test_close_notice_reports_the_whole_position(keyed):
+    """The headline figure is the trade's, not its last slice's."""
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[]]
+    http.pnl_rows = [
+        piece("30.81", "229.02", "89.14", fee="11.20"),
+        piece("17.13", "76.33", "89.23", fee="3.74"),
+    ]
+    was = Position("long", 229.02, 88.9076, 20414.84)
+
+    asyncio.run(bybit_watch.tick(http, {"HYPEUSDT": was}, out.send, out.speak, out.send_photo))
+
+    assert out.sent == ["💸<b>+47.94</b>·📈HYPE (fees 29.88) · 2 закрытий"]
+
+
+def test_close_notice_stays_quiet_about_a_position_closed_in_one(keyed):
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[]]
+    http.pnl_rows = [piece("30.81", "229.02", "89.14", fee="11.20")]
+    was = Position("long", 229.02, 88.9076, 20414.84)
+
+    asyncio.run(bybit_watch.tick(http, {"HYPEUSDT": was}, out.send, out.speak, out.send_photo))
+
+    assert "закрытий" not in out.sent[0]
+
+
+def test_journal_row_measures_the_whole_position(keyed):
+    """Volume is the position's, not the remnant `was` was reduced to."""
+    was = Position("long", 229.02, 88.9076, 20414.84)
+    record = bybit_watch.merge_closes(
+        [piece("30.81", "229.02", "89.14"), piece("85.92", "404.11", "89.22")]
+    )
+
+    row = bybit_watch.journal_row("HYPEUSDT", was, record, 116.73, 90850.04)
+
+    assert row[7] == pytest.approx(56290.04, abs=0.01)  # 633.13 coins, not 229.02
+    assert row[10] == 116.73
+
+
+def test_trim_notice_reports_what_the_slice_realised(keyed):
+    http = FakeHTTP()
+    http.pnl_rows = [piece("6.16", "31.65", "89.20", fee="1.55")]
+
+    note = asyncio.run(bybit_watch._trim_notice(http, "HYPEUSDT"))
+
+    assert note == " · 💸<b>+6.16</b> (fees 3.10)"
+
+
+def test_trim_notice_is_empty_without_a_record(keyed):
+    assert asyncio.run(bybit_watch._trim_notice(FakeHTTP(), "HYPEUSDT")) == ""
+
+
+def test_trim_notice_drops_the_cost_line_when_there_is_none(keyed):
+    http = FakeHTTP()
+    http.pnl_rows = [piece("6.16", "31.65", "89.20", fee="0")]
+
+    assert asyncio.run(bybit_watch._trim_notice(http, "HYPEUSDT")) == " · 💸<b>+6.16</b>"
+
+
+def test_tick_hangs_the_realised_pnl_on_a_trim(keyed):
+    """`/cut` promises a report; a trim leaves the position open, so this is it."""
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[row(symbol="HYPEUSDT", size="229.02", value="20414.84")]]
+    http.pnl_rows = [piece("6.16", "31.65", "89.20", fee="1.55")]
+    before = {"HYPEUSDT": Position("long", 633.13, 88.9076, 56290.04)}
+
+    asyncio.run(bybit_watch.tick(http, before, out.send, out.speak, out.send_photo))
+
+    assert out.sent == ["💰📈HYPE 56,290→20,415 · 💸<b>+6.16</b> (fees 3.10)"]
+
+
+def test_tick_says_nothing_of_pnl_when_a_position_grows(keyed):
+    """Adding to a position realises nothing; the newest record is another trade's."""
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[row(symbol="HYPEUSDT", size="633.13", value="56290.04")]]
+    http.pnl_rows = [piece("6.16", "31.65", "89.20")]
+    before = {"HYPEUSDT": Position("long", 229.02, 88.9076, 20414.84)}
+
+    asyncio.run(bybit_watch.tick(http, before, out.send, out.speak, out.send_photo))
+
+    assert out.sent == ["💰📈HYPE 20,415→56,290"]
+
+
+def test_entry_levels_are_remembered_at_the_open_and_dropped_at_the_close(keyed):
+    http, out = FakeHTTP(), Recorder()
+    opened = row(symbol="HYPEUSDT", size="633.13", value="56290.04", tp="90.24", sl="88.31")
+    http.position_pages = [[opened], []]
+    http.pnl_rows = [piece("116.73", "633.13", "89.19")]
+
+    after = asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
+
+    assert bybit_watch._entry_levels["HYPEUSDT"][1:] == (88.31, 90.24)
+
+    asyncio.run(bybit_watch.tick(http, after, out.send, out.speak, out.send_photo))
+
+    assert "HYPEUSDT" not in bybit_watch._entry_levels
+
+
+def test_r_is_measured_against_the_stop_the_trade_was_entered_on(keyed):
+    """A stop dragged to breakeven once turned 0.31R into 2.34R and RR into 1:50.4."""
+    entered = Position("long", 633.13, 88.9076, 56290.04, take_profit=90.24, stop_loss=88.31)
+    bybit_watch.remember_levels("HYPEUSDT", entered)
+    trailed = Position("long", 229.02, 88.9076, 20414.84, take_profit=90.24, stop_loss=88.85)
+    record = bybit_watch.merge_closes([piece("116.73", "633.13", "89.19")])
+
+    row_out = bybit_watch.journal_row("HYPEUSDT", trailed, record, 116.73, 90850.04)
+
+    assert row_out[4] == "1:2.2"
+    assert row_out[5] == pytest.approx(0.31)

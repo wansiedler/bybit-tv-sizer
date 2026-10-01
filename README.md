@@ -481,6 +481,43 @@ Apps Script writes. This is the one place the repo is not English — Telegram
 notices, logs and code stay as they are, and the translation happens in
 `_ru()` at the edge, where a row is built for the sheet and nowhere else.
 
+### One row per position, not per closing order
+
+A position trimmed with `/cut` (or by `RISK_TRIM`) is closed in pieces, and
+Bybit files one closed-pnl record per piece. The journal gets one row for the
+position: at the close every piece is collected and merged, so PnL, fees and
+volume are the trade's. Reporting the last piece alone once booked 30.81 of a
+trade that made 116.73, and the six slices before it were never journalled at
+all.
+
+Bybit offers nothing to group the pieces by — a record's `createdTime` is its
+closing order's, not the position's. What they share is the position's
+average entry price to the last decimal, so the run of records carrying it is
+the position. Closing a position and opening another at the very same average
+entry would merge the two; at eight decimals that is a curiosity, and the
+cost is one merged row.
+
+Each trim still announces what it realised, hanging the figure off the resize
+notice — `/cut` says "💸 report follows" and this is what follows. The
+cumulative close notice says how many closes it covers, so the two cannot be
+read as the same money twice.
+
+### RR and R come from the entry, not the exit
+
+The R multiple is PnL over the risk the **entry** stop carried, and the RR is
+read off the entry stop and take. Both are remembered when the position
+opens. Measuring them against the levels standing at the close made a stop
+dragged to breakeven report a trade as 2.34R at RR 1:50.4 — honestly 0.31R at
+1:2.2, on a stop worth 13$ instead of 378$.
+
+A relay restarted mid-trade never saw the entry, so both cells stay empty.
+Empty says the data is gone; a number computed from a trailed stop says
+something false and looks like a result.
+
+**Without a stop there is no R, and the cell stays empty** — it used to fall
+back to net USDT, which put dollars in an R column and made the `ИТОГО` and
+`ИТОГ НЕДЕЛИ` totals add R to money. The money is in the PnL column already.
+
 The banner wording is load-bearing, not decoration: `weekSummary_` finds the
 start of the current week by scanning column A for the previous banner, and
 the `ИТОГО` formulas exclude those rows with `"<>ИТОГ*"`. Rename the banner

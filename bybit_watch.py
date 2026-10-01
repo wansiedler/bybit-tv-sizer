@@ -1566,23 +1566,55 @@ def _ru(word: str) -> str:
     return word
 
 
+# The stop and take a position carried when it opened, by symbol. Both are
+# dragged while a trade runs — a stop pulled to breakeven leaves almost no
+# risk to divide by, which is how one trade came out as 2.34R on a stop
+# worth 13$ and an RR of 1:50.4. R and RR describe the trade that was
+# entered, so they are measured against these, not against the levels that
+# happened to be standing at the close. Keyed by the position's open time,
+# so a position the relay never saw open is known to be unknown.
+_entry_levels: dict[str, tuple[int, float | None, float | None]] = {}
+
+
+def remember_levels(symbol: str, now: Position) -> None:
+    """Keep the stop and take an opening position came with."""
+    _entry_levels[symbol] = (now.created_ms, now.stop_loss, now.take_profit)
+
+
+def entry_levels(symbol: str, was: Position) -> tuple[float | None, float | None]:
+    """The stop and take this position opened with; (None, None) if unseen.
+
+    A relay restarted mid-trade did not see the entry. Saying so costs two
+    empty cells; guessing with the current stop costs a number that looks
+    like a result and is not one.
+    """
+    seen = _entry_levels.get(symbol)
+    if seen is None or seen[0] != was.created_ms:
+        return None, None
+    return seen[1], seen[2]
+
+
 def _journal_meta(
-    was: Position, record: dict, entry: float, pnl: float, forced: str
-) -> tuple[str, str, float]:
+    symbol: str, was: Position, record: dict, entry: float, pnl: float, forced: str
+) -> tuple[str, str, float | str]:
     """(open date, RR text, R multiple) for the journal row.
 
-    The R multiple is PnL over the risk the stop carried; without a stop it
-    falls back to net USDT.
+    The R multiple is PnL over the risk the entry stop carried. Without that
+    stop there is no R, and the cell stays empty: the money is in the PnL
+    column already, and a dollar figure sitting in an R column made the
+    totals add R to USDT.
     """
     from datetime import datetime
 
-    opened_ms = record.get("createdTime")
+    opened_ms = was.created_ms or record.get("createdTime")
     opened = datetime.fromtimestamp(int(opened_ms) / 1000).strftime("%d.%m.%y") if opened_ms else ""
+    stop, take = entry_levels(symbol, was)
     rr = f"принудительно остановлено: {_ru(forced)}" if forced else ""
-    if was.stop_loss and was.take_profit:
-        rr = f"1:{abs(was.take_profit - entry) / abs(entry - was.stop_loss):.1f}"
-    risk = abs(entry - was.stop_loss) * was.size if was.stop_loss else 0.0
-    fact: float = round(pnl / risk, 2) if risk else round(pnl, 2)
+    if stop and take:
+        rr = f"1:{abs(take - entry) / abs(entry - stop):.1f}"
+    size = float(record.get("closedSize") or 0) or was.size
+    risk = abs(entry - stop) * size if stop else 0.0
+    fact: float | str = round(pnl / risk, 2) if risk else ""
     return opened, rr, fact
 
 
@@ -1599,12 +1631,17 @@ def journal_row(
 
     Columns: Date, Pair, Side, Result, RR, Result (R), Screen,
     Volume $, Entry, Exit, PnL, % depo, Fees, Depo.
-    The result figure is the R multiple — PnL over the risk the stop
-    carried; without a stop it falls back to net USDT. Free-text columns
-    stay empty for hand-written notes.
+    One row per position, not per closing execution: `record` is the merged
+    record of every piece, so a position trimmed six times and then closed
+    reports what it made, not what its last 229 coins made. The result
+    figure is the R multiple against the entry stop, empty without one.
+    Free-text columns stay empty for hand-written notes.
     """
     entry = float(record.get("avgEntryPrice") or was.price)
-    opened, rr, fact = _journal_meta(was, record, entry, pnl, forced)
+    opened, rr, fact = _journal_meta(symbol, was, record, entry, pnl, forced)
+    # The position's whole size, which `was` no longer is once it was trimmed.
+    closed_size = float(record.get("closedSize") or 0)
+    value = round(closed_size * entry, 2) if closed_size and entry else round(was.value, 2)
     opened_fee = float(record.get("openFee") or 0)
     closed_fee = float(record.get("closeFee") or 0)
     exit_price = float(record.get("avgExitPrice") or 0)
@@ -1616,7 +1653,7 @@ def journal_row(
         rr,
         fact,
         "",
-        round(was.value, 2),
+        value,
         entry,
         exit_price or "",
         float(_sig2(pnl)),
@@ -1671,11 +1708,11 @@ PNL_RETRY_SEC = 1.0
 PNL_FRESH_SEC = 300.0
 
 
-async def closed_record(http: httpx.AsyncClient, symbol: str) -> dict | None:
-    """The record of the close that just happened, best-effort.
+async def _fresh_closes(http: httpx.AsyncClient, symbol: str, limit: str) -> list[dict]:
+    """Closed-pnl records, newest first, once the newest one is the fresh one.
 
-    Retries while Bybit is still writing it, and refuses a stale record —
-    answering with the previous trade's figures would be worse than none.
+    Retries while Bybit is still writing it, and refuses a stale answer —
+    reporting the previous trade's figures would be worse than none.
     """
     for attempt in range(PNL_RETRIES):
         if attempt:
@@ -1684,19 +1721,83 @@ async def closed_record(http: httpx.AsyncClient, symbol: str) -> dict | None:
             result = await _get(
                 http,
                 "/v5/position/closed-pnl",
-                {"category": "linear", "symbol": symbol, "limit": "1"},
+                {"category": "linear", "symbol": symbol, "limit": limit},
             )
         # Deliberately broad: the close notice must go out even without a figure.
         except Exception:  # noqa: BLE001
             log.exception("no closed pnl for %s", symbol)
-            return None
+            return []
         rows: list[dict] = result.get("list", [])
         if rows:
             age = time.time() - int(rows[0].get("updatedTime") or 0) / 1000
             if age < PNL_FRESH_SEC:
-                return rows[0]
+                return rows
     log.warning("closed pnl for %s never appeared", symbol)
-    return None
+    return []
+
+
+async def closed_record(http: httpx.AsyncClient, symbol: str) -> dict | None:
+    """The record of the one close that just happened — a trim, usually."""
+    rows = await _fresh_closes(http, symbol, "1")
+    return rows[0] if rows else None
+
+
+async def closed_group(http: httpx.AsyncClient, symbol: str) -> list[dict]:
+    """Every record of the position that just vanished, newest first."""
+    return _same_position(await _fresh_closes(http, symbol, "50"))
+
+
+def _same_position(rows: list[dict]) -> list[dict]:
+    """The newest record and the older ones that closed the same position.
+
+    Bybit files one record per closing execution and gives them nothing to
+    be grouped by: `createdTime` belongs to the closing order, not to the
+    position. What the pieces of one position do share is its average entry
+    price, to the last decimal — so the run of records carrying the newest
+    one's entry and side is the position, and the first record that differs
+    ends it.
+
+    The coincidence this cannot see through: closing a position and opening
+    another at the very same average entry merges the two. Eight decimals
+    make that vanishingly unlikely, and the cost is one merged row.
+    """
+    if not rows:
+        return []
+    head = rows[0]
+    group = []
+    for row in rows:
+        if row.get("avgEntryPrice") != head.get("avgEntryPrice") or row.get("side") != head.get(
+            "side"
+        ):
+            break
+        group.append(row)
+    return group
+
+
+def merge_closes(group: list[dict]) -> dict:
+    """The pieces of one position as a single record.
+
+    A trimmed position is closed piece by piece, and the last piece alone
+    told a fraction of the story — 30.81 of a trade that made 116.73. Money
+    and fees add up, the exit is averaged by size, and the kind comes from
+    the newest record because that is the close that ended the position.
+    """
+    merged = dict(group[0])
+    size = sum(float(row.get("closedSize") or 0) for row in group)
+    merged["closedPnl"] = sum(float(row.get("closedPnl") or 0) for row in group)
+    merged["openFee"] = sum(float(row.get("openFee") or 0) for row in group)
+    merged["closeFee"] = sum(float(row.get("closeFee") or 0) for row in group)
+    merged["closedSize"] = size
+    if size:
+        merged["avgExitPrice"] = (
+            sum(
+                float(row.get("avgExitPrice") or 0) * float(row.get("closedSize") or 0)
+                for row in group
+            )
+            / size
+        )
+    merged["closes"] = len(group)
+    return merged
 
 
 def diff(
@@ -1854,10 +1955,16 @@ async def _entry_notice(
 async def _close_notice(
     http: httpx.AsyncClient, symbol: str, was: Position, spoken_line: str
 ) -> tuple[str | None, str, bytes | None]:
-    """The close notice, its chart and the journal write; None with no record."""
-    record = await closed_record(http, symbol)
-    if record is None:
+    """The close notice, its chart and the journal write; None with no record.
+
+    A position closed in pieces is reported whole: every piece is collected
+    and merged, so the figure that goes out is what the trade made, not what
+    its last slice made.
+    """
+    group = await closed_group(http, symbol)
+    if not group:
         return None, spoken_line, None
+    record = merge_closes(group)
     # Bybit's closedPnl nets both trading fees; funding it does
     # not — that is charged separately, so it comes off here.
     funding = await accrued_funding(http, symbol, was.created_ms)
@@ -1903,7 +2010,31 @@ async def _close_notice(
         if funding:
             costs += f", funding {_sig2(funding)}"
         line += f" ({costs})"
+    if record["closes"] > 1:
+        # Each trim already announced its own slice. Saying how many closes
+        # this figure covers is what keeps the two from reading as one sum
+        # twice over.
+        line += f" · {record['closes']} закрытий"
+    _entry_levels.pop(symbol, None)
     return line, spoken_line, png
+
+
+async def _trim_notice(http: httpx.AsyncClient, symbol: str) -> str:
+    """What a trim just realised, for the resize line to carry.
+
+    `/cut` promises "💸 report follows" and until now nothing followed: a
+    trim leaves the position open, so the close notice never fired and six
+    realised profits in a row went unannounced and unjournalled. The slice
+    is announced here; the journal still gets one row per position, written
+    when the last slice closes it.
+    """
+    record = await closed_record(http, symbol)
+    if record is None:
+        return ""
+    pnl = float(record.get("closedPnl") or 0)
+    fees = float(record.get("openFee") or 0) + float(record.get("closeFee") or 0)
+    note = f" · 💸<b>{_usd(pnl)}</b>"
+    return note + (f" (fees {_sig2(fees)})" if fees else "")
 
 
 async def tick(
@@ -1927,9 +2058,13 @@ async def tick(
         png = None
         buttons = None
         if kind in ("opened", "flipped") and now is not None:
+            # The levels this trade was entered on, before anything drags them.
+            remember_levels(symbol, now)
             line, png = await _entry_notice(http, symbol, now, line)
             # Exits hang off the entry notice, where the position is news.
             buttons = exit_buttons(symbol)
+        elif kind == "changed" and was is not None and now is not None and now.size < was.size:
+            line += await _trim_notice(http, symbol)
         elif kind == "closed" and was is not None:
             closed_line, spoken_line, png = await _close_notice(http, symbol, was, spoken_line)
             if closed_line is not None:
