@@ -136,6 +136,14 @@ stop 2970 (1.00%) | risk 0.50% (RR 1.50 of 3)
 qty 1 (3,000$, 3.0% depo) → 15.5 (46,500$, 46.5% depo)
 ```
 
+An order already within **one lot step** of its target is left alone. The
+target moves with equity, and equity breathes with every open position's
+unrealised PnL — enough to walk it across a rounding boundary and back. One
+resting order was amended 370.28 → .29 → .28 → .29 → .28 in eleven seconds,
+four notices and four amends over 86 cents of a 32,000$ order, the last of
+them refused by Bybit for margin. A lot step is the instrument's own
+resolution: inside it there is nowhere closer to put the order.
+
 ## Exit buttons on the entry notice
 
 Every entry notice arrives with a row of buttons under the chart:

@@ -347,7 +347,13 @@ async def _resize_order(http: httpx.AsyncClient, order: dict, equity: Decimal, s
     if fitted is None:
         return
     want, capped = fitted
-    if have == want:
+    # One lot step is the instrument's own resolution: inside it there is no
+    # closer the order could be put. Equity breathes with every open
+    # position's unrealised PnL, which walks the target across a rounding
+    # boundary and back — one trade amended 370.28 -> .29 -> .28 -> .29 -> .28
+    # in eleven seconds, four notices and four amends over 86 cents of a
+    # 32,000$ order, the last of them refused for margin. Already exact.
+    if abs(want - have) <= Decimal(instrument["lotSizeFilter"]["qtyStep"]):
         return
     if DRY_RUN:
         log.info("[dry-run] %s %s: qty %s -> %s", symbol, order_id[:8], have, want)
