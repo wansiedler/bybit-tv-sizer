@@ -390,6 +390,32 @@ def test_tick_leaves_a_correctly_sized_order_alone(monkeypatch):
     assert http.amended == []
 
 
+def test_tick_leaves_an_order_one_lot_step_off_alone(monkeypatch):
+    """Equity breathes with open positions and walks the target over a
+    rounding boundary and back. One trade was amended .28 -> .29 -> .28 ->
+    .29 -> .28 in eleven seconds, four notices over 86 cents of a 32,000$
+    order. A lot step is the instrument's resolution: this is already exact."""
+    monkeypatch.setattr(sizer, "DRY_RUN", False)
+    http, out = FakeHTTP(), Recorder()
+    http.orders = [dict(ORDER, qty="0.046")]  # target 0.047, one 0.001 step away
+
+    run_tick(http, out)
+
+    assert http.amended == []
+    assert out.sent == []
+
+
+def test_tick_still_resizes_two_lot_steps_off(monkeypatch):
+    """The deadband is one step wide, not a licence to drift."""
+    monkeypatch.setattr(sizer, "DRY_RUN", False)
+    http, out = FakeHTTP(), Recorder()
+    http.orders = [dict(ORDER, qty="0.045")]
+
+    run_tick(http, out)
+
+    assert http.amended[0]["qty"] == "0.047"
+
+
 def test_tick_skips_an_unsizable_order(monkeypatch):
     monkeypatch.setattr(sizer, "DRY_RUN", False)
     http, out = FakeHTTP(), Recorder()
