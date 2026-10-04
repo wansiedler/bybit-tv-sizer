@@ -1573,12 +1573,12 @@ def _ru(word: str) -> str:
 # entered, so they are measured against these, not against the levels that
 # happened to be standing at the close. Keyed by the position's open time,
 # so a position the relay never saw open is known to be unknown.
-_entry_levels: dict[str, tuple[int, float | None, float | None]] = {}
+_entry_levels: dict[str, tuple[int, float | None, float | None, float]] = {}
 
 
 def remember_levels(symbol: str, now: Position) -> None:
-    """Keep the stop and take an opening position came with."""
-    _entry_levels[symbol] = (now.created_ms, now.stop_loss, now.take_profit)
+    """Keep the stop, the take and the moment an opening position appeared."""
+    _entry_levels[symbol] = (now.created_ms, now.stop_loss, now.take_profit, time.time())
 
 
 def entry_levels(symbol: str, was: Position) -> tuple[float | None, float | None]:
@@ -1594,6 +1594,21 @@ def entry_levels(symbol: str, was: Position) -> tuple[float | None, float | None
     return seen[1], seen[2]
 
 
+def opened_at(symbol: str, was: Position) -> float | None:
+    """When the relay first saw this position, in epoch seconds; None if never.
+
+    `Position.created_ms` looked like the obvious answer and is not: two
+    positions on different symbols, closed a day apart, both reported
+    12.07.26 through it. Whatever Bybit counts from there, it is not this
+    trade's open. The relay's own sighting is, for every trade it watched
+    open.
+    """
+    seen = _entry_levels.get(symbol)
+    if seen is None or seen[0] != was.created_ms:
+        return None
+    return seen[3]
+
+
 def _journal_meta(
     symbol: str, was: Position, record: dict, entry: float, pnl: float, forced: str
 ) -> tuple[str, str, float | str]:
@@ -1606,8 +1621,14 @@ def _journal_meta(
     """
     from datetime import datetime
 
-    opened_ms = was.created_ms or record.get("createdTime")
-    opened = datetime.fromtimestamp(int(opened_ms) / 1000).strftime("%d.%m.%y") if opened_ms else ""
+    # The relay's own sighting of the open, and the closing record's time
+    # when it never saw one. `Position.created_ms` is neither: it dated two
+    # positions closed a day apart to the same 12.07.26.
+    seconds = opened_at(symbol, was)
+    if seconds is None:
+        created = record.get("createdTime")
+        seconds = int(created) / 1000 if created else None
+    opened = datetime.fromtimestamp(seconds).strftime("%d.%m.%y") if seconds else ""
     stop, take = entry_levels(symbol, was)
     rr = f"принудительно остановлено: {_ru(forced)}" if forced else ""
     if stop and take:
@@ -1657,7 +1678,12 @@ def journal_row(
         entry,
         exit_price or "",
         float(_sig2(pnl)),
-        round(pnl / depo * 100, 2) if depo else "",
+        # A fraction, not a number already multiplied by a hundred: the cell
+        # is formatted as a percentage, and Sheets multiplies it again. 0.13
+        # written here showed as 13.00%, so the column was being divided back
+        # down by hand, trade after trade. Six decimals, because four round a
+        # 0.0746% trade to 0.07% before the format ever sees it.
+        round(pnl / depo, 6) if depo else "",
         f"{_sig2(opened_fee)}+{_sig2(closed_fee)}" if opened_fee or closed_fee else "",
         round(depo, 2) if depo else "",
         "",  # O: Withdrew/Deposited — the money watcher's column
