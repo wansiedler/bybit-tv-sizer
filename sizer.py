@@ -304,7 +304,14 @@ async def margin_cap(http: httpx.AsyncClient, symbol: str, entry: Decimal, have:
         )
         rows = result.get("list") or []
         leverage = Decimal(rows[0].get("leverage") or "1") if rows else Decimal(1)
-        return have + Decimal(available) * leverage / entry * _MARGIN_SAFETY
+        # The safety margin applies to the whole position the cap allows, not
+        # only to the part being added. Shaving the new part alone made the
+        # cap a staircase: every pass exempted what the last one had already
+        # placed, so one order climbed 18523.9 -> 18770.8 -> 18778.1 ->
+        # 18778.3 in six seconds, four amends and four notices for a number
+        # it was always going to reach. Applied to the total it is a fixed
+        # point: amend once to it, and the next pass computes the same.
+        return (have + Decimal(available) * leverage / entry) * _MARGIN_SAFETY
     # Deliberately broad: no cap is merely the pre-cap behaviour.
     except Exception:  # noqa: BLE001
         log.exception("no margin cap for %s", symbol)

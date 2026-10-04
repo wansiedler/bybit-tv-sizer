@@ -453,8 +453,8 @@ def test_margin_cap_adds_the_held_quantity():
 
     cap = asyncio.run(sizer.margin_cap(http, "BTCUSDT", Decimal("60000"), Decimal("0.001")))
 
-    # 0.001 held + 60 USDT * 1x / 60000 * 0.97
-    assert cap == Decimal("0.001") + Decimal("60") / Decimal("60000") * Decimal("0.97")
+    # (0.001 held + 60 USDT * 1x / 60000) * 0.97 — the safety is on the total
+    assert cap == (Decimal("0.001") + Decimal("60") / Decimal("60000")) * Decimal("0.97")
 
 
 def test_margin_cap_scales_with_leverage():
@@ -790,7 +790,7 @@ def test_margin_cap_reads_the_coin_row_when_the_totals_are_empty():
     cap = asyncio.run(sizer.margin_cap(http, "NEARUSDT", Decimal("4.831"), Decimal("15793.3")))
 
     free = Decimal("90843.42") - Decimal("88152.61")
-    assert cap == Decimal("15793.3") + free / Decimal("4.831") * Decimal("0.97")
+    assert cap == (Decimal("15793.3") + free / Decimal("4.831")) * Decimal("0.97")
 
 
 def test_margin_cap_is_unknown_when_orders_hold_everything():
@@ -858,3 +858,25 @@ def test_a_refusal_is_forgotten_once_the_order_is_gone(monkeypatch):
     run_tick(http, out)
 
     assert ORDER["orderId"] not in sizer._refused
+
+
+def test_margin_cap_is_a_fixed_point():
+    """Amend to the cap and the next pass must compute the same cap.
+
+    With the safety shaved off the new part alone, each pass exempted what
+    the last had placed and the cap climbed: 18523.9 -> 18770.8 -> 18778.1
+    -> 18778.3, four amends and four notices for one order.
+    """
+    http = IsolatedHTTP()
+    entry = Decimal("4.831")
+    have = Decimal("10144.2")
+    http.coin[0]["totalOrderIM"] = str(have * entry)
+
+    first = asyncio.run(sizer.margin_cap(http, "NEARUSDT", entry, have))
+
+    assert first is not None
+    # The order now rests at the cap, so it holds that much margin instead.
+    http.coin[0]["totalOrderIM"] = str(first * entry)
+    second = asyncio.run(sizer.margin_cap(http, "NEARUSDT", entry, first))
+
+    assert second == first
