@@ -5,6 +5,7 @@ is pinned line by line; the transport is faked at the HTTP client.
 """
 
 import asyncio
+import contextlib
 from decimal import Decimal
 
 import pytest
@@ -72,6 +73,7 @@ class FakeHTTP:
         self.instruments = [BTC_LOT]
         self.amended: list[dict] = []
         self.gets: list[str] = []
+        self.refuse_amend = False
 
     async def get(self, url, headers=None, timeout=None):
         self.gets.append(url)
@@ -86,6 +88,8 @@ class FakeHTTP:
         import json
 
         self.amended.append(json.loads(content))
+        if self.refuse_amend:
+            raise RuntimeError("bybit /v5/order/amend: 110007 ab not enough for replace order")
         return FakeResponse({"retCode": 0, "result": {}})
 
 
@@ -747,3 +751,110 @@ def test_poll_announces_the_risk_ceiling(monkeypatch):
         asyncio.run(sizer.poll(Cancelling(), out.send))
 
     assert "base ≤ 100,000$" in out.sent[0]
+
+
+# ------------------------------------------------------- the blind margin cap
+#
+# `totalAvailableBalance` comes back empty on an isolated-margin account, and
+# an empty one meant "no cap". One NEAR order then asked the exchange for
+# exactly 100.0% of the deposit twice a second and was refused 110007 every
+# time, for as long as it rested.
+
+
+class IsolatedHTTP(FakeHTTP):
+    """A wallet answering like an isolated-margin account: no totals."""
+
+    def __init__(self):
+        super().__init__()
+        self.coin = [
+            {
+                "coin": "USDT",
+                "walletBalance": "90843.42",
+                "totalOrderIM": "88152.61",
+                "totalPositionIM": "0",
+            }
+        ]
+
+    async def get(self, url, headers=None, timeout=None):
+        if "/v5/account/wallet-balance" in url:
+            rows = [{"totalEquity": self.equity, "totalAvailableBalance": "", "coin": self.coin}]
+            return FakeResponse({"retCode": 0, "result": {"list": rows}})
+        if "/v5/position/list" in url:
+            return FakeResponse({"retCode": 0, "result": {"list": [{"leverage": "1"}]}})
+        return await super().get(url, headers=headers, timeout=timeout)
+
+
+def test_margin_cap_reads_the_coin_row_when_the_totals_are_empty():
+    http = IsolatedHTTP()
+
+    cap = asyncio.run(sizer.margin_cap(http, "NEARUSDT", Decimal("4.831"), Decimal("15793.3")))
+
+    free = Decimal("90843.42") - Decimal("88152.61")
+    assert cap == Decimal("15793.3") + free / Decimal("4.831") * Decimal("0.97")
+
+
+def test_margin_cap_is_unknown_when_orders_hold_everything():
+    http = IsolatedHTTP()
+    http.coin[0]["totalOrderIM"] = "90843.42"
+
+    assert asyncio.run(sizer.margin_cap(http, "NEARUSDT", Decimal("4.831"), Decimal("0"))) is None
+
+
+def test_margin_cap_is_unknown_without_the_settle_coin():
+    http = IsolatedHTTP()
+    http.coin = [{"coin": "ETH", "walletBalance": "1", "totalOrderIM": "0"}]
+
+    assert asyncio.run(sizer.margin_cap(http, "NEARUSDT", Decimal("4.831"), Decimal("0"))) is None
+
+
+def test_notional_ceiling_leaves_the_entry_fee_room(monkeypatch):
+    """Exactly equity * MAX_LEVERAGE is a size the exchange can never fill.
+
+    The margin is the whole notional at 1x, and the entry fee comes out of
+    the same balance — so a ceiling of 100.0% of the deposit is refused
+    110007 on every pass for as long as the order rests.
+    """
+    monkeypatch.setattr(sizer, "MAX_LEVERAGE", Decimal("1"))
+    monkeypatch.setattr(sizer, "MAKER_FEE", Decimal("0.0002"))
+    monkeypatch.setattr(sizer, "RISK_PCT", Decimal("0.02"))
+    # A stop 0.54% away wants far more than 1x, so the ceiling is what binds.
+    # Room enough in the lot filter that only the ceiling does.
+    lot = {"lotSizeFilter": {"qtyStep": "0.1", "minOrderQty": "0.1", "maxOrderQty": "1000000"}}
+    order = dict(ORDER, price="4.831", stopLoss="4.805")
+
+    qty = sizer.target_qty(order, Decimal("90829"), lot)
+
+    assert qty is not None
+    notional = qty * Decimal("4.831")
+    assert notional * (1 + Decimal("0.0002")) <= Decimal("90829")
+    # Still essentially the whole deposit — the room is for the fee, not a
+    # haircut on the position.
+    assert notional > Decimal("90829") * Decimal("0.999")
+
+
+def test_a_refused_amend_is_not_asked_again(monkeypatch):
+    """110007 every half second until the order is cancelled by hand."""
+    monkeypatch.setattr(sizer, "DRY_RUN", False)
+    http, out = FakeHTTP(), Recorder()
+    http.orders = [ORDER]
+    http.refuse_amend = True
+
+    for _ in range(3):
+        with contextlib.suppress(Exception):
+            run_tick(http, out)
+
+    assert len(http.amended) == 1
+
+
+def test_a_refusal_is_forgotten_once_the_order_is_gone(monkeypatch):
+    monkeypatch.setattr(sizer, "DRY_RUN", False)
+    http, out = FakeHTTP(), Recorder()
+    http.orders = [ORDER]
+    http.refuse_amend = True
+    with contextlib.suppress(Exception):
+        run_tick(http, out)
+
+    http.orders = []
+    run_tick(http, out)
+
+    assert ORDER["orderId"] not in sizer._refused
