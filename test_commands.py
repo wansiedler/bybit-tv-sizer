@@ -832,3 +832,70 @@ def test_cut_without_a_handler_falls_through_to_help(owner):
 
 def test_cut_is_listed_in_the_help():
     assert "/cut <ticker> <%>" in commands.HELP
+
+
+# --------------------------------------------------------------------------- #
+#  the tithe button                                                           #
+# --------------------------------------------------------------------------- #
+def test_tithe_tap_reads_the_amount(owner):
+    assert commands.tithe_tap(_tap(data="t:61.76")) == ("q1", 61.76)
+
+
+def test_tithe_tap_ignores_an_ordinary_message(owner):
+    assert commands.tithe_tap(_update("/ping")) is None
+
+
+def test_tithe_tap_ignores_an_exit_button(owner):
+    assert commands.tithe_tap(_tap()) is None
+
+
+def test_tithe_tap_refuses_a_stranger(owner, caplog):
+    with caplog.at_level("WARNING", logger="relay.commands"):
+        assert commands.tithe_tap(_tap(data="t:61.76", sender="999")) is None
+
+    assert "button tap from user 999" in caplog.text
+
+
+def test_tithe_tap_ignores_an_amount_that_is_not_a_number(owner, caplog):
+    with caplog.at_level("WARNING", logger="relay.commands"):
+        assert commands.tithe_tap(_tap(data="t:a tenth")) is None
+
+    assert "no amount" in caplog.text
+
+
+def test_a_tithe_tap_is_written_once(owner):
+    """Telegram redelivers an unacknowledged update, and fingers slip."""
+    http, said = TapHTTP(), []
+    written: list[float] = []
+
+    async def _tithe(amount):
+        written.append(amount)
+        return f"🙏 {amount}"
+
+    async def _send(text):
+        said.append(text)
+
+    handlers = commands.Handlers(tithe=_tithe)
+    update = _tap(data="t:61.76")
+
+    for _ in range(3):
+        asyncio.run(commands._handle_tap(http, update, handlers, _send))
+
+    assert written == [61.76]
+    assert said == ["🙏 61.76"]
+    # The spinner is still stopped every time, or the button stays spinning.
+    assert len(http.posts) == 3
+
+
+def test_a_tithe_tap_without_a_handler_is_still_swallowed(owner):
+    http, said = TapHTTP(), []
+
+    async def _send(text):
+        said.append(text)
+
+    handled = asyncio.run(
+        commands._handle_tap(http, _tap(data="t:61.76"), commands.Handlers(), _send)
+    )
+
+    assert handled is True
+    assert said == []
