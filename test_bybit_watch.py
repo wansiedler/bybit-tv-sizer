@@ -3200,3 +3200,48 @@ def test_journal_date_is_empty_when_nothing_knows_it():
     was = Position("long", 1.0, 100.0, 100.0)
 
     assert bybit_watch.journal_row("CLUSDT", was, {}, 5.0)[0] == ""
+
+
+def test_a_trim_already_reported_cannot_stand_in_for_the_close(keyed):
+    """Four trims then a close reported 153.25 of a trade that made 617.64.
+
+    Bybit had not written the closing record yet, and the fourth trim's was
+    297 seconds old — inside the five-minute freshness window, so it passed
+    for the close that had just happened.
+    """
+    import time as _time
+
+    http, out = FakeHTTP(), Recorder()
+    now = int(_time.time() * 1000)
+    trim = piece("38.44", "437", "4.98", entry="4.8869422")
+    trim["updatedTime"] = str(now - 297_000)  # the real one was this old
+    http.pnl_rows = [trim]
+    was = Position("long", 8304.9, 4.8869422, 40588.0)
+
+    # The trim announces itself, which is what records its time.
+    asyncio.run(bybit_watch._trim_notice(http, "NEARUSDT"))
+    # The position vanishes before Bybit writes the closing record.
+    http.position_pages = [[]]
+    asyncio.run(bybit_watch.tick(http, {"NEARUSDT": was}, out.send, out.speak, out.send_photo))
+
+    # No figure beats the trim's figure wearing the close's clothes.
+    assert out.sent == ["💸📈NEAR"]
+
+
+def test_the_close_is_reported_once_bybit_writes_it(keyed):
+    """The same close, with the real record present: all five pieces."""
+    http, out = FakeHTTP(), Recorder()
+    trim = piece("38.44", "437", "4.98", entry="4.8869422")
+    trim["updatedTime"] = str(int(trim["updatedTime"]) - 297_000)
+    http.pnl_rows = [trim]
+    asyncio.run(bybit_watch._trim_notice(http, "NEARUSDT"))
+
+    closing = piece("464.39", "8304.9", "4.9482688", entry="4.8869422")
+    http.pnl_rows = [closing, trim]
+    http.position_pages = [[]]
+    was = Position("long", 8304.9, 4.8869422, 40588.0)
+
+    asyncio.run(bybit_watch.tick(http, {"NEARUSDT": was}, out.send, out.speak, out.send_photo))
+
+    assert "+502.83" in out.sent[0]  # 464.39 + 38.44, both pieces
+    assert "2 закрытий" in out.sent[0]
