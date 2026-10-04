@@ -69,6 +69,11 @@ _instruments: dict[str, dict] = {}
 # orderId -> the entry|stop|tp signature already warned about, so dragging
 # nothing does not repeat the same warning every pass.
 _warned: dict[str, str] = {}
+# orderId -> the quantity the exchange would not take. An amend the exchange
+# has already refused is refused again on the next pass and the one after:
+# at a half-second poll one stuck order filed 110007 until it was cancelled
+# by hand. Asking once is diagnosis; asking forever is noise.
+_refused: dict[str, Decimal] = {}
 
 
 def enabled() -> bool:
@@ -187,7 +192,11 @@ def target_qty(order: dict, equity: Decimal, instrument: dict) -> Decimal | None
 
     lot = instrument["lotSizeFilter"]
     qty = (equity * risk_share(order)) / (distance + entry * MAKER_FEE + stop * TAKER_FEE)
-    qty = min(qty, (equity * MAX_LEVERAGE) / entry)  # notional ceiling
+    # Notional ceiling. The entry fee is paid out of the same balance the
+    # margin comes from, so a ceiling of exactly equity * MAX_LEVERAGE is one
+    # the exchange can never fill at 1x: 100.0% of the deposit as margin
+    # leaves nothing to pay the fee with, and the amend comes back 110007.
+    qty = min(qty, (equity * MAX_LEVERAGE) / (entry * (1 + MAKER_FEE)))
     qty = min(round_step(qty, Decimal(lot["qtyStep"])), Decimal(lot["maxOrderQty"]))
 
     if qty < Decimal(lot["minOrderQty"]):
@@ -253,6 +262,26 @@ def rr_warning(order: dict) -> str | None:
 _MARGIN_SAFETY = Decimal("0.97")
 
 
+def _free_from_coin(account: dict) -> str:
+    """Free balance read off the settle coin's own row; "" when unreadable.
+
+    `totalAvailableBalance` comes back empty on an isolated-margin account —
+    Bybit fills the account-level margin fields only under cross margin, and
+    an empty one used to mean "no cap", which let the sizer ask for a
+    quantity the exchange refused on every pass for as long as the order
+    rested. The coin row carries the same answer in parts: what the wallet
+    holds, less what resting orders and open positions already hold against
+    it.
+    """
+    for coin in account.get("coin") or []:
+        if coin.get("coin") != SETTLE_COIN:
+            continue
+        wallet = Decimal(coin.get("walletBalance") or 0)
+        held = Decimal(coin.get("totalOrderIM") or 0) + Decimal(coin.get("totalPositionIM") or 0)
+        return str(wallet - held) if wallet > held else ""
+    return ""
+
+
 async def margin_cap(http: httpx.AsyncClient, symbol: str, entry: Decimal, have: Decimal):
     """The largest quantity the free balance can carry, or None when unknown.
 
@@ -266,7 +295,8 @@ async def margin_cap(http: httpx.AsyncClient, symbol: str, entry: Decimal, have:
             http, "/v5/account/wallet-balance", {"accountType": ACCOUNT_TYPE}
         )
         accounts = result.get("list") or []
-        available = accounts[0].get("totalAvailableBalance") if accounts else ""
+        account = accounts[0] if accounts else {}
+        available = account.get("totalAvailableBalance") or _free_from_coin(account)
         if not available:
             return None
         result = await bybit_watch._get(
@@ -290,6 +320,7 @@ async def tick(http: httpx.AsyncClient, send) -> None:
     for stale in _settling.keys() - live:
         del _settling[stale]
         _warned.pop(stale, None)
+        _refused.pop(stale, None)
 
     orders = [order for order in open_orders if is_managed(order)]
     # has_settled() advances the counter, so it runs for every managed order
@@ -358,7 +389,17 @@ async def _resize_order(http: httpx.AsyncClient, order: dict, equity: Decimal, s
     if DRY_RUN:
         log.info("[dry-run] %s %s: qty %s -> %s", symbol, order_id[:8], have, want)
         return
-    await amend_qty(http, symbol, order_id, want)
+    if _refused.get(order_id) == want:
+        return
+    try:
+        await amend_qty(http, symbol, order_id, want)
+    except Exception:
+        # Remembered, not swallowed: the caller still announces it once. What
+        # stops is asking the exchange the same refused question twice a
+        # second until the order is cancelled by hand.
+        _refused[order_id] = want
+        raise
+    _refused.pop(order_id, None)
     log.info(
         "%s %s: qty %s -> %s%s", symbol, order_id[:8], have, want, " (capped)" if capped else ""
     )

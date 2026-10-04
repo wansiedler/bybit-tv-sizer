@@ -19,6 +19,7 @@ import bybit_watch
 import commands
 import ip_watch
 import sheets
+import sizer
 import speaker
 import tv_alerts
 
@@ -51,6 +52,9 @@ def _default_config(monkeypatch, tmp_path):
     # One attempt, no waiting: the retry loop is exercised by its own tests.
     monkeypatch.setattr(bybit_watch, "PNL_RETRIES", 1)
     monkeypatch.setattr(bybit_watch, "PNL_RETRY_SEC", 0.0)
+    sizer._settling.clear()
+    sizer._warned.clear()
+    sizer._refused.clear()
     monkeypatch.setattr(tv_alerts, "TV_WEBHOOK_SECRET", "")
     monkeypatch.setattr(tv_alerts, "JOURNAL_URL", "")
     monkeypatch.setattr(tv_alerts, "TV_PUBLIC_URL", "")
