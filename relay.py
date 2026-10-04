@@ -433,6 +433,7 @@ def _command_handlers(http: httpx.AsyncClient, links: str) -> commands.Handlers:
         deposit=lambda: bybit_watch.deposit_line(http),
         lev_one=lambda arg: bybit_watch.force_leverage_one(http, arg),
         close_part=lambda symbol, percent: bybit_watch.close_fraction(http, symbol, percent),
+        tithe=lambda amount: bybit_watch.log_tithe(http, amount),
     )
 
 

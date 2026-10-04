@@ -174,6 +174,35 @@ The buttons live under one notice, and a notice scrolls away. `/cut <ticker>
 ✂️ CL: closing 25% (2.5) — 💸 report follows
 ```
 
+## The tithe button (`TITHE_PCT`)
+
+A close that made money arrives with one button under it:
+
+```text
+[ 🙏 десятина 61.76$ ]
+```
+
+A tap writes a single row into the journal and does nothing else:
+
+```text
+05.10.26 | десятина | USDT | … | Деп 91,445.81 | Вывел/Завел -61.76
+```
+
+**No money moves.** The Bybit key stays without withdrawal rights, as the
+rest of this README assumes — the button is a ledger, not a payment. What it
+buys is that the month's tithes are a column you can filter instead of
+something to remember.
+
+The kind column says `десятина`, not `вывод`. The money has not left Bybit,
+and a row claiming it had would put the journal out of step with the
+exchange and bury the tithes among real withdrawals.
+
+A loss carries no button, and neither does a win whose tenth rounds to
+nothing. `TITHE_PCT=0` takes it away entirely. Only `OWNER_ID` is obeyed,
+like every other button. Telegram redelivers an update it was not told about
+and fingers slip, so the taps already acted on are remembered: the second
+tap answers with the same figure and writes nothing.
+
 ## Maker takes (`TP_MAKER=1`)
 
 Bybit's position take-profit fires a market order — a taker fee. With

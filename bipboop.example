@@ -117,6 +117,12 @@ MIN_RR=2
 # the market TP would have closed. The stop always stays a market order.
 TP_MAKER=0
 
+# A tenth of every winning trade, set aside for the mentor. The close notice
+# carries a button with the figure; tapping it writes one `десятина` row into
+# the journal and nothing else. No money moves, and the Bybit key stays
+# without withdrawal rights. 0 takes the button away.
+TITHE_PCT=10
+
 # Announce your own TradingView alerts: point a TV alert's Webhook URL at
 # POST /tv/<secret> on TV_PORT (via a tunnel or port-forward). The secret in
 # the path is the only auth — make it long and random. Empty disables.

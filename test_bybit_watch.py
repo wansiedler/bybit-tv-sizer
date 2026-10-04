@@ -2794,15 +2794,30 @@ def test_tick_keeps_the_buttons_when_telegram_refuses_the_photo(keyed):
     assert out.keyboards == [bybit_watch.exit_buttons("FARTCOINUSDT")] * 2
 
 
-def test_tick_sends_no_buttons_with_a_close(keyed):
+def test_tick_sends_no_buttons_with_a_losing_close(keyed):
+    """Nothing to set aside out of a loss, so no keyboard at all."""
     http, out = FakeHTTP(), Recorder()
     http.position_pages = [[]]
-    http.pnl_rows = [closed()]
+    http.pnl_rows = [closed(pnl="-12.3")]
     http.kline_rows = KLINES
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
     assert out.keyboards == [None]
+
+
+def test_tick_offers_the_tithe_on_a_winning_close(keyed):
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[]]
+    http.pnl_rows = [closed()]  # +512.30
+    http.kline_rows = KLINES
+
+    asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
+
+    offered = out.keyboards[0]
+    assert offered == bybit_watch.tithe_buttons(512.3)
+    assert offered is not None
+    assert offered["inline_keyboard"][0][0]["text"] == "🙏 десятина 51.23$"
 
 
 # --------------------------------------------------------------------------- #
@@ -3245,3 +3260,70 @@ def test_the_close_is_reported_once_bybit_writes_it(keyed):
 
     assert "+502.83" in out.sent[0]  # 464.39 + 38.44, both pieces
     assert "2 закрытий" in out.sent[0]
+
+
+# --- the tithe button ------------------------------------------------------
+
+
+def test_tithe_buttons_are_absent_without_a_profit():
+    assert bybit_watch.tithe_buttons(-5.0) is None
+    assert bybit_watch.tithe_buttons(0.0) is None
+
+
+def test_tithe_buttons_are_absent_when_switched_off(monkeypatch):
+    monkeypatch.setattr(bybit_watch, "TITHE_PCT", 0.0)
+
+    assert bybit_watch.tithe_buttons(500.0) is None
+
+
+def test_tithe_buttons_are_absent_when_the_tenth_rounds_to_nothing():
+    """A one-cent win owes nothing a sheet could hold."""
+    assert bybit_watch.tithe_buttons(0.01) is None
+
+
+def test_tithe_amount_is_a_tenth_by_default():
+    assert bybit_watch.tithe_amount(617.64) == 61.76
+
+
+def test_tithe_amount_follows_the_setting(monkeypatch):
+    monkeypatch.setattr(bybit_watch, "TITHE_PCT", 25.0)
+
+    assert bybit_watch.tithe_amount(100.0) == 25.0
+
+
+def test_log_tithe_writes_its_own_word_not_a_withdrawal(keyed, monkeypatch):
+    """`вывод` would claim the money left Bybit. It has not."""
+    http = FakeHTTP()
+    http.equity_rows = [{"totalEquity": "91445.81", "totalWalletBalance": "91445.81"}]
+    written: list[dict] = []
+
+    async def _log(_http, entry):
+        written.append(entry)
+        return None
+
+    monkeypatch.setattr(bybit_watch.sheets, "log_close", _log)
+
+    said = asyncio.run(bybit_watch.log_tithe(http, 61.76))
+
+    row = written[0]["row"]
+    assert len(row) == 16
+    assert row[1:3] == ["десятина", "USDT"]
+    assert row[13] == 91445.81
+    assert row[14] == -61.76  # always out, however the caller signed it
+    assert "61.76" in said
+
+
+def test_log_tithe_links_the_row_when_the_sheet_answers(keyed, monkeypatch):
+    http = FakeHTTP()
+    monkeypatch.setattr(bybit_watch.sheets, "JOURNAL_URL", "https://sheet/edit")
+    monkeypatch.setattr(
+        bybit_watch.sheets, "log_close", lambda _h, _e: _answer({"row": 31, "gid": 0})
+    )
+
+    said = asyncio.run(bybit_watch.log_tithe(http, 61.76))
+
+    assert 'href="https://sheet/edit#gid=0&range=A31"' in said
+
+
+async def _answer(value):
+    return value

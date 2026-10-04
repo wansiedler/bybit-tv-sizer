@@ -208,11 +208,60 @@ class Handlers:
     deposit: Any = None
     lev_one: Any = None
     close_part: Any = None
+    tithe: Any = None
     cut: Any = None
 
 
+def tithe_tap(update: dict) -> tuple[str, float] | None:
+    """(callback id, amount) for a tithe button the owner tapped.
+
+    Drawn by bybit_watch under a profitable close and carrying "t:<amount>".
+    The sender is checked exactly as for an exit button — anyone who can see
+    the chat can tap it.
+    """
+    query = update.get("callback_query")
+    if not query:
+        return None
+    sender = query.get("from") or {}
+    if str(sender.get("id")) != str(OWNER_ID):
+        log.warning("ignoring button tap from user %s", sender.get("id"))
+        return None
+    prefix, _, rest = str(query.get("data", "")).partition(":")
+    if prefix != "t":
+        return None
+    try:
+        return str(query.get("id")), float(rest)
+    except ValueError:
+        log.warning("tithe button carried no amount: %s", query.get("data"))
+        return None
+
+
+# Telegram re-delivers an update that was not acknowledged, and a finger
+# slips: either would write the tithe down twice. The ids already acted on
+# are remembered, newest last, and the oldest are dropped — the list only
+# has to outlive a retry, not the session.
+_TAPPED_CAP = 64
+_tapped: list[str] = []
+
+
+def _already_tapped(query_id: str) -> bool:
+    """True when this very tap has been acted on before."""
+    if query_id in _tapped:
+        return True
+    _tapped.append(query_id)
+    del _tapped[:-_TAPPED_CAP]
+    return False
+
+
 async def _handle_tap(http: httpx.AsyncClient, update: dict, h: Handlers, send) -> bool:
-    """Act on an exit button; True when the update was one, obeyed or refused."""
+    """Act on an exit or tithe button; True when the update was one."""
+    gift = tithe_tap(update)
+    if gift is not None:
+        query_id, amount = gift
+        await answer_tap(http, query_id, f"десятина {amount:,.2f}$")
+        if h.tithe is not None and not _already_tapped(query_id):
+            await send(await h.tithe(amount))
+        return True
     tap = exit_tap(update)
     if tap is None:
         # A refused or malformed tap is still not a command: swallow it.

@@ -893,6 +893,59 @@ EXIT_SHARES = (5, 25, 50, 100)
 _TAP = "x"
 
 
+# A tenth of a winning trade, set aside for the mentor. The button only
+# offers the figure and writes it down — nothing here moves money, and the
+# Bybit key stays without withdrawal rights. 0 takes the button away.
+TITHE_PCT = float(os.getenv("TITHE_PCT", "10"))
+_TITHE = "t"
+
+
+def tithe_amount(pnl: float) -> float:
+    """What a winning trade owes, rounded to the cent."""
+    return round(pnl * TITHE_PCT / 100, 2)
+
+
+def tithe_buttons(pnl: float) -> dict | None:
+    """The one-button keyboard under a profitable close; None when there is
+    nothing to tithe — a loss, or the feature switched off."""
+    if TITHE_PCT <= 0 or pnl <= 0:
+        return None
+    owed = tithe_amount(pnl)
+    if owed <= 0:
+        return None
+    return {
+        "inline_keyboard": [
+            [{"text": f"🙏 десятина {owed:,.2f}$", "callback_data": f"{_TITHE}:{owed}"}]
+        ]
+    }
+
+
+async def log_tithe(http: httpx.AsyncClient, amount: float) -> str:
+    """Write one tithe to the journal and say what was written.
+
+    Its own word in the kind column, not `вывод`: the money has not left
+    Bybit, and a row that claimed it had would put the journal out of step
+    with the exchange and make the month's tithes impossible to pick out.
+    """
+    from datetime import datetime
+
+    depo = await equity(http)
+    row = [
+        datetime.now().strftime("%d.%m.%y"),
+        "десятина",
+        # The module settles everything in USDT; the money column follows it.
+        "USDT",
+        *([""] * 10),
+        round(depo, 2) if depo else "",
+        -abs(round(amount, 2)),
+        "",  # P: Закрытие — a tithe has no closing kind
+    ]
+    written = await sheets.log_close(http, {"row": row})
+    link = sheets.row_link(written)
+    said = f"🙏 десятина <b>{abs(amount):,.2f}$</b> записана"
+    return f'<a href="{link}">{said}</a>' if link else said
+
+
 def exit_buttons(symbol: str) -> dict:
     """The inline keyboard offering partial exits for one position."""
     return {
@@ -2004,16 +2057,18 @@ async def _entry_notice(
 
 async def _close_notice(
     http: httpx.AsyncClient, symbol: str, was: Position, spoken_line: str
-) -> tuple[str | None, str, bytes | None]:
-    """The close notice, its chart and the journal write; None with no record.
+) -> tuple[str | None, str, bytes | None, dict | None]:
+    """The close notice, its chart, its keyboard and the journal write.
 
     A position closed in pieces is reported whole: every piece is collected
     and merged, so the figure that goes out is what the trade made, not what
-    its last slice made.
+    its last slice made. The keyboard carries the tithe button on a winning
+    trade — `tick` does not see the PnL, so the offer is made here, where it
+    is known.
     """
     group = await closed_group(http, symbol)
     if not group:
-        return None, spoken_line, None
+        return None, spoken_line, None, None
     record = merge_closes(group)
     # Bybit's closedPnl nets both trading fees; funding it does
     # not — that is charged separately, so it comes off here.
@@ -2067,7 +2122,7 @@ async def _close_notice(
         line += f" · {record['closes']} закрытий"
     _entry_levels.pop(symbol, None)
     _last_close_ms.pop(symbol, None)
-    return line, spoken_line, png
+    return line, spoken_line, png, tithe_buttons(pnl)
 
 
 async def _trim_notice(http: httpx.AsyncClient, symbol: str) -> str:
@@ -2117,7 +2172,9 @@ async def tick(
         elif kind == "changed" and was is not None and now is not None and now.size < was.size:
             line += await _trim_notice(http, symbol)
         elif kind == "closed" and was is not None:
-            closed_line, spoken_line, png = await _close_notice(http, symbol, was, spoken_line)
+            closed_line, spoken_line, png, buttons = await _close_notice(
+                http, symbol, was, spoken_line
+            )
             if closed_line is not None:
                 line = closed_line
         if png is None or not await send_photo(line, png, buttons):
