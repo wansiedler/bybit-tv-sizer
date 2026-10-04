@@ -1362,7 +1362,18 @@ def test_journal_row_extras_carry_the_full_arithmetic():
 
     row = bybit_watch.journal_row("CLUSDT", was, record, -1.19, 128.16, kind="manual")
 
-    assert row[7:] == [131.0, 92.04, 91.9, -1.19, -0.93, "0.020+0.055", 128.16, "", "руками"]
+    # The depo share is a fraction: the sheet's cell is formatted as a
+    # percentage and multiplies it itself. -0.93 here showed as -93%.
+    assert row[7:] == [131.0, 92.04, 91.9, -1.19, -0.009285, "0.020+0.055", 128.16, "", "руками"]
+
+
+def test_journal_row_keeps_a_thin_share_from_rounding_to_nothing():
+    """A 0.0746% trade must not arrive as 0.07% before the format sees it."""
+    was = Position("long", 1.0, 100.0, 100.0)
+
+    row = bybit_watch.journal_row("CLUSDT", was, {}, -67.80, 90844.48)
+
+    assert row[11] == -0.000746
 
 
 def test_journal_row_without_a_stop_leaves_the_r_column_empty():
@@ -3141,7 +3152,7 @@ def test_entry_levels_are_remembered_at_the_open_and_dropped_at_the_close(keyed)
 
     after = asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
-    assert bybit_watch._entry_levels["HYPEUSDT"][1:] == (88.31, 90.24)
+    assert bybit_watch._entry_levels["HYPEUSDT"][1:3] == (88.31, 90.24)
 
     asyncio.run(bybit_watch.tick(http, after, out.send, out.speak, out.send_photo))
 
@@ -3159,3 +3170,33 @@ def test_r_is_measured_against_the_stop_the_trade_was_entered_on(keyed):
 
     assert row_out[4] == "1:2.2"
     assert row_out[5] == pytest.approx(0.31)
+
+
+def test_journal_date_comes_from_the_relay_seeing_the_open(monkeypatch):
+    """`Position.created_ms` dated two trades closed a day apart to 12.07.26."""
+    import datetime as _dt
+
+    opened = Position("long", 1.0, 100.0, 100.0, created_ms=1783900000000)  # 12.07.26
+    monkeypatch.setattr(bybit_watch.time, "time", lambda: 1791100000.0)  # 04.10.26
+    bybit_watch.remember_levels("CLUSDT", opened)
+
+    row = bybit_watch.journal_row("CLUSDT", opened, {}, 5.0)
+
+    assert row[0] == _dt.datetime.fromtimestamp(1791100000.0).strftime("%d.%m.%y")
+
+
+def test_journal_date_falls_back_to_the_closing_record(monkeypatch):
+    """A relay restarted mid-trade never saw the open; the record's time will do."""
+    import datetime as _dt
+
+    was = Position("long", 1.0, 100.0, 100.0, created_ms=1783900000000)
+
+    row = bybit_watch.journal_row("CLUSDT", was, {"createdTime": "1791100000000"}, 5.0)
+
+    assert row[0] == _dt.datetime.fromtimestamp(1791100000.0).strftime("%d.%m.%y")
+
+
+def test_journal_date_is_empty_when_nothing_knows_it():
+    was = Position("long", 1.0, 100.0, 100.0)
+
+    assert bybit_watch.journal_row("CLUSDT", was, {}, 5.0)[0] == ""
