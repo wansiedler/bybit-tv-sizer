@@ -1734,11 +1734,25 @@ PNL_RETRY_SEC = 1.0
 PNL_FRESH_SEC = 300.0
 
 
-async def _fresh_closes(http: httpx.AsyncClient, symbol: str, limit: str) -> list[dict]:
+# The newest closed-pnl record already announced for a symbol, by Bybit's
+# own clock. A trim files a record of its own, so "the newest record is less
+# than five minutes old" stops meaning "this is the close that just
+# happened": one position trimmed four times and then closed reported the
+# fourth trim instead, 153.25 of a trade that made 617.64, because that
+# record was 297 seconds old and the real close was not written yet.
+# Compared against the exchange's timestamps and never against ours, so a
+# clock that drifts cannot starve the check.
+_last_close_ms: dict[str, int] = {}
+
+
+async def _fresh_closes(
+    http: httpx.AsyncClient, symbol: str, limit: str, newer_than: int = 0
+) -> list[dict]:
     """Closed-pnl records, newest first, once the newest one is the fresh one.
 
     Retries while Bybit is still writing it, and refuses a stale answer —
-    reporting the previous trade's figures would be worse than none.
+    reporting the previous trade's figures would be worse than none. Stale
+    means too old, and also not newer than a record already reported.
     """
     for attempt in range(PNL_RETRIES):
         if attempt:
@@ -1755,8 +1769,9 @@ async def _fresh_closes(http: httpx.AsyncClient, symbol: str, limit: str) -> lis
             return []
         rows: list[dict] = result.get("list", [])
         if rows:
-            age = time.time() - int(rows[0].get("updatedTime") or 0) / 1000
-            if age < PNL_FRESH_SEC:
+            written = int(rows[0].get("updatedTime") or 0)
+            age = time.time() - written / 1000
+            if age < PNL_FRESH_SEC and written > newer_than:
                 return rows
     log.warning("closed pnl for %s never appeared", symbol)
     return []
@@ -1764,13 +1779,22 @@ async def _fresh_closes(http: httpx.AsyncClient, symbol: str, limit: str) -> lis
 
 async def closed_record(http: httpx.AsyncClient, symbol: str) -> dict | None:
     """The record of the one close that just happened — a trim, usually."""
-    rows = await _fresh_closes(http, symbol, "1")
-    return rows[0] if rows else None
+    rows = await _fresh_closes(http, symbol, "1", _last_close_ms.get(symbol, 0))
+    if not rows:
+        return None
+    _last_close_ms[symbol] = int(rows[0].get("updatedTime") or 0)
+    return rows[0]
 
 
 async def closed_group(http: httpx.AsyncClient, symbol: str) -> list[dict]:
-    """Every record of the position that just vanished, newest first."""
-    return _same_position(await _fresh_closes(http, symbol, "50"))
+    """Every record of the position that just vanished, newest first.
+
+    The newest must be newer than any record already announced for this
+    symbol, or the trims this position reported on the way down would stand
+    in for the close that ended it.
+    """
+    rows = await _fresh_closes(http, symbol, "50", _last_close_ms.get(symbol, 0))
+    return _same_position(rows)
 
 
 def _same_position(rows: list[dict]) -> list[dict]:
@@ -2042,6 +2066,7 @@ async def _close_notice(
         # twice over.
         line += f" · {record['closes']} закрытий"
     _entry_levels.pop(symbol, None)
+    _last_close_ms.pop(symbol, None)
     return line, spoken_line, png
 
 
