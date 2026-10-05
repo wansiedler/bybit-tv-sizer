@@ -3327,3 +3327,39 @@ def test_log_tithe_links_the_row_when_the_sheet_answers(keyed, monkeypatch):
 
 async def _answer(value):
     return value
+
+
+def test_same_position_survives_bybits_wandering_precision():
+    """One ZEC position rendered its average entry four different ways.
+
+    1326.481626, ...595, ...597, ...592 across eleven closing records.
+    String equality grouped two of them and booked 73.47 of 519.14.
+    """
+    rows = [
+        piece("37.32", "3.07", "1340.10", entry="1326.481626"),
+        piece("36.15", "3.06", "1339.76", entry="1326.481626"),
+        piece("72.30", "6.12", "1339.76", entry="1326.48162595"),
+        piece("46.76", "4.08", "1339.41", entry="1326.48162597"),
+        piece("18.45", "1.14", "1344.13", entry="1326.48162592"),
+        piece("210.23", "19.16", "1321.67", entry="1309.24786535"),  # the trade before
+    ]
+
+    group = bybit_watch._same_position(rows)
+
+    assert len(group) == 5
+    assert bybit_watch.merge_closes(group)["closedPnl"] == pytest.approx(210.98)
+
+
+def test_same_position_still_parts_two_nearby_positions():
+    """A millionth is the width; a tenth of a percent is a different trade."""
+    rows = [
+        piece("1", "1", "100", entry="1326.48"),
+        piece("2", "1", "100", entry="1325.0"),
+    ]
+
+    assert len(bybit_watch._same_position(rows)) == 1
+
+
+def test_same_price_refuses_what_is_not_a_number():
+    assert bybit_watch._same_price("1326.48", "about 1326") is False
+    assert bybit_watch._same_price(None, None) is True  # both nothing, both equal
