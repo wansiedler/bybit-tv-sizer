@@ -1850,28 +1850,46 @@ async def closed_group(http: httpx.AsyncClient, symbol: str) -> list[dict]:
     return _same_position(rows)
 
 
+# How far apart two renderings of one average entry price may sit and still
+# be the same position. Bybit does not render it consistently: one position
+# produced 1326.481626, 1326.48162595, 1326.48162597 and 1326.48162592
+# across its eleven closing records — a different number of digits, and the
+# last digit wandering. Comparing the strings grouped two of those eleven
+# and booked 73.47 of a trade that made 519.14. A millionth is far wider
+# than that wobble and far narrower than two positions apart.
+_SAME_PRICE = 1e-6
+
+
+def _same_price(one: str | None, other: str | None) -> bool:
+    """Whether two average entry prices name the same position."""
+    try:
+        a, b = float(one or 0), float(other or 0)
+    except ValueError:
+        return False
+    return abs(a - b) <= max(abs(a), abs(b)) * _SAME_PRICE
+
+
 def _same_position(rows: list[dict]) -> list[dict]:
     """The newest record and the older ones that closed the same position.
 
     Bybit files one record per closing execution and gives them nothing to
     be grouped by: `createdTime` belongs to the closing order, not to the
     position. What the pieces of one position do share is its average entry
-    price, to the last decimal — so the run of records carrying the newest
-    one's entry and side is the position, and the first record that differs
-    ends it.
+    price — so the run of records carrying the newest one's entry and side
+    is the position, and the first record that differs ends it.
 
     The coincidence this cannot see through: closing a position and opening
-    another at the very same average entry merges the two. Eight decimals
-    make that vanishingly unlikely, and the cost is one merged row.
+    another within a millionth of the same average entry merges the two.
+    The cost is one merged row.
     """
     if not rows:
         return []
     head = rows[0]
     group = []
     for row in rows:
-        if row.get("avgEntryPrice") != head.get("avgEntryPrice") or row.get("side") != head.get(
+        if not _same_price(row.get("avgEntryPrice"), head.get("avgEntryPrice")) or row.get(
             "side"
-        ):
+        ) != head.get("side"):
             break
         group.append(row)
     return group
