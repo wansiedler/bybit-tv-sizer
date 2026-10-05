@@ -396,7 +396,7 @@ async def _trim_cut(
         )
         await send(
             f"✂️ {base_symbol(symbol)}: risk {risk / depo * 100:.2f}% depo vs target "
-            f"{RISK_TARGET * 100:.2f}% — cutting {position.size:g}→{want:g}"
+            f"{RISK_TARGET * 100:.2f}% — cutting {_qty(position.size)}→{_qty(want)}"
         )
         await speak(f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} trimmed")
     # Deliberately broad: one refused cut must not strand the rest.
@@ -408,6 +408,9 @@ async def _trim_cut(
 # When each symbol's take was last touched: Bybit needs a moment to show a
 # fresh order, and re-posting on every half-second poll would spam the book.
 _tp_cooldown: dict[str, float] = {}
+# symbol -> the refusal already announced for its maker exit, so one broken
+# resize is one message and not one every pass.
+_tp_refused: dict[str, str] = {}
 
 
 async def tp_maker(http: httpx.AsyncClient, open_now: dict[str, Position], send, speak) -> None:
@@ -485,7 +488,7 @@ async def _repost_take(
                     "symbol": symbol,
                     "side": "Sell" if position.side == "long" else "Buy",
                     "orderType": "Limit",
-                    "qty": f"{position.size:g}",
+                    "qty": _qty(position.size),
                     "price": price,
                     "reduceOnly": True,
                     "positionIdx": position.position_idx,
@@ -509,6 +512,19 @@ async def _repost_take(
         await send(f"❌ {base_symbol(symbol)}: could not repost the take ({exc})")
 
 
+def _qty(size: float) -> str:
+    """A quantity the exchange will read back as the number we meant.
+
+    `%g` keeps six significant digits. That is exact for a 36.84 ETH
+    position and lossy for a 149314.2 ARB one: the tenth is dropped, the
+    amend asks for the size the order already carries, and Bybit answers
+    10001 "order not modified" — once every ten seconds for as long as the
+    position lives, because the size it was compared against never changed.
+    A market close formatted this way would leave the same tenth behind.
+    """
+    return f"{size:.8f}".rstrip("0").rstrip(".") or "0"
+
+
 async def _resize_exit(
     http: httpx.AsyncClient, symbol: str, position: Position, exit_order: dict, send
 ) -> None:
@@ -521,14 +537,21 @@ async def _resize_exit(
                 "category": "linear",
                 "symbol": symbol,
                 "orderId": exit_order["orderId"],
-                "qty": f"{position.size:g}",
+                "qty": _qty(position.size),
             },
         )
-        await send(f"🎯 {base_symbol(symbol)}: take limit resized to {position.size:g}")
+        _tp_refused.pop(symbol, None)
+        await send(f"🎯 {base_symbol(symbol)}: take limit resized to {_qty(position.size)}")
     # Deliberately broad: one refused amend must not strand the rest.
     except Exception as exc:  # noqa: BLE001
         log.exception("tp-maker amend failed for %s", symbol)
-        await send(f"❌ {base_symbol(symbol)}: could not resize the take ({exc})")
+        # The exchange refusing the same resize for the same reason is one
+        # piece of news, not one every ten seconds: a lossy quantity put 110
+        # identical lines in the chat over twenty minutes, until the position
+        # closed. Said once, and again only when the answer changes.
+        if _tp_refused.get(symbol) != str(exc):
+            _tp_refused[symbol] = str(exc)
+            await send(f"❌ {base_symbol(symbol)}: could not resize the take ({exc})")
 
 
 async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, speak) -> None:
@@ -649,7 +672,7 @@ async def _enforce_rules(
                 http,
                 symbol,
                 "Buy" if position.side == "long" else "Sell",
-                f"{position.size:g}",
+                _qty(position.size),
                 position.position_idx,
             )
             _guard_closed[symbol] = reason
@@ -1007,7 +1030,7 @@ async def close_fraction(http: httpx.AsyncClient, symbol: str, percent: float) -
     _trim_cooldown[symbol] = time.monotonic()
     try:
         await _close_market(
-            http, symbol, row.get("side", ""), f"{qty:g}", int(row.get("positionIdx") or 0)
+            http, symbol, row.get("side", ""), _qty(qty), int(row.get("positionIdx") or 0)
         )
     # Deliberately broad: the refusal text is the answer.
     except Exception as exc:  # noqa: BLE001

@@ -3363,3 +3363,82 @@ def test_same_position_still_parts_two_nearby_positions():
 def test_same_price_refuses_what_is_not_a_number():
     assert bybit_watch._same_price("1326.48", "about 1326") is False
     assert bybit_watch._same_price(None, None) is True  # both nothing, both equal
+
+
+# --- quantities the exchange reads back as the number we meant -------------
+
+
+@pytest.mark.parametrize(
+    ("size", "expected"),
+    [
+        (149314.2, "149314.2"),  # %g gave "149314" — the tenth, and the loop
+        (436016.2, "436016.2"),
+        (36.84, "36.84"),
+        (0.1, "0.1"),
+        (1.0, "1"),
+        (0.0, "0"),
+        (0.00000001, "0.00000001"),
+    ],
+)
+def test_qty_keeps_every_digit_the_exchange_cares_about(size, expected):
+    assert bybit_watch._qty(size) == expected
+
+
+def test_resize_exit_says_a_refusal_once(keyed, monkeypatch):
+    """110 identical lines over twenty minutes, until the position closed."""
+    out = Recorder()
+
+    async def _refuse(*_args, **_kwargs):
+        raise RuntimeError("bybit /v5/order/amend: 10001 order not modified")
+
+    monkeypatch.setattr(bybit_watch, "_post", _refuse)
+    position = Position("long", 149314.2, 0.2036, 30394.0)
+
+    for _ in range(5):
+        asyncio.run(
+            bybit_watch._resize_exit(FakeHTTP(), "ARBUSDT", position, {"orderId": "o1"}, out.send)
+        )
+
+    assert out.sent == [
+        "❌ ARB: could not resize the take (bybit /v5/order/amend: 10001 order not modified)"
+    ]
+
+
+def test_resize_exit_speaks_again_when_the_refusal_changes(keyed, monkeypatch):
+    out = Recorder()
+    reasons = iter(["10001 order not modified", "110001 order not exists"])
+
+    async def _refuse(*_args, **_kwargs):
+        raise RuntimeError(next(reasons))
+
+    monkeypatch.setattr(bybit_watch, "_post", _refuse)
+    position = Position("long", 149314.2, 0.2036, 30394.0)
+
+    for _ in range(2):
+        asyncio.run(
+            bybit_watch._resize_exit(FakeHTTP(), "ARBUSDT", position, {"orderId": "o1"}, out.send)
+        )
+
+    assert len(out.sent) == 2
+
+
+def test_resize_exit_forgets_the_refusal_once_it_works(keyed, monkeypatch):
+    out = Recorder()
+    calls = {"n": 0}
+
+    async def _sometimes(*_args, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] != 2:
+            raise RuntimeError("10001 order not modified")
+        return {}
+
+    monkeypatch.setattr(bybit_watch, "_post", _sometimes)
+    position = Position("long", 149314.2, 0.2036, 30394.0)
+
+    for _ in range(3):
+        asyncio.run(
+            bybit_watch._resize_exit(FakeHTTP(), "ARBUSDT", position, {"orderId": "o1"}, out.send)
+        )
+
+    # refused, resized, refused again — the middle success clears the memory
+    assert [s[0] for s in out.sent] == ["❌", "🎯", "❌"]
