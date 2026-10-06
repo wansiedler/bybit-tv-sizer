@@ -880,3 +880,72 @@ def test_margin_cap_is_a_fixed_point():
     second = asyncio.run(sizer.margin_cap(http, "NEARUSDT", entry, first))
 
     assert second == first
+
+
+class DogeHTTP(FakeHTTP):
+    """A lot step of 1 and an order of 286,831 — the wobble that got through."""
+
+    def __init__(self):
+        super().__init__()
+        self.equity = "90000"
+        self.instruments = [
+            {"lotSizeFilter": {"qtyStep": "1", "minOrderQty": "1", "maxOrderQty": "43678900"}}
+        ]
+
+
+DOGE = {
+    "symbol": "DOGEUSDT",
+    "orderId": "d0ge0001",
+    "side": "Buy",
+    "price": "0.09328",
+    "stopLoss": "0.09057",
+    "qty": "286831",
+    "orderType": "Limit",
+    "orderStatus": "New",
+    "reduceOnly": False,
+    "triggerPrice": "",
+    "cumExecQty": "0",
+}
+
+
+def test_tick_ignores_a_wobble_wider_than_a_lot_step(monkeypatch):
+    """286,826 -> 286,831 -> 286,829 -> 286,831, five units on a step of one.
+
+    The deadband that stopped the ZEC order was one lot step wide, which is
+    the instrument's resolution and nothing to do with how far equity walks
+    a 286,831-unit target.
+    """
+    monkeypatch.setattr(sizer, "DRY_RUN", False)
+    http, out = DogeHTTP(), Recorder()
+    target = sizer.target_qty(DOGE, Decimal(http.equity), http.instruments[0])
+    assert target is not None and target > 100000  # a size where this bites
+    http.orders = [dict(DOGE, qty=str(target - 5))]  # five units, five steps
+
+    run_tick(http, out)
+
+    assert http.amended == []
+    assert out.sent == []
+
+
+def test_tick_still_resizes_past_the_deadband(monkeypatch):
+    """The DOGE order's real resize was 106,561 -> 286,826, a hundred-fold."""
+    monkeypatch.setattr(sizer, "DRY_RUN", False)
+    http, out = DogeHTTP(), Recorder()
+    target = sizer.target_qty(DOGE, Decimal(http.equity), http.instruments[0])
+    assert target is not None
+    http.orders = [dict(DOGE, qty=str(target // 2))]
+
+    run_tick(http, out)
+
+    assert [o["qty"] for o in http.amended] == [str(target)]
+
+
+def test_the_deadband_never_narrows_below_a_lot_step(monkeypatch):
+    """On a small order a thousandth is less than the step; the step wins."""
+    monkeypatch.setattr(sizer, "DRY_RUN", False)
+    http, out = FakeHTTP(), Recorder()
+    http.orders = [dict(ORDER, qty="0.046")]  # target 0.047, one 0.001 step
+
+    run_tick(http, out)
+
+    assert http.amended == []
