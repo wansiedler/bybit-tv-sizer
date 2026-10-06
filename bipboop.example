@@ -111,6 +111,21 @@ SETTLE_POLLS=2
 # is below this, and when a fresh position's risk strays from RISK_PCT.
 # 0 disables the RR check.
 MIN_RR=2
+# Scale out instead of one take (needs TP_MAKER=1 and a stop on the trade).
+# The first rung stands TP_FREE in R from the entry, and its share is the one
+# that pays for the whole trade: fill it and a stop-out afterwards costs
+# nothing. Price and share are one choice, not two — nearer the entry needs a
+# bigger slice, and at the entry it would be the whole position. TP_LADDER is
+# where the rest sit, also in R; the position's own take always ends the
+# ladder and carries the rounding. A rung within half an R of the take is
+# dropped — two orders doing one order's work — and its share goes to the
+# take. Empty TP_LADDER leaves the breakeven rung and the take; TP_FREE=0
+# drops the breakeven rung; without a stop the exit stays one limit.
+#   entry 100000, stop 99171, take 110000, 1 BTC ->
+#   100829×53%  101658×12%  102487×12%  103316×12%  110000×12%
+TP_FREE=1
+TP_LADDER=2,3,4
+
 # Maker takes: swap the position's market take-profit (taker fee) for a
 # reduce-only limit at the same price (maker, less than half the fee).
 # The catch: a touch-and-bounce can leave a resting limit unfilled where

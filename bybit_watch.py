@@ -79,6 +79,23 @@ RISK_TRIM = os.getenv("RISK_TRIM", "1") == "1"
 # The price can touch the level and bounce without filling a resting limit,
 # so the cheaper exit is not guaranteed the way the market TP is.
 TP_MAKER = os.getenv("TP_MAKER", "0") == "1"
+
+# Scaling out instead of one take. The first rung stands where selling its
+# share pays for the whole trade: fill it and a stop-out afterwards costs
+# nothing. Its price fixes its share and the other way round — there is one
+# choice here, not two, because selling at the entry itself would need the
+# whole position. TP_FREE is that rung's distance in R; the share follows.
+# TP_LADDER is where the rest sit, also in R, and the position's own take
+# always ends the ladder. Empty TP_LADDER leaves the breakeven rung and the
+# take; TP_FREE=0 drops the breakeven rung. Both need a stop to measure R
+# against, and without one the exit stays the single limit it was.
+TP_FREE = float(os.getenv("TP_FREE", "1"))
+TP_LADDER = tuple(
+    float(step) for step in os.getenv("TP_LADDER", "2,3,4").replace(" ", "").split(",") if step
+)
+# What the entry and the stop-out cost, for the breakeven share. The entry is
+# a maker limit and the stop a market close, the same pair the sizer budgets.
+MAKER_FEE = float(os.getenv("MAKER_FEE", "0.0002"))
 GUARD_MAX_LEVERAGE = float(os.getenv("MAX_LEVERAGE", "1"))
 GUARD_GRACE = float(os.getenv("GUARD_GRACE_SEC", "45"))
 
@@ -198,13 +215,17 @@ def _position_of(row: dict) -> Position:
 
 async def _fold_exits(http: httpx.AsyncClient, open_now: dict[str, Position]) -> None:
     """Give takes that live as maker exit orders back to their positions."""
-    for symbol, order in (await maker_exits(http)).items():
+    for symbol, orders in (await maker_exits(http)).items():
         position = open_now.get(symbol)
-        if position is not None and position.take_profit is None:
-            open_now[symbol] = replace(position, take_profit=float(order["price"]), maker_exit=True)
+        if position is None or position.take_profit is not None:
+            continue
+        # The ladder's last rung is the take; the nearer ones are scale-outs.
+        prices = [float(o["price"]) for o in orders]
+        take = max(prices) if position.side == "long" else min(prices)
+        open_now[symbol] = replace(position, take_profit=take, maker_exit=True)
 
 
-async def maker_exits(http: httpx.AsyncClient) -> dict[str, dict]:
+async def maker_exits(http: httpx.AsyncClient) -> dict[str, list[dict]]:
     """Our reduce-only limit exits by symbol — the maker take-profits.
 
     Best-effort: an unreachable order list answers empty and the callers
@@ -216,7 +237,7 @@ async def maker_exits(http: httpx.AsyncClient) -> dict[str, dict]:
     except Exception:  # noqa: BLE001
         log.exception("exit order listing failed")
         return {}
-    exits: dict[str, dict] = {}
+    exits: dict[str, list[dict]] = {}
     for r in result.get("list") or []:
         if (
             r.get("reduceOnly")
@@ -224,7 +245,9 @@ async def maker_exits(http: httpx.AsyncClient) -> dict[str, dict]:
             and not r.get("stopOrderType")
             and float(r.get("price") or 0) > 0
         ):
-            exits[r["symbol"]] = r
+            exits.setdefault(r["symbol"], []).append(r)
+    for orders in exits.values():
+        orders.sort(key=lambda r: float(r["price"]))
     return exits
 
 
@@ -312,13 +335,18 @@ def _guard_violation(position: Position) -> str | None:
     return None
 
 
-async def _lot(http: httpx.AsyncClient, symbol: str) -> tuple[float, float]:
-    """The instrument's quantity step and minimum order size."""
+async def lot_filter(http: httpx.AsyncClient, symbol: str) -> dict:
+    """The instrument's lot rules: step, minimum size, minimum notional."""
     result = await _get(
         http, "/v5/market/instruments-info", {"category": "linear", "symbol": symbol}
     )
     rows = result.get("list") or []
-    lot = (rows[0] if rows else {}).get("lotSizeFilter") or {}
+    return (rows[0] if rows else {}).get("lotSizeFilter") or {}
+
+
+async def _lot(http: httpx.AsyncClient, symbol: str) -> tuple[float, float]:
+    """The instrument's quantity step and minimum order size."""
+    lot = await lot_filter(http, symbol)
     return float(lot.get("qtyStep") or 0), float(lot.get("minOrderQty") or 0)
 
 
@@ -435,65 +463,199 @@ async def tp_maker(http: httpx.AsyncClient, open_now: dict[str, Position], send,
             continue
         if time.monotonic() - _tp_cooldown.get(symbol, 0.0) < 10.0:
             continue
-        exit_order = exits.get(symbol)
+        exit_orders: list[dict] = exits.get(symbol) or []
         if not position.maker_exit:
             _tp_cooldown[symbol] = time.monotonic()
-            await _repost_take(http, symbol, position, exit_order, send, speak)
-        elif exit_order is not None and float(exit_order.get("qty") or 0) != position.size:
+            await _repost_take(http, symbol, position, exit_orders, send, speak)
+            continue
+        if not exit_orders:
+            continue
+        rungs = ladder_rungs(position, await lot_filter(http, symbol))
+        if not rungs:
+            rungs = [(position.take_profit or 0.0, position.size)]
+        if not ladder_matches(rungs, exit_orders):
             _tp_cooldown[symbol] = time.monotonic()
-            await _resize_exit(http, symbol, position, exit_order, send)
+            await _rebuild_ladder(http, symbol, position, exit_orders, send)
 
 
 async def _cancel_orphan_exits(
-    http: httpx.AsyncClient, exits: dict[str, dict], open_now: dict[str, Position], send
+    http: httpx.AsyncClient,
+    exits: dict[str, list[dict]],
+    open_now: dict[str, Position],
+    send,
 ) -> None:
     """Cancel maker exits whose position is gone — a stop-out leaves one."""
-    for symbol, order in exits.items():
+    for symbol, orders in exits.items():
         if symbol in open_now or time.monotonic() - _tp_cooldown.get(symbol, 0.0) < 10.0:
             continue
         _tp_cooldown[symbol] = time.monotonic()
         try:
-            await _post(
-                http,
-                "/v5/order/cancel",
-                {"category": "linear", "symbol": symbol, "orderId": order["orderId"]},
-            )
+            await _cancel_rungs(http, symbol, orders)
             await send(f"🎯 {base_symbol(symbol)}: take limit left without a position — cancelled")
         # Deliberately broad: one refused cancel must not strand the rest.
         except Exception:  # noqa: BLE001
             log.exception("orphan exit cancel failed for %s", symbol)
 
 
+def breakeven_share(position: Position, price: float) -> float:
+    """Fraction of the position whose sale at `price` pays for a stop-out.
+
+    Sell it and the rest is free: if the stop then fires, the trade is
+    square. Both fees are in — the maker entry on the whole position, the
+    maker exit on the slice, the taker stop on what is left.
+
+        f = (R + S·taker + E·maker) / (|P − S| − P·maker + S·taker)
+
+    Nearer the entry means a larger slice, and at the entry it would be the
+    whole position. That is why the rung's distance is the setting and its
+    share is derived, never both.
+
+    0.0 when there is nothing to measure against or the answer is not a
+    fraction of a position.
+    """
+    stop = position.stop_loss
+    if not stop or not price or position.price <= 0:
+        return 0.0
+    risk = abs(position.price - stop)
+    reach = abs(price - stop)
+    if risk <= 0 or reach <= 0:
+        return 0.0
+    owed = risk + stop * TAKER_FEE + position.price * MAKER_FEE
+    paid = reach - price * MAKER_FEE + stop * TAKER_FEE
+    share = owed / paid if paid > 0 else 0.0
+    return share if 0.0 < share < 1.0 else 0.0
+
+
+def _rung_price(position: Position, multiple: float) -> float:
+    """Where `multiple` R from the entry sits, in the trade's direction."""
+    risk = abs(position.price - (position.stop_loss or 0.0))
+    step = risk * multiple
+    return position.price + step if position.side == "long" else position.price - step
+
+
+def ladder_rungs(position: Position, lot: dict) -> list[tuple[float, float]]:
+    """(price, quantity) per rung, nearest first; [] to leave the one limit.
+
+    The breakeven rung takes the share that pays for the trade, the rest
+    split what remains evenly, and the position's own take ends the ladder
+    carrying whatever rounding left over — so four rungs and a remainder
+    never strand two coins above the take.
+
+    A rung the exchange would refuse is dropped rather than sent: its share
+    goes to the take, which is where it would have ended anyway.
+    """
+    if not TP_MAKER or not position.stop_loss or position.take_profit is None:
+        return []
+    step = float(lot.get("qtyStep") or 0)
+    least = float(lot.get("minOrderQty") or 0)
+    floor_value = float(lot.get("minNotionalValue") or 0)
+    if step <= 0:
+        return []
+    prices = [_rung_price(position, m) for m in TP_LADDER if m > 0]
+    if TP_FREE > 0:
+        prices.insert(0, _rung_price(position, TP_FREE))
+    free_share = breakeven_share(position, prices[0]) if TP_FREE > 0 and prices else 0.0
+    shares = [free_share] if free_share else []
+    rest = [p for p in prices[len(shares) :] if _beyond(position, p)]
+    if rest:
+        shares += [(1.0 - free_share) / (len(rest) + 1)] * len(rest)
+    rungs = []
+    placed = 0.0
+    for price, share in zip(prices[: len(shares)], shares, strict=True):
+        qty = _floor_step(position.size * share, step)
+        if qty < least or qty * price < floor_value:
+            continue
+        rungs.append((price, qty))
+        placed += qty
+    tail = _floor_step(position.size - placed, step)
+    if tail >= least and tail * position.take_profit >= floor_value:
+        rungs.append((position.take_profit, tail))
+    return rungs
+
+
+# How close to the take a rung may stand before it stops being its own
+# step, in R. A ZEC trade whose take sat at 3.19R put the 4R rung at 1399.12
+# against a take of 1403.65 — half a percent apart, two orders doing one
+# order's work. Nearer than this and the rung is dropped; its share goes to
+# the take, which is where it was headed.
+_RUNG_GAP = 0.5
+
+
+def _beyond(position: Position, price: float) -> bool:
+    """Whether a rung stands far enough short of the take to be worth one."""
+    if position.take_profit is None or not position.stop_loss:
+        return False
+    gap = abs(position.price - position.stop_loss) * _RUNG_GAP
+    if position.side == "long":
+        return price < position.take_profit - gap
+    return price > position.take_profit + gap
+
+
+def _floor_step(qty: float, step: float) -> float:
+    """Down to the lot step, without the float dust `//` leaves behind."""
+    from decimal import Decimal
+
+    lot = Decimal(str(step))
+    return float((Decimal(str(qty)) / lot).to_integral_value(rounding="ROUND_DOWN") * lot)
+
+
+async def _place_rung(
+    http: httpx.AsyncClient, symbol: str, position: Position, price: float, qty: float
+) -> None:
+    """One reduce-only limit of the ladder."""
+    await _post(
+        http,
+        "/v5/order/create",
+        {
+            "category": "linear",
+            "symbol": symbol,
+            "side": "Sell" if position.side == "long" else "Buy",
+            "orderType": "Limit",
+            "qty": _qty(qty),
+            "price": f"{price:g}",
+            "reduceOnly": True,
+            "positionIdx": position.position_idx,
+        },
+    )
+
+
+async def _cancel_rungs(http: httpx.AsyncClient, symbol: str, orders: list[dict]) -> None:
+    """Take the ladder down, so it can be built again from the new size."""
+    for order in orders:
+        await _post(
+            http,
+            "/v5/order/cancel",
+            {"category": "linear", "symbol": symbol, "orderId": order["orderId"]},
+        )
+
+
+def _ladder_note(symbol: str, rungs: list[tuple[float, float]], size: float) -> str:
+    """The ladder as one line: where each rung stands and what share it takes."""
+    steps = " · ".join(f"{price:g}×{qty / size * 100:.0f}%" for price, qty in rungs)
+    return f"🎯 {base_symbol(symbol)}: {steps}"
+
+
 async def _repost_take(
     http: httpx.AsyncClient,
     symbol: str,
     position: Position,
-    exit_order: dict | None,
+    exit_orders: list[dict],
     send,
     speak,
 ) -> None:
-    """Stand the reduce-only limit at the take, then drop the market TP.
+    """Stand the ladder, then drop the market TP.
 
     In that order: a refusal in between leaves the position covered by the
-    original take.
+    original take. Without a stop there is no R to measure rungs against, so
+    the exit stays the single limit it has always been.
     """
-    price = f"{position.take_profit:g}"
+    rungs = ladder_rungs(position, await lot_filter(http, symbol))
+    if not rungs:
+        rungs = [(position.take_profit or 0.0, position.size)]
     try:
-        if exit_order is None:
-            await _post(
-                http,
-                "/v5/order/create",
-                {
-                    "category": "linear",
-                    "symbol": symbol,
-                    "side": "Sell" if position.side == "long" else "Buy",
-                    "orderType": "Limit",
-                    "qty": _qty(position.size),
-                    "price": price,
-                    "reduceOnly": True,
-                    "positionIdx": position.position_idx,
-                },
-            )
+        if not exit_orders:
+            for price, qty in rungs:
+                await _place_rung(http, symbol, position, price, qty)
         await _post(
             http,
             "/v5/position/trading-stop",
@@ -504,7 +666,7 @@ async def _repost_take(
                 "positionIdx": position.position_idx,
             },
         )
-        await send(f"🎯 {base_symbol(symbol)}: take {price} reposted as a limit (maker)")
+        await send(_ladder_note(symbol, rungs, position.size) + " (maker)")
         await speak(f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} take reposted")
     # Deliberately broad: one refused repost must not strand the rest.
     except Exception as exc:  # noqa: BLE001
@@ -525,33 +687,49 @@ def _qty(size: float) -> str:
     return f"{size:.8f}".rstrip("0").rstrip(".") or "0"
 
 
-async def _resize_exit(
-    http: httpx.AsyncClient, symbol: str, position: Position, exit_order: dict, send
+async def _rebuild_ladder(
+    http: httpx.AsyncClient, symbol: str, position: Position, exit_orders: list[dict], send
 ) -> None:
-    """Fit the maker exit to the position after a trim changed its size."""
+    """Take the ladder down and build it again from the size that is left.
+
+    A trim invalidates every rung at once — their shares were cut from the
+    old size — so resizing one of them is not a smaller version of this. A
+    rung that already filled is simply not there to cancel.
+    """
+    rungs = ladder_rungs(position, await lot_filter(http, symbol))
+    if not rungs:
+        rungs = [(position.take_profit or 0.0, position.size)]
     try:
-        await _post(
-            http,
-            "/v5/order/amend",
-            {
-                "category": "linear",
-                "symbol": symbol,
-                "orderId": exit_order["orderId"],
-                "qty": _qty(position.size),
-            },
-        )
+        await _cancel_rungs(http, symbol, exit_orders)
+        for price, qty in rungs:
+            await _place_rung(http, symbol, position, price, qty)
         _tp_refused.pop(symbol, None)
-        await send(f"🎯 {base_symbol(symbol)}: take limit resized to {_qty(position.size)}")
-    # Deliberately broad: one refused amend must not strand the rest.
+        await send(_ladder_note(symbol, rungs, position.size) + " (rebuilt)")
+    # Deliberately broad: one refused rebuild must not strand the rest.
     except Exception as exc:  # noqa: BLE001
-        log.exception("tp-maker amend failed for %s", symbol)
-        # The exchange refusing the same resize for the same reason is one
-        # piece of news, not one every ten seconds: a lossy quantity put 110
-        # identical lines in the chat over twenty minutes, until the position
-        # closed. Said once, and again only when the answer changes.
+        log.exception("tp-maker rebuild failed for %s", symbol)
+        # The exchange refusing the same rebuild for the same reason is one
+        # piece of news, not one every ten seconds.
         if _tp_refused.get(symbol) != str(exc):
             _tp_refused[symbol] = str(exc)
-            await send(f"❌ {base_symbol(symbol)}: could not resize the take ({exc})")
+            await send(f"❌ {base_symbol(symbol)}: could not rebuild the ladder ({exc})")
+
+
+def ladder_matches(rungs: list[tuple[float, float]], orders: list[dict]) -> bool:
+    """Whether what rests on the exchange is already the ladder we want.
+
+    Compared on the quantities the exchange reports, at the precision it
+    reports them: an order holding 149314 against a wanted 149314.2 is a
+    different ladder, and saying otherwise is how the last loop started.
+    """
+    if len(rungs) != len(orders):
+        return False
+    live = sorted((float(o["price"]), float(o["qty"])) for o in orders)
+    want = sorted((round(price, 8), round(qty, 8)) for price, qty in rungs)
+    return all(
+        abs(a - c) <= 1e-6 * max(1.0, abs(c)) and abs(b - d) <= 1e-6 * max(1.0, abs(d))
+        for (a, b), (c, d) in zip(live, want, strict=True)
+    )
 
 
 async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, speak) -> None:

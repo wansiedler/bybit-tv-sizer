@@ -216,6 +216,51 @@ filling a resting limit, where the market TP would have closed. The stop is
 never converted — a limit stop can miss on a wick, and a missed stop has no
 ceiling, while a missed take is only a smaller win.
 
+### Scaling out (`TP_FREE`, `TP_LADDER`)
+
+The one limit can be a ladder. The first rung stands `TP_FREE` in R from the
+entry, and its **share is the one that pays for the whole trade**: fill it
+and a stop-out afterwards costs nothing.
+
+```text
+entry 100,000 - stop 99,171 - take 110,000 - 1 BTC
+
+100,829   0.533 BTC   53%   <- sell this and the rest is free
+101,658   0.116       12%
+102,487   0.116       12%
+103,316   0.116       12%
+110,000   0.119       12%   <- the take
+```
+
+The share follows from the price:
+
+```text
+f = (R + stop*taker + entry*maker) / (|rung - stop| - rung*maker + stop*taker)
+```
+
+**Price and share are one choice, not two.** Nearer the entry needs a bigger
+slice, and at the entry it would be the whole position - which is why the
+distance is the setting and the share is derived. Selling 1/(k+1) at kR is
+the same statement without the fees.
+
+`TP_LADDER` is where the rest sit, also in R, splitting what the first rung
+left. The position's own take always ends the ladder and carries the
+rounding, so four rungs and a remainder never strand two coins above it.
+
+A rung within **half an R of the take** is dropped: a ZEC trade whose take
+sat at 3.19R put the 4R rung half a percent short of it, two orders doing one
+order's work. Its share goes to the take. A rung the exchange would refuse -
+below `minOrderQty` or `minNotionalValue` - is dropped the same way.
+
+**Without a stop there is no R**, and the exit stays the single limit it has
+always been. `TP_FREE=0` drops the breakeven rung; an empty `TP_LADDER`
+leaves that rung and the take.
+
+A trim invalidates every rung at once - their shares were cut from the old
+size - so the ladder comes down and goes back up from what is left, rather
+than one rung being resized. Rungs that already filled are not there to
+cancel.
+
 ## Alert relaying
 
 Compacts LEXX Draco alerts and re-posts them through your own bot.

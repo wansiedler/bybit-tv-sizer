@@ -1,6 +1,7 @@
 """Tests for the Bybit position watcher. No network: HTTP is faked wholesale."""
 
 import asyncio
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -2522,7 +2523,7 @@ def test_tp_maker_reposts_the_take_as_a_limit(making):
         },
         {"category": "linear", "symbol": "CLUSDT", "takeProfit": "0", "positionIdx": 0},
     ]
-    assert out.sent == ["🎯 CL: take 103 reposted as a limit (maker)"]
+    assert out.sent == ["🎯 CL: 103×100% (maker)"]
     assert out.spoken == ["CL take reposted"]
 
 
@@ -2544,10 +2545,22 @@ def test_tp_maker_resizes_the_exit_after_a_trim(making):
 
     asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": trimmed}, out.send, out.speak))
 
+    # A trim invalidates every rung's share at once, so the ladder comes
+    # down and goes back up from the size that is left.
     assert http.orders == [
-        {"category": "linear", "symbol": "CLUSDT", "orderId": "e1", "qty": "1.5"}
+        {"category": "linear", "symbol": "CLUSDT", "orderId": "e1"},
+        {
+            "category": "linear",
+            "symbol": "CLUSDT",
+            "side": "Sell",
+            "orderType": "Limit",
+            "qty": "1.5",
+            "price": "103",
+            "reduceOnly": True,
+            "positionIdx": 0,
+        },
     ]
-    assert out.sent == ["🎯 CL: take limit resized to 1.5"]
+    assert out.sent == ["🎯 CL: 103×100% (rebuilt)"]
 
 
 def test_tp_maker_leaves_a_matching_exit_alone(making):
@@ -2621,14 +2634,14 @@ def test_tp_maker_reports_a_refused_repost(making):
     assert out.sent == ["❌ CL: could not repost the take (order rejected)"]
 
 
-def test_tp_maker_reports_a_refused_resize(making):
+def test_tp_maker_reports_a_refused_rebuild(making):
     http, out = ClosingHTTP(), Recorder()
     http.order_rows = [exit_row(qty="9")]
     http.refuse_order = True
 
     asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": EXITED}, out.send, out.speak))
 
-    assert out.sent == ["❌ CL: could not resize the take (order rejected)"]
+    assert out.sent == ["❌ CL: could not rebuild the ladder (order rejected)"]
 
 
 def test_tp_maker_stays_dormant_when_disabled(keyed):
@@ -3384,7 +3397,7 @@ def test_qty_keeps_every_digit_the_exchange_cares_about(size, expected):
     assert bybit_watch._qty(size) == expected
 
 
-def test_resize_exit_says_a_refusal_once(keyed, monkeypatch):
+def test_rebuild_says_a_refusal_once(keyed, monkeypatch):
     """110 identical lines over twenty minutes, until the position closed."""
     out = Recorder()
 
@@ -3396,15 +3409,17 @@ def test_resize_exit_says_a_refusal_once(keyed, monkeypatch):
 
     for _ in range(5):
         asyncio.run(
-            bybit_watch._resize_exit(FakeHTTP(), "ARBUSDT", position, {"orderId": "o1"}, out.send)
+            bybit_watch._rebuild_ladder(
+                ClosingHTTP(), "ARBUSDT", position, [{"orderId": "o1"}], out.send
+            )
         )
 
     assert out.sent == [
-        "❌ ARB: could not resize the take (bybit /v5/order/amend: 10001 order not modified)"
+        "❌ ARB: could not rebuild the ladder (bybit /v5/order/amend: 10001 order not modified)"
     ]
 
 
-def test_resize_exit_speaks_again_when_the_refusal_changes(keyed, monkeypatch):
+def test_rebuild_speaks_again_when_the_refusal_changes(keyed, monkeypatch):
     out = Recorder()
     reasons = iter(["10001 order not modified", "110001 order not exists"])
 
@@ -3416,29 +3431,235 @@ def test_resize_exit_speaks_again_when_the_refusal_changes(keyed, monkeypatch):
 
     for _ in range(2):
         asyncio.run(
-            bybit_watch._resize_exit(FakeHTTP(), "ARBUSDT", position, {"orderId": "o1"}, out.send)
+            bybit_watch._rebuild_ladder(
+                ClosingHTTP(), "ARBUSDT", position, [{"orderId": "o1"}], out.send
+            )
         )
 
     assert len(out.sent) == 2
 
 
-def test_resize_exit_forgets_the_refusal_once_it_works(keyed, monkeypatch):
+def test_rebuild_forgets_the_refusal_once_it_works(keyed, monkeypatch):
     out = Recorder()
-    calls = {"n": 0}
+    attempts = {"n": 0}
+    allow = {"on": False}
 
     async def _sometimes(*_args, **_kwargs):
-        calls["n"] += 1
-        if calls["n"] != 2:
+        if not allow["on"]:
             raise RuntimeError("10001 order not modified")
         return {}
 
     monkeypatch.setattr(bybit_watch, "_post", _sometimes)
     position = Position("long", 149314.2, 0.2036, 30394.0)
 
-    for _ in range(3):
+    for allowed in (False, True, False):
+        allow["on"] = allowed
+        attempts["n"] += 1
         asyncio.run(
-            bybit_watch._resize_exit(FakeHTTP(), "ARBUSDT", position, {"orderId": "o1"}, out.send)
+            bybit_watch._rebuild_ladder(
+                ClosingHTTP(), "ARBUSDT", position, [{"orderId": "o1"}], out.send
+            )
         )
 
-    # refused, resized, refused again — the middle success clears the memory
-    assert [s[0] for s in out.sent] == ["❌", "🎯", "❌"]
+    # refused, rebuilt, refused again — the success in the middle forgets it
+    assert attempts["n"] == 3
+    assert [line[0] for line in out.sent] == ["❌", "🎯", "❌"]
+
+
+# --- the exit ladder -------------------------------------------------------
+#
+# The first rung stands where selling its share pays for the whole trade:
+# fill it and a stop-out afterwards costs nothing. Its price fixes its share
+# and the other way round, so the distance is the setting and the share is
+# derived.
+
+LADDER_LOT = {"qtyStep": "0.001", "minOrderQty": "0.001", "minNotionalValue": "5"}
+BTC = Position("long", 1.0, 100000.0, 100000.0, take_profit=110000.0, stop_loss=99170.92)
+
+
+def test_breakeven_share_pays_for_the_stop_out(making):
+    """Sell f at 1R and the rest stops out for nothing. Fees included."""
+    share = bybit_watch.breakeven_share(BTC, bybit_watch._rung_price(BTC, 1))
+    risk = BTC.price - (BTC.stop_loss or 0)
+    price = BTC.price + risk
+
+    took = share * (price - BTC.price) - share * price * bybit_watch.MAKER_FEE
+    lost = (1 - share) * risk + (1 - share) * (BTC.stop_loss or 0) * bybit_watch.TAKER_FEE
+    paid = BTC.price * bybit_watch.MAKER_FEE
+
+    assert took == pytest.approx(lost + paid, rel=1e-9)
+
+
+def test_breakeven_share_needs_somewhere_to_measure_from(making):
+    no_stop = Position("long", 1.0, 100.0, 100.0, take_profit=110.0)
+    assert bybit_watch.breakeven_share(no_stop, 105.0) == 0.0
+    assert bybit_watch.breakeven_share(BTC, 0.0) == 0.0
+    # A rung at the stop itself, and one at the entry: neither is a fraction.
+    assert bybit_watch.breakeven_share(BTC, BTC.stop_loss or 0.0) == 0.0
+    assert bybit_watch.breakeven_share(BTC, BTC.price) == 0.0
+    assert bybit_watch.breakeven_share(replace(BTC, price=0.0), 105.0) == 0.0
+
+
+def test_ladder_shares_add_up_to_the_whole_position(making):
+    rungs = bybit_watch.ladder_rungs(BTC, LADDER_LOT)
+
+    assert [price for price, _ in rungs] == pytest.approx(
+        [100829.08, 101658.16, 102487.24, 103316.32, 110000.0], abs=0.01
+    )
+    assert sum(qty for _, qty in rungs) == pytest.approx(BTC.size)
+    assert rungs[0][1] / BTC.size == pytest.approx(0.533, abs=0.001)
+
+
+def test_ladder_mirrors_for_a_short(making):
+    short = Position("short", 10.0, 100.0, 1000.0, take_profit=80.0, stop_loss=104.0)
+
+    rungs = bybit_watch.ladder_rungs(short, {"qtyStep": "0.01", "minOrderQty": "0.01"})
+
+    assert [price for price, _ in rungs] == pytest.approx([96.0, 92.0, 88.0, 84.0, 80.0])
+    # Every rung floors to the lot step, so up to one step stays in the
+    # position rather than being sold above the take.
+    assert short.size - sum(qty for _, qty in rungs) < 0.01
+
+
+def test_ladder_drops_a_rung_that_crowds_the_take(making):
+    """ZEC's take sat at 3.19R; the 4R rung stood half a percent short of it."""
+    zec = Position("long", 36.84, 1326.48162595, 48867.58, take_profit=1403.65, stop_loss=1302.27)
+
+    rungs = bybit_watch.ladder_rungs(zec, {"qtyStep": "0.01", "minOrderQty": "0.01"})
+
+    assert [round(price, 2) for price, _ in rungs] == [1350.69, 1374.90, 1403.65]
+    assert sum(qty for _, qty in rungs) == pytest.approx(zec.size)
+
+
+def test_ladder_stands_down_without_a_stop(making):
+    """No stop, no R, no rungs — the caller keeps the single limit."""
+    assert bybit_watch.ladder_rungs(TAKEN, LADDER_LOT) == []
+
+
+def test_ladder_stands_down_without_a_take_or_a_lot_step(making):
+    no_take = Position("long", 1.0, 100.0, 100.0, stop_loss=99.0)
+    assert bybit_watch.ladder_rungs(no_take, LADDER_LOT) == []
+    assert bybit_watch.ladder_rungs(BTC, {"qtyStep": "0"}) == []
+
+
+def test_ladder_is_off_when_maker_takes_are(keyed):
+    assert bybit_watch.ladder_rungs(BTC, LADDER_LOT) == []
+
+
+def test_ladder_drops_a_rung_the_exchange_would_refuse(making):
+    """A tenth of a tiny position is below the minimum; its share goes up."""
+    small = Position("long", 0.004, 100.0, 0.4, take_profit=110.0, stop_loss=99.0)
+
+    rungs = bybit_watch.ladder_rungs(
+        small, {"qtyStep": "0.001", "minOrderQty": "0.001", "minNotionalValue": "0.2"}
+    )
+
+    assert all(qty * price >= 0.2 for price, qty in rungs)
+    assert sum(qty for _, qty in rungs) <= small.size
+
+
+def test_ladder_without_a_breakeven_rung(making, monkeypatch):
+    monkeypatch.setattr(bybit_watch, "TP_FREE", 0.0)
+
+    rungs = bybit_watch.ladder_rungs(BTC, LADDER_LOT)
+
+    assert [round(price, 2) for price, _ in rungs][0] == 101658.16
+    assert sum(qty for _, qty in rungs) == pytest.approx(BTC.size)
+
+
+def test_ladder_of_the_take_alone(making, monkeypatch):
+    monkeypatch.setattr(bybit_watch, "TP_FREE", 0.0)
+    monkeypatch.setattr(bybit_watch, "TP_LADDER", ())
+
+    rungs = bybit_watch.ladder_rungs(BTC, LADDER_LOT)
+
+    assert rungs == [(110000.0, 1.0)]
+
+
+def test_floor_step_leaves_no_float_dust():
+    assert bybit_watch._floor_step(0.3, 0.1) == 0.3
+    assert bybit_watch._floor_step(1.26, 0.01) == 1.26
+    assert bybit_watch._floor_step(1.269, 0.01) == 1.26
+
+
+def test_ladder_matches_what_already_rests(making):
+    rungs = [(100.0, 1.0), (110.0, 2.0)]
+    orders = [exit_row(price="110", qty="2"), exit_row(price="100", qty="1")]
+
+    assert bybit_watch.ladder_matches(rungs, orders) is True
+    assert bybit_watch.ladder_matches(rungs, orders[:1]) is False
+    assert (
+        bybit_watch.ladder_matches(
+            rungs, [exit_row(price="110", qty="2"), exit_row(price="100", qty="1.5")]
+        )
+        is False
+    )
+
+
+LADDERED = Position("long", 2.0, 100.0, 200.0, take_profit=110.0, stop_loss=99.0)
+LOT_PAGE = {"list": [{"lotSizeFilter": {"qtyStep": "0.01", "minOrderQty": "0.01"}}]}
+
+
+def test_tp_maker_stands_the_whole_ladder(making):
+    http, out = ClosingHTTP(), Recorder()
+    http.instrument_pages = [LOT_PAGE, LOT_PAGE]
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": LADDERED}, out.send, out.speak))
+
+    placed = [o for o in http.orders if o.get("orderType") == "Limit"]
+    assert [o["price"] for o in placed] == ["101", "102", "103", "104", "110"]
+    # R is 1 here, so the breakeven rung stands at 101 and takes 52.8% —
+    # floored to the lot step, 1.05 of 2.
+    assert placed[0]["qty"] == "1.05"
+    assert sum(float(o["qty"]) for o in placed) == pytest.approx(2.0, abs=0.01)
+    assert out.sent[0] == ("🎯 CL: 101×52% · 102×12% · 103×12% · 104×12% · 110×13% (maker)")
+
+
+def test_tp_maker_leaves_a_standing_ladder_alone(making):
+    http, out = ClosingHTTP(), Recorder()
+    http.instrument_pages = [LOT_PAGE, LOT_PAGE]
+    laddered = replace(LADDERED, maker_exit=True)
+    rungs = bybit_watch.ladder_rungs(laddered, LOT_PAGE["list"][0]["lotSizeFilter"])
+    http.order_rows = [
+        exit_row(order_id=f"e{n}", price=f"{price:g}", qty=f"{qty:g}")
+        for n, (price, qty) in enumerate(rungs)
+    ]
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": laddered}, out.send, out.speak))
+
+    assert http.orders == []
+    assert out.sent == []
+
+
+def test_tp_maker_rebuilds_the_ladder_after_a_trim(making):
+    http, out = ClosingHTTP(), Recorder()
+    http.instrument_pages = [LOT_PAGE, LOT_PAGE]
+    http.order_rows = [exit_row(order_id="e1", price="110", qty="2")]
+    trimmed = replace(LADDERED, size=1.0, value=100.0, maker_exit=True)
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": trimmed}, out.send, out.speak))
+
+    cancelled = [o for o in http.orders if set(o) == {"category", "symbol", "orderId"}]
+    placed = [o for o in http.orders if o.get("orderType") == "Limit"]
+    assert [o["orderId"] for o in cancelled] == ["e1"]
+    assert sum(float(o["qty"]) for o in placed) == pytest.approx(1.0, abs=0.01)
+    assert out.sent[0].endswith("(rebuilt)")
+
+
+def test_beyond_says_no_without_a_take_or_a_stop():
+    assert bybit_watch._beyond(Position("long", 1.0, 100.0, 100.0), 105.0) is False
+    no_stop = Position("long", 1.0, 100.0, 100.0, take_profit=110.0)
+    assert bybit_watch._beyond(no_stop, 105.0) is False
+
+
+def test_ladder_drops_a_tail_the_exchange_would_refuse(making, monkeypatch):
+    """When the rungs take it all, there is no tail worth an order."""
+    monkeypatch.setattr(bybit_watch, "TP_LADDER", ())
+    monkeypatch.setattr(bybit_watch, "TP_FREE", 0.5)
+    tiny = Position("long", 0.02, 100.0, 2.0, take_profit=110.0, stop_loss=99.0)
+
+    rungs = bybit_watch.ladder_rungs(
+        tiny, {"qtyStep": "0.01", "minOrderQty": "0.01", "minNotionalValue": "1000"}
+    )
+
+    assert rungs == []
