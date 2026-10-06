@@ -261,6 +261,12 @@ def rr_warning(order: dict) -> str | None:
 # move between the check and the amend.
 _MARGIN_SAFETY = Decimal("0.97")
 
+# How far the target may drift before the order is worth rewriting, as a
+# share of the order. At RISK_PCT 1% a thousandth of the quantity is a
+# thousandth of a percent of the deposit at stake — below the resolution of
+# every figure the bot reports.
+_DEADBAND = Decimal("0.001")
+
 
 def _free_from_coin(account: dict) -> str:
     """Free balance read off the settle coin's own row; "" when unreadable.
@@ -385,13 +391,18 @@ async def _resize_order(http: httpx.AsyncClient, order: dict, equity: Decimal, s
     if fitted is None:
         return
     want, capped = fitted
-    # One lot step is the instrument's own resolution: inside it there is no
-    # closer the order could be put. Equity breathes with every open
-    # position's unrealised PnL, which walks the target across a rounding
-    # boundary and back — one trade amended 370.28 -> .29 -> .28 -> .29 -> .28
-    # in eleven seconds, four notices and four amends over 86 cents of a
-    # 32,000$ order, the last of them refused for margin. Already exact.
-    if abs(want - have) <= Decimal(instrument["lotSizeFilter"]["qtyStep"]):
+    # Equity breathes with every open position's unrealised PnL, and that
+    # walks the target across a rounding boundary and back: one ZEC order
+    # was amended 370.28 -> .29 -> .28 -> .29 -> .28 in eleven seconds.
+    #
+    # A lot step alone is not the width. The jitter scales with the order,
+    # the step does not: a 286,831 DOGE order wobbled by five units on a
+    # step of one, and sailed straight through a deadband one step wide.
+    # A thousandth of the order is wider than the breathing and far
+    # narrower than any resize worth an amend — the DOGE order's real one
+    # was +169%.
+    step = Decimal(instrument["lotSizeFilter"]["qtyStep"])
+    if abs(want - have) <= max(step, have * _DEADBAND):
         return
     if DRY_RUN:
         log.info("[dry-run] %s %s: qty %s -> %s", symbol, order_id[:8], have, want)
