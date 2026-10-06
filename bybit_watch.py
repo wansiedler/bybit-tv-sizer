@@ -58,6 +58,11 @@ POLL = float(os.getenv("BYBIT_POLL", "10"))
 # strays more than a quarter away from the RISK_PCT the sizer targets.
 MIN_RR = float(os.getenv("MIN_RR", "2"))
 RISK_TARGET = float(os.getenv("RISK_PCT", "0.5")) / 100
+# Whether RISK_PCT is a target or a ceiling. Off, the sizer only ever cuts
+# — the size drawn on the chart stands unless it risks too much — and being
+# under the figure stops being worth a warning, because under a ceiling is
+# where a trade is supposed to be.
+RISK_GROW = os.getenv("RISK_GROW", "1") == "1"
 # The RR that earns the full RISK_TARGET; the sizer scales a thinner order's
 # risk down in proportion, and the fresh-position check expects the same.
 RR_FULL_RISK = float(os.getenv("RR_FULL_RISK", "3"))
@@ -1737,9 +1742,15 @@ def trade_warnings(position: Position, depo: float | None) -> list[str]:
         if rr is not None and RR_FULL_RISK > 0 and rr < RR_FULL_RISK:
             target = RISK_TARGET * rr / RR_FULL_RISK
         actual = risk / risk_base(depo)
-        # Within a quarter of the target nobody wants a ping.
-        if abs(actual - target) > target * 0.25:
-            warns.append(f"⚠️ risk {actual * 100:.2f}% depo, target {target * 100:.2g}%")
+        # Within a quarter of the figure nobody wants a ping. Which side of
+        # it counts depends on what the figure is: a target is missed in
+        # both directions, a ceiling only upwards — risking less than the
+        # most you allow yourself is the trade going to plan.
+        over = actual - target > target * 0.25
+        adrift = over if not RISK_GROW else abs(actual - target) > target * 0.25
+        if adrift:
+            word = "cap" if not RISK_GROW else "target"
+            warns.append(f"⚠️ risk {actual * 100:.2f}% depo, {word} {target * 100:.2g}%")
     if rr is not None and MIN_RR and rr < MIN_RR:
         warns.append(f"⚠️ RR {rr:.2f} < {MIN_RR:g}")
     return warns

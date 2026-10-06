@@ -124,9 +124,16 @@ qty 116035 (10,843$, 12.0% depo) -> 937961 (87,652$, 97.0% depo)
 ```
 
 That is the sizer doing its job exactly, and it is not what the hand that
-drew a 10,843$ order meant by it. With `RISK_GROW=0` the order stands and
-the "risk X% depo, target Y%" warning says it is under target, which is a
-sentence rather than a trade.
+drew a 10,843$ order meant by it. With `RISK_GROW=0` the order stands.
+
+`RISK_PCT` then reads as a **ceiling rather than a target**, and the warning
+follows: a target is missed in both directions, a cap only upwards.
+
+```text
+RISK_GROW=1   risk 0.10% depo, target 0.5%     <- under, and told about it
+RISK_GROW=0   (nothing)                        <- under a cap is the plan
+RISK_GROW=0   risk 1.00% depo, cap 0.5%        <- over, and told about it
+```
 
 ## A thin setup risks less (`RR_FULL_RISK`)
 

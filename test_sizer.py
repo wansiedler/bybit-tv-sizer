@@ -956,7 +956,7 @@ def test_the_deadband_never_narrows_below_a_lot_step(monkeypatch):
 
 @pytest.fixture
 def shrink_only(monkeypatch):
-    monkeypatch.setattr(sizer, "RISK_GROW", False)
+    monkeypatch.setattr(bybit_watch, "RISK_GROW", False)
     monkeypatch.setattr(sizer, "DRY_RUN", False)
 
 
