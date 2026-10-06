@@ -168,6 +168,14 @@ TUNNEL_TIMEOUT=5
 # appends CAST_HOST and TTS_HOST itself, so the speaker never waits on the
 # tunnel; list any other LAN host you talk to here.
 NO_PROXY=api.telegram.org
+# Whether the sizer may ENLARGE an order that risks less than RISK_PCT.
+# 0 makes the size you drew a ceiling: too big gets cut, too small is left
+# alone. With a tight stop the arithmetic runs away fast — a 0.27% stop
+# needs three deposits of notional to put 0.84% at risk, and an order drawn
+# at 10,843$ came back at 87,652$. Correct, and not what the hand that drew
+# it meant. 1 keeps both directions.
+RISK_GROW=1
+
 # Cut a position whose stop-risk overshoots RISK_PCT back down to it with
 # a reduce-only market order. Exact: the only slack is the lot step. 1 = on.
 RISK_TRIM=1

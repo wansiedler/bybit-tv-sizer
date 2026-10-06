@@ -949,3 +949,51 @@ def test_the_deadband_never_narrows_below_a_lot_step(monkeypatch):
     run_tick(http, out)
 
     assert http.amended == []
+
+
+# --- RISK_GROW=0: the drawn size is a ceiling ------------------------------
+
+
+@pytest.fixture
+def shrink_only(monkeypatch):
+    monkeypatch.setattr(sizer, "RISK_GROW", False)
+    monkeypatch.setattr(sizer, "DRY_RUN", False)
+
+
+def test_an_order_under_the_target_is_left_alone(shrink_only, caplog):
+    """A 0.27% stop asked for three deposits; 10,843$ drawn came back 87,652$."""
+    http, out = DogeHTTP(), Recorder()
+    target = sizer.target_qty(DOGE, Decimal(http.equity), http.instruments[0])
+    assert target is not None
+    http.orders = [dict(DOGE, qty=str(target // 4))]
+
+    with caplog.at_level("INFO", logger="relay.sizer"):
+        run_tick(http, out)
+
+    assert http.amended == []
+    assert out.sent == []
+    assert "growing is off" in caplog.text
+
+
+def test_an_order_over_the_target_is_still_cut(shrink_only):
+    http, out = DogeHTTP(), Recorder()
+    target = sizer.target_qty(DOGE, Decimal(http.equity), http.instruments[0])
+    assert target is not None
+    http.orders = [dict(DOGE, qty=str(target * 4))]
+
+    run_tick(http, out)
+
+    assert [o["qty"] for o in http.amended] == [str(target)]
+
+
+def test_growing_is_the_default(monkeypatch):
+    """Nothing changes for anyone who has not asked for the ceiling."""
+    monkeypatch.setattr(sizer, "DRY_RUN", False)
+    http, out = DogeHTTP(), Recorder()
+    target = sizer.target_qty(DOGE, Decimal(http.equity), http.instruments[0])
+    assert target is not None
+    http.orders = [dict(DOGE, qty=str(target // 4))]
+
+    run_tick(http, out)
+
+    assert http.amended != []

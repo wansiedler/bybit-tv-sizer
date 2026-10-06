@@ -63,6 +63,11 @@ MIN_RR = Decimal(os.getenv("MIN_RR", "2"))
 # RISK_PCT. 0 disables the scaling; an order without a take is unscaled.
 RR_FULL_RISK = Decimal(os.getenv("RR_FULL_RISK", "3"))
 
+# Whether the sizer may enlarge an order that risks less than the target.
+# Off, it only ever cuts: the size drawn on the chart is a ceiling, and the
+# bot's job is to stop it being too big rather than to make it big enough.
+RISK_GROW = os.getenv("RISK_GROW", "1") == "1"
+
 # orderId -> (entry|stop signature, how many passes in a row have seen it)
 _settling: dict[str, tuple[str, int]] = {}
 _instruments: dict[str, dict] = {}
@@ -387,6 +392,14 @@ async def _resize_order(http: httpx.AsyncClient, order: dict, equity: Decimal, s
     if want is None:
         return
     have = Decimal(order["qty"])
+    # Sizing down is the guardrail; sizing up is the bot taking a bigger
+    # trade than the one that was drawn. A 0.27% stop asks for three
+    # deposits to put 0.84% at risk, and the order drawn at 10,843$ came
+    # back at 87,652$ — correct arithmetic, and not what was meant by it.
+    # With RISK_GROW=0 an order risking less than the target is left alone.
+    if not RISK_GROW and want > have:
+        log.info("%s %s: under target and growing is off, leaving %s", symbol, order_id[:8], have)
+        return
     fitted = await _fit_margin(http, order, instrument, want, have)
     if fitted is None:
         return

@@ -106,6 +106,28 @@ for limit orders, the trimmer's cut, and the "risk X% depo" warning on a
 fresh entry. Reports, charts and journal rows keep showing the real balance
 and the real shares of it — only the risk arithmetic is capped.
 
+## The drawn size as a ceiling (`RISK_GROW=0`)
+
+By default the sizer works both ways: it cuts an order that risks more than
+`RISK_PCT` and enlarges one that risks less. `RISK_GROW=0` keeps only the
+cut.
+
+The reason is what a tight stop does to the arithmetic. Notional over
+deposit is `risk% / stop%`, so a 0.27% stop needs **three deposits** of
+notional to put 0.84% at risk:
+
+```text
+DOGEUSDT Buy limit @ 0.09345
+stop 0.0932 (0.27%) | risk 0.84% (RR 2.52 of 3)
+qty 116035 (10,843$, 12.0% depo) -> 937961 (87,652$, 97.0% depo)
+(capped by margin - raise the instrument's leverage)
+```
+
+That is the sizer doing its job exactly, and it is not what the hand that
+drew a 10,843$ order meant by it. With `RISK_GROW=0` the order stands and
+the "risk X% depo, target Y%" warning says it is under target, which is a
+sentence rather than a trade.
+
 ## A thin setup risks less (`RR_FULL_RISK`)
 
 `RISK_PCT` is what a stop-out may cost when the trade is worth it. The
