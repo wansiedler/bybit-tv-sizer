@@ -3699,3 +3699,27 @@ def test_the_tick_rounds_away_from_the_position():
     assert bybit_watch._on_tick(89.7621938, 0.01, True) == 89.77
     assert bybit_watch._on_tick(89.7621938, 0.01, False) == 89.76
     assert bybit_watch._on_tick(89.77, 0.01, True) == 89.77
+
+
+# --- RISK_PCT as a ceiling -------------------------------------------------
+#
+# Coverage cannot see these: both are ternaries, and a ternary is not a
+# branch arc. Named tests or nothing.
+
+
+def test_under_the_cap_is_not_worth_a_warning(monkeypatch):
+    """Risking less than the most you allow yourself is the plan working."""
+    monkeypatch.setattr(bybit_watch, "RISK_GROW", False)
+    # 1 USDT of risk on 1000 USDT is 0.1%, far under the 0.5% figure.
+    assert bybit_watch.trade_warnings(WITH_STOP, 1000.0) == []
+
+
+def test_over_the_cap_still_is(monkeypatch):
+    monkeypatch.setattr(bybit_watch, "RISK_GROW", False)
+    # 1 USDT on 100 USDT is 1%, double the figure.
+    assert bybit_watch.trade_warnings(WITH_STOP, 100.0) == ["⚠️ risk 1.00% depo, cap 0.5%"]
+
+
+def test_under_the_target_still_warns_when_the_sizer_may_grow():
+    """The default calls it a target, and misses it in both directions."""
+    assert bybit_watch.trade_warnings(WITH_STOP, 1000.0) == ["⚠️ risk 0.10% depo, target 0.5%"]

@@ -173,7 +173,9 @@ NO_PROXY=api.telegram.org
 # alone. With a tight stop the arithmetic runs away fast — a 0.27% stop
 # needs three deposits of notional to put 0.84% at risk, and an order drawn
 # at 10,843$ came back at 87,652$. Correct, and not what the hand that drew
-# it meant. 1 keeps both directions.
+# it meant. 1 keeps both directions. 0 also makes RISK_PCT read as a cap:
+# the "risk X% depo" warning then fires only when you are over it, because
+# being under a ceiling is where a trade is supposed to sit.
 RISK_GROW=1
 
 # Cut a position whose stop-risk overshoots RISK_PCT back down to it with
