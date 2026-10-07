@@ -335,13 +335,25 @@ def _guard_violation(position: Position) -> str | None:
     return None
 
 
-async def lot_filter(http: httpx.AsyncClient, symbol: str) -> dict:
-    """The instrument's lot rules: step, minimum size, minimum notional."""
+async def instrument_info(http: httpx.AsyncClient, symbol: str) -> dict:
+    """The instrument row: lot rules, price rules and the rest."""
     result = await _get(
         http, "/v5/market/instruments-info", {"category": "linear", "symbol": symbol}
     )
     rows = result.get("list") or []
-    return (rows[0] if rows else {}).get("lotSizeFilter") or {}
+    return rows[0] if rows else {}
+
+
+async def lot_filter(http: httpx.AsyncClient, symbol: str) -> dict:
+    """The instrument's lot rules: step, minimum size, minimum notional."""
+    return (await instrument_info(http, symbol)).get("lotSizeFilter") or {}
+
+
+async def ladder_filters(http: httpx.AsyncClient, symbol: str) -> tuple[dict, float]:
+    """The lot rules and the price tick, in one call rather than two."""
+    row = await instrument_info(http, symbol)
+    tick = float((row.get("priceFilter") or {}).get("tickSize") or 0)
+    return row.get("lotSizeFilter") or {}, tick
 
 
 async def _lot(http: httpx.AsyncClient, symbol: str) -> tuple[float, float]:
@@ -470,7 +482,8 @@ async def tp_maker(http: httpx.AsyncClient, open_now: dict[str, Position], send,
             continue
         if not exit_orders:
             continue
-        rungs = ladder_rungs(position, await lot_filter(http, symbol))
+        lot, tick = await ladder_filters(http, symbol)
+        rungs = ladder_rungs(position, lot, tick)
         if not rungs:
             rungs = [(position.take_profit or 0.0, position.size)]
         if not ladder_matches(rungs, exit_orders):
@@ -526,6 +539,29 @@ def breakeven_share(position: Position, price: float) -> float:
     return share if 0.0 < share < 1.0 else 0.0
 
 
+def _on_tick(price: float, tick: float, up: bool) -> float:
+    """A price the exchange can actually hold, so ours can be compared to it.
+
+    Bybit snaps a submitted price to the instrument's tick and keeps the
+    snapped one: 89.7622 on a tick of 0.01 came back 89.77. A ladder
+    compared against what it asked for never matches what it got, and one
+    HYPE position rebuilt itself every pass for as long as it was open.
+
+    Away from the position, always — a long's rungs sell, so they round up,
+    and a short's buy, so they round down. That is the direction Bybit was
+    seen to take, and the one that cannot make the exit worse. Rounding here
+    rather than at the exchange also means the breakeven share is derived
+    from the price the order will really stand at.
+    """
+    if tick <= 0:
+        return price
+    from decimal import Decimal
+
+    step = Decimal(str(tick))
+    rounding = "ROUND_CEILING" if up else "ROUND_FLOOR"
+    return float((Decimal(str(price)) / step).to_integral_value(rounding=rounding) * step)
+
+
 def _rung_price(position: Position, multiple: float) -> float:
     """Where `multiple` R from the entry sits, in the trade's direction."""
     risk = abs(position.price - (position.stop_loss or 0.0))
@@ -533,7 +569,7 @@ def _rung_price(position: Position, multiple: float) -> float:
     return position.price + step if position.side == "long" else position.price - step
 
 
-def ladder_rungs(position: Position, lot: dict) -> list[tuple[float, float]]:
+def ladder_rungs(position: Position, lot: dict, tick: float = 0.0) -> list[tuple[float, float]]:
     """(price, quantity) per rung, nearest first; [] to leave the one limit.
 
     The breakeven rung takes the share that pays for the trade, the rest
@@ -551,9 +587,10 @@ def ladder_rungs(position: Position, lot: dict) -> list[tuple[float, float]]:
     floor_value = float(lot.get("minNotionalValue") or 0)
     if step <= 0:
         return []
-    prices = [_rung_price(position, m) for m in TP_LADDER if m > 0]
+    up = position.side == "long"
+    prices = [_on_tick(_rung_price(position, m), tick, up) for m in TP_LADDER if m > 0]
     if TP_FREE > 0:
-        prices.insert(0, _rung_price(position, TP_FREE))
+        prices.insert(0, _on_tick(_rung_price(position, TP_FREE), tick, up))
     free_share = breakeven_share(position, prices[0]) if TP_FREE > 0 and prices else 0.0
     shares = [free_share] if free_share else []
     rest = [p for p in prices[len(shares) :] if _beyond(position, p)]
@@ -612,7 +649,7 @@ async def _place_rung(
             "side": "Sell" if position.side == "long" else "Buy",
             "orderType": "Limit",
             "qty": _qty(qty),
-            "price": f"{price:g}",
+            "price": _qty(price),
             "reduceOnly": True,
             "positionIdx": position.position_idx,
         },
@@ -649,7 +686,8 @@ async def _repost_take(
     original take. Without a stop there is no R to measure rungs against, so
     the exit stays the single limit it has always been.
     """
-    rungs = ladder_rungs(position, await lot_filter(http, symbol))
+    lot, tick = await ladder_filters(http, symbol)
+    rungs = ladder_rungs(position, lot, tick)
     if not rungs:
         rungs = [(position.take_profit or 0.0, position.size)]
     try:
@@ -696,7 +734,8 @@ async def _rebuild_ladder(
     old size — so resizing one of them is not a smaller version of this. A
     rung that already filled is simply not there to cancel.
     """
-    rungs = ladder_rungs(position, await lot_filter(http, symbol))
+    lot, tick = await ladder_filters(http, symbol)
+    rungs = ladder_rungs(position, lot, tick)
     if not rungs:
         rungs = [(position.take_profit or 0.0, position.size)]
     try:

@@ -283,6 +283,14 @@ below `minOrderQty` or `minNotionalValue` - is dropped the same way.
 always been. `TP_FREE=0` drops the breakeven rung; an empty `TP_LADDER`
 leaves that rung and the take.
 
+Rung prices are rounded to the instrument's **tick**, away from the
+position — a long's rungs sell, so up; a short's buy, so down. Bybit snaps a
+submitted price to the tick and keeps the snapped one, so a ladder compared
+against what it asked for never matches what it got: 89.7622 on a tick of
+0.01 came back 89.77, and one HYPE position rebuilt itself every pass for as
+long as it was open. Rounding here also means the breakeven share is derived
+from the price the order will really stand at.
+
 A trim invalidates every rung at once - their shares were cut from the old
 size - so the ladder comes down and goes back up from what is left, rather
 than one rung being resized. Rungs that already filled are not there to
