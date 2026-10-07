@@ -298,6 +298,14 @@ against what it asked for never matches what it got: 89.7622 on a tick of
 long as it was open. Rounding here also means the breakeven share is derived
 from the price the order will really stand at.
 
+A button, or `/cut`, takes its share **off the far end of the ladder**: the
+quantity it closed is subtracted from the rung furthest from the entry, and
+downwards from there if that rung is smaller than the cut. The near rungs are
+left exactly where they stand — rebuilding instead would shrink every rung in
+proportion, including the breakeven one, which is the rung the ladder exists
+for. Taking profit early should come out of the target, not out of the
+insurance.
+
 The ladder is rebuilt only when it stops **covering the position** — after a
 trim, or once a rung fills. Where each rung stands is the bot's suggestion,
 not its decision: drag one to a better price and it stays there. Comparing
