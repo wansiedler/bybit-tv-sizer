@@ -3582,20 +3582,6 @@ def test_floor_step_leaves_no_float_dust():
     assert bybit_watch._floor_step(1.269, 0.01) == 1.26
 
 
-def test_ladder_matches_what_already_rests(making):
-    rungs = [(100.0, 1.0), (110.0, 2.0)]
-    orders = [exit_row(price="110", qty="2"), exit_row(price="100", qty="1")]
-
-    assert bybit_watch.ladder_matches(rungs, orders) is True
-    assert bybit_watch.ladder_matches(rungs, orders[:1]) is False
-    assert (
-        bybit_watch.ladder_matches(
-            rungs, [exit_row(price="110", qty="2"), exit_row(price="100", qty="1.5")]
-        )
-        is False
-    )
-
-
 LADDERED = Position("long", 2.0, 100.0, 200.0, take_profit=110.0, stop_loss=99.0)
 LOT_PAGE = {"list": [{"lotSizeFilter": {"qtyStep": "0.01", "minOrderQty": "0.01"}}]}
 
@@ -3679,20 +3665,6 @@ def test_rungs_land_on_the_instrument_tick(making):
     assert sum(qty for _, qty in rungs) == pytest.approx(hype.size, abs=0.01)
 
 
-def test_a_laddered_position_is_left_alone_once_it_stands(making):
-    """The rebuild loop, end to end: place it, then ask whether it matches."""
-    hype = Position("long", 253.26, 89.1660969, 22581.0, take_profit=90.17, stop_loss=88.57)
-    lot = {"qtyStep": "0.01", "minOrderQty": "0.01", "minNotionalValue": "5"}
-    rungs = bybit_watch.ladder_rungs(hype, lot, tick=0.01)
-    # What Bybit would report back, with the price it snapped to.
-    live = [
-        exit_row(order_id=f"e{n}", price=f"{price:g}", qty=bybit_watch._qty(qty))
-        for n, (price, qty) in enumerate(rungs)
-    ]
-
-    assert bybit_watch.ladder_matches(rungs, live) is True
-
-
 def test_the_tick_rounds_away_from_the_position():
     assert bybit_watch._on_tick(89.7621938, 0.0, True) == 89.7621938
     # A long sells its rungs, so up; a short buys them, so down.
@@ -3723,3 +3695,47 @@ def test_over_the_cap_still_is(monkeypatch):
 def test_under_the_target_still_warns_when_the_sizer_may_grow():
     """The default calls it a target, and misses it in both directions."""
     assert bybit_watch.trade_warnings(WITH_STOP, 1000.0) == ["⚠️ risk 0.10% depo, target 0.5%"]
+
+
+# --- the ladder is the bot's suggestion, not its decision ------------------
+
+
+def test_a_ladder_that_still_covers_the_position_is_left_alone(making):
+    """A rung dragged to a better price used to be put back within a second."""
+    laddered = replace(LADDERED, maker_exit=True)
+    moved = [
+        exit_row(order_id="e0", price="105", qty="1.02"),  # dragged up by hand
+        exit_row(order_id="e1", price="110", qty="0.98"),
+    ]
+
+    assert bybit_watch.ladder_covers(laddered, moved, 0.01) is True
+
+
+def test_a_ladder_short_of_the_position_is_rebuilt(making):
+    """A trim or a fill leaves the exits covering less than there is."""
+    laddered = replace(LADDERED, maker_exit=True)
+    half = [exit_row(order_id="e0", price="110", qty="1")]
+
+    assert bybit_watch.ladder_covers(laddered, half, 0.01) is False
+
+
+def test_coverage_forgives_a_lot_step(making):
+    laddered = replace(LADDERED, maker_exit=True)
+    dusty = [exit_row(order_id="e0", price="110", qty="1.995")]
+
+    assert bybit_watch.ladder_covers(laddered, dusty, 0.01) is True
+
+
+def test_tp_maker_does_not_touch_a_hand_moved_ladder(making):
+    http, out = ClosingHTTP(), Recorder()
+    http.instrument_pages = [LOT_PAGE, LOT_PAGE]
+    laddered = replace(LADDERED, maker_exit=True)
+    http.order_rows = [
+        exit_row(order_id="e0", price="105", qty="1.02"),
+        exit_row(order_id="e1", price="110", qty="0.98"),
+    ]
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": laddered}, out.send, out.speak))
+
+    assert http.orders == []
+    assert out.sent == []

@@ -298,10 +298,13 @@ against what it asked for never matches what it got: 89.7622 on a tick of
 long as it was open. Rounding here also means the breakeven share is derived
 from the price the order will really stand at.
 
-A trim invalidates every rung at once - their shares were cut from the old
-size - so the ladder comes down and goes back up from what is left, rather
-than one rung being resized. Rungs that already filled are not there to
-cancel.
+The ladder is rebuilt only when it stops **covering the position** — after a
+trim, or once a rung fills. Where each rung stands is the bot's suggestion,
+not its decision: drag one to a better price and it stays there. Comparing
+prices as well meant a hand-moved rung was put back within half a second,
+which made the ladder impossible to adjust at all.
+
+Cancel the exits to get the computed prices back.
 
 ### How loud it speaks (`SPEAK_VOLUME`)
 
