@@ -643,12 +643,13 @@ def test_announce_survives_a_dead_speaker(wired, stub_gtts, stub_cast, caplog):
 # touched the dial.
 
 
-def test_cast_sets_its_own_volume_and_puts_it_back(wired, stub_cast, monkeypatch):
+def test_cast_sets_its_own_volume_and_leaves_it(wired, stub_cast, monkeypatch):
+    """Set and left: restoring is what let the wandering level come back."""
     monkeypatch.setattr(speaker, "SPEAK_VOLUME", 0.15)
 
     speaker.cast_url("http://192.0.2.20:8422/alert-1.mp3")
 
-    assert stub_cast["volume"] == [0.4, 0.15, 0.4]
+    assert stub_cast["volume"] == [0.4, 0.15]
 
 
 def test_cast_leaves_the_dial_alone_by_default(wired, stub_cast):
@@ -657,22 +658,14 @@ def test_cast_leaves_the_dial_alone_by_default(wired, stub_cast):
     assert stub_cast["volume"] == [0.4]
 
 
-def test_the_dial_goes_back_even_when_the_wait_fails(wired, stub_cast, monkeypatch, caplog):
-    """A clip that dies partway must not leave the speaker on the bot's level."""
+def test_the_level_survives_a_second_clip(wired, stub_cast, monkeypatch):
+    """Nothing puts it back between announcements, which is the point."""
     monkeypatch.setattr(speaker, "SPEAK_VOLUME", 0.15)
-    stub_cast["resume_fail"] = None
 
-    def _explode(_controller, _states, timeout=None):
-        raise RuntimeError("receiver went away")
+    speaker.cast_url("http://192.0.2.20:8422/alert-1.mp3")
+    speaker.cast_url("http://192.0.2.20:8422/alert-2.mp3")
 
-    monkeypatch.setattr(speaker, "_wait_for", _explode)
-
-    with caplog.at_level("ERROR", logger="relay.speaker"):
-        speaker.cast_url("http://192.0.2.20:8422/alert-1.mp3")
-
-    # Draining is a courtesy; putting the dial back is not optional.
-    assert stub_cast["volume"][-1] == 0.4
-    assert "could not wait out the clip" in caplog.text
+    assert stub_cast["volume"] == [0.4, 0.15, 0.15]
 
 
 @pytest.mark.parametrize(

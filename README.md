@@ -311,11 +311,14 @@ the assistant volume the buttons reach when nothing is playing, so turning it
 down by hand moves the wrong one, and on one account something kept putting
 the media volume back to 40%.
 
-`SPEAK_VOLUME=15` applies the level before each clip and restores the
-previous one after, once the clip has drained — restoring sooner would change
-volume mid-sentence. The restore sits in a `finally`, and happens even when
-the drain itself fails: waiting the clip out is a courtesy, putting the dial
-back is not optional.
+Over one evening the level wandered through 0.4, 0.15, 0.4, 0.3, 0.05 and
+0.7 with neither the bot nor its owner moving it.
+
+`SPEAK_VOLUME=15` applies the level before each clip and **leaves it there**.
+It is not restored afterwards: restoring hands the dial straight back to
+whatever moves it next, and the point is that the speaker stays where it was
+put. The cost is worth knowing — whatever plays after an announcement plays
+at this level too, until something else sets it.
 
 Note that `SPEAK_HOURS` silences **alerts** outside its window but
 `SPEAK_LIFECYCLE` ignores it — "Relay up" and "Relay down" are spoken at any
