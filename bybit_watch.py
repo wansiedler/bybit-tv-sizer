@@ -487,13 +487,11 @@ async def tp_maker(http: httpx.AsyncClient, open_now: dict[str, Position], send,
             continue
         if not exit_orders:
             continue
-        lot, tick = await ladder_filters(http, symbol)
-        rungs = ladder_rungs(position, lot, tick)
-        if not rungs:
-            rungs = [(position.take_profit or 0.0, position.size)]
-        if not ladder_matches(rungs, exit_orders):
-            _tp_cooldown[symbol] = time.monotonic()
-            await _rebuild_ladder(http, symbol, position, exit_orders, send)
+        lot, _ = await ladder_filters(http, symbol)
+        if ladder_covers(position, exit_orders, float(lot.get("qtyStep") or 0)):
+            continue
+        _tp_cooldown[symbol] = time.monotonic()
+        await _rebuild_ladder(http, symbol, position, exit_orders, send)
 
 
 async def _cancel_orphan_exits(
@@ -759,21 +757,21 @@ async def _rebuild_ladder(
             await send(f"❌ {base_symbol(symbol)}: could not rebuild the ladder ({exc})")
 
 
-def ladder_matches(rungs: list[tuple[float, float]], orders: list[dict]) -> bool:
-    """Whether what rests on the exchange is already the ladder we want.
+def ladder_covers(position: Position, orders: list[dict], step: float) -> bool:
+    """Whether the standing exits still add up to the whole position.
 
-    Compared on the quantities the exchange reports, at the precision it
-    reports them: an order holding 149314 against a wanted 149314.2 is a
-    different ladder, and saying otherwise is how the last loop started.
+    The ladder exists to cover the position; where each rung stands is the
+    bot's suggestion, not its decision. Comparing prices too meant a rung
+    dragged by hand was put back within half a second, which made the
+    ladder impossible to adjust. Only the arithmetic is defended now: a
+    trim or a fill leaves the exits short of the position and the ladder is
+    rebuilt, while a rung moved to a better price is left exactly where it
+    was put.
+
+    Cancel the exits to get the computed prices back.
     """
-    if len(rungs) != len(orders):
-        return False
-    live = sorted((float(o["price"]), float(o["qty"])) for o in orders)
-    want = sorted((round(price, 8), round(qty, 8)) for price, qty in rungs)
-    return all(
-        abs(a - c) <= 1e-6 * max(1.0, abs(c)) and abs(b - d) <= 1e-6 * max(1.0, abs(d))
-        for (a, b), (c, d) in zip(live, want, strict=True)
-    )
+    total = sum(float(order.get("qty") or 0) for order in orders)
+    return abs(total - position.size) <= max(step, 0.0)
 
 
 async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, speak) -> None:
