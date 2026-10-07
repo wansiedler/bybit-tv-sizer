@@ -87,6 +87,24 @@ SPEAK_RESUME = os.getenv("SPEAK_RESUME", "1").lower() not in ("0", "false", "no"
 SPEAK_LIFECYCLE = os.getenv("SPEAK_LIFECYCLE", "1").lower() not in ("0", "false", "no", "")
 
 
+def _volume(raw: str) -> float | None:
+    """SPEAK_VOLUME as a Cast level, or None to play at whatever is set."""
+    try:
+        percent = float(raw)
+    except ValueError:
+        return None
+    return min(max(percent, 0.0), 100.0) / 100 if raw.strip() else None
+
+
+# How loud the bot speaks, 0-100. Empty plays at whatever the device happens
+# to be set to — which is not a setting anyone controls: a Nest keeps media
+# volume apart from the assistant volume the buttons reach when nothing is
+# playing, and something on the account kept putting it back to 40%. Set, the
+# level is applied before each clip and the previous one restored after, so
+# the bot's loudness stops depending on what else moved the dial.
+SPEAK_VOLUME = _volume(os.getenv("SPEAK_VOLUME", ""))
+
+
 def parse_window(raw: str) -> tuple[int, int] | None:
     """Parse "23-8" into (23, 8): speak from 23:00 up to, not including, 8:00.
 
@@ -274,6 +292,7 @@ def cast_url(url: str) -> None:
     cast = pychromecast.get_chromecast_from_host(
         (CAST_HOST, CAST_PORT, uuid, None, None), timeout=10
     )
+    was_volume: float | None = None
     try:
         cast.wait(timeout=10)
         resume = _resumable(cast)
@@ -289,6 +308,9 @@ def cast_url(url: str) -> None:
             deadline = time.monotonic() + 10
             while cast.app_id not in (None, MEDIA_RECEIVER) and time.monotonic() < deadline:
                 time.sleep(0.5)
+        if SPEAK_VOLUME is not None:
+            was_volume = cast.status.volume_level
+            cast.set_volume(SPEAK_VOLUME)
         controller = cast.media_controller
         # audio/mpeg is the registered MP3 type; audio/mp3 is not, and some
         # Cast receivers refuse it.
@@ -302,6 +324,19 @@ def cast_url(url: str) -> None:
             except Exception:  # noqa: BLE001
                 log.exception("could not resume %s", resume[0])
     finally:
+        # Put the dial back where it was, and only once the clip has stopped
+        # using it — restoring mid-sentence would change volume halfway
+        # through. In `finally` so a cast that fails partway does not leave
+        # the speaker on the bot's level for whatever plays next.
+        if was_volume is not None:
+            try:
+                _wait_for(cast.media_controller, ("IDLE", "UNKNOWN"), timeout=30)
+            # Deliberately broad: draining is a courtesy so the level does
+            # not change mid-sentence. Putting the dial back is the duty,
+            # and it happens whether or not the clip could be waited out.
+            except Exception:  # noqa: BLE001
+                log.exception("could not wait out the clip before restoring volume")
+            cast.set_volume(was_volume)
         cast.disconnect()
 
 
