@@ -3663,3 +3663,39 @@ def test_ladder_drops_a_tail_the_exchange_would_refuse(making, monkeypatch):
     )
 
     assert rungs == []
+
+
+# --- the tick the exchange actually keeps ----------------------------------
+
+
+def test_rungs_land_on_the_instrument_tick(making):
+    """89.7622 on a tick of 0.01 comes back 89.77, and never matched again."""
+    hype = Position("long", 253.26, 89.1660969, 22581.0, take_profit=90.17, stop_loss=88.57)
+    lot = {"qtyStep": "0.01", "minOrderQty": "0.01", "minNotionalValue": "5"}
+
+    rungs = bybit_watch.ladder_rungs(hype, lot, tick=0.01)
+
+    assert [price for price, _ in rungs] == [89.77, 90.17]
+    assert sum(qty for _, qty in rungs) == pytest.approx(hype.size, abs=0.01)
+
+
+def test_a_laddered_position_is_left_alone_once_it_stands(making):
+    """The rebuild loop, end to end: place it, then ask whether it matches."""
+    hype = Position("long", 253.26, 89.1660969, 22581.0, take_profit=90.17, stop_loss=88.57)
+    lot = {"qtyStep": "0.01", "minOrderQty": "0.01", "minNotionalValue": "5"}
+    rungs = bybit_watch.ladder_rungs(hype, lot, tick=0.01)
+    # What Bybit would report back, with the price it snapped to.
+    live = [
+        exit_row(order_id=f"e{n}", price=f"{price:g}", qty=bybit_watch._qty(qty))
+        for n, (price, qty) in enumerate(rungs)
+    ]
+
+    assert bybit_watch.ladder_matches(rungs, live) is True
+
+
+def test_the_tick_rounds_away_from_the_position():
+    assert bybit_watch._on_tick(89.7621938, 0.0, True) == 89.7621938
+    # A long sells its rungs, so up; a short buys them, so down.
+    assert bybit_watch._on_tick(89.7621938, 0.01, True) == 89.77
+    assert bybit_watch._on_tick(89.7621938, 0.01, False) == 89.76
+    assert bybit_watch._on_tick(89.77, 0.01, True) == 89.77
