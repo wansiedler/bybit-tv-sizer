@@ -39,8 +39,9 @@ SPEAK_ALERTS=1
 # How loud the bot speaks, 0-100. Empty plays at whatever the device is set
 # to, which is not a setting anyone controls: a Nest keeps its media volume
 # apart from the assistant volume the buttons reach when nothing is playing,
-# and something on the account kept putting the media one back to 40%. Set,
-# the level is applied before each clip and the previous one restored after.
+# and the level wandered on its own all evening. Set, it is applied before
+# each clip and left there — not restored, because restoring hands the dial
+# back to whatever moves it next. What plays after also plays at this level.
 SPEAK_VOLUME=
 
 # Hours (local) during which alerts are read aloud, start-end, wrapping
