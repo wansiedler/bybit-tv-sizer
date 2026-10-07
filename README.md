@@ -303,6 +303,27 @@ size - so the ladder comes down and goes back up from what is left, rather
 than one rung being resized. Rungs that already filled are not there to
 cancel.
 
+### How loud it speaks (`SPEAK_VOLUME`)
+
+Empty, the bot plays at whatever the Cast device is set to — and that is not
+a dial anyone is really holding. A Nest keeps its **media** volume apart from
+the assistant volume the buttons reach when nothing is playing, so turning it
+down by hand moves the wrong one, and on one account something kept putting
+the media volume back to 40%.
+
+Over one evening the level wandered through 0.4, 0.15, 0.4, 0.3, 0.05 and
+0.7 without the bot or its owner moving it.
+
+`SPEAK_VOLUME=15` applies the level before each clip and **leaves it there**.
+It is not restored afterwards: restoring is exactly what let the wandering
+come back, and the point is that the speaker stays where it was put. The
+consequence is worth knowing — whatever plays next plays at this level too,
+until something else sets it.
+
+Note that `SPEAK_HOURS` silences **alerts** outside its window but
+`SPEAK_LIFECYCLE` ignores it — "Relay up" and "Relay down" are spoken at any
+hour. `SPEAK_LIFECYCLE=0` is what stops a restart talking at night.
+
 ## Alert relaying
 
 Compacts LEXX Draco alerts and re-posts them through your own bot.

@@ -249,6 +249,8 @@ def stub_cast(monkeypatch):
         # can walk the player through PLAYING -> IDLE without real waiting.
         "media": {"content_id": None, "content_type": None, "current_time": 0.0},
         "states": ["UNKNOWN"],
+        # Every level the dial was put at, starting where the device stood.
+        "volume": [0.4],
     }
 
     class FakeMediaStatus:
@@ -292,6 +294,10 @@ def stub_cast(monkeypatch):
     class FakeStatus:
         display_name = "YouTube Music"
 
+        @property
+        def volume_level(self):
+            return calls["volume"][-1]
+
     class FakeChromecast:
         def __init__(self, host_tuple):
             calls["host"], calls["port"], calls["uuid"] = host_tuple[:3]
@@ -310,6 +316,9 @@ def stub_cast(monkeypatch):
         def wait(self, timeout=None):
             if calls["fail"] is not None:
                 raise calls["fail"]
+
+        def set_volume(self, level):
+            calls["volume"].append(level)
 
         def disconnect(self):
             calls["disconnected"] += 1
@@ -624,3 +633,44 @@ def test_announce_survives_a_dead_speaker(wired, stub_gtts, stub_cast, caplog):
         assert asyncio.run(speaker.announce("OP 📈 0.10277", 1)) is False
 
     assert "could not speak" in caplog.text
+
+
+# --- SPEAK_VOLUME ----------------------------------------------------------
+#
+# A Nest keeps its media volume apart from the assistant volume the buttons
+# reach when nothing is playing, and something on the account kept putting
+# the media one back to 40%. Left alone, the bot is as loud as whatever last
+# touched the dial.
+
+
+def test_cast_sets_its_own_volume_and_leaves_it(wired, stub_cast, monkeypatch):
+    """Set and left: restoring is what let the wandering level come back."""
+    monkeypatch.setattr(speaker, "SPEAK_VOLUME", 0.15)
+
+    speaker.cast_url("http://192.0.2.20:8422/alert-1.mp3")
+
+    assert stub_cast["volume"] == [0.4, 0.15]
+
+
+def test_cast_leaves_the_dial_alone_by_default(wired, stub_cast):
+    speaker.cast_url("http://192.0.2.20:8422/alert-1.mp3")
+
+    assert stub_cast["volume"] == [0.4]
+
+
+def test_the_level_survives_a_second_clip(wired, stub_cast, monkeypatch):
+    """Nothing puts it back between announcements, which is the point."""
+    monkeypatch.setattr(speaker, "SPEAK_VOLUME", 0.15)
+
+    speaker.cast_url("http://192.0.2.20:8422/alert-1.mp3")
+    speaker.cast_url("http://192.0.2.20:8422/alert-2.mp3")
+
+    assert stub_cast["volume"] == [0.4, 0.15, 0.15]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("15", 0.15), ("0", 0.0), ("100", 1.0), ("150", 1.0), ("-5", 0.0), ("", None), ("loud", None)],
+)
+def test_speak_volume_parses(raw, expected):
+    assert speaker._volume(raw) == expected

@@ -36,6 +36,14 @@ CAST_HOST=
 TTS_HOST=
 TTS_PORT=8422
 SPEAK_ALERTS=1
+# How loud the bot speaks, 0-100. Empty plays at whatever the device is set
+# to, which is not a setting anyone controls: a Nest keeps its media volume
+# apart from the assistant volume the buttons reach when nothing is playing,
+# and the level wandered on its own all evening. Set, it is applied before
+# each clip and left there — not restored, because restoring is what let the
+# wandering come back. Whatever plays next plays at this level too.
+SPEAK_VOLUME=
+
 # Hours (local) during which alerts are read aloud, start-end, wrapping
 # midnight. Telegram delivery is unaffected. Empty speaks around the clock.
 SPEAK_HOURS=8-23

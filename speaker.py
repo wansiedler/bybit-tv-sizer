@@ -87,6 +87,28 @@ SPEAK_RESUME = os.getenv("SPEAK_RESUME", "1").lower() not in ("0", "false", "no"
 SPEAK_LIFECYCLE = os.getenv("SPEAK_LIFECYCLE", "1").lower() not in ("0", "false", "no", "")
 
 
+def _volume(raw: str) -> float | None:
+    """SPEAK_VOLUME as a Cast level, or None to play at whatever is set."""
+    try:
+        percent = float(raw)
+    except ValueError:
+        return None
+    return min(max(percent, 0.0), 100.0) / 100 if raw.strip() else None
+
+
+# How loud the bot speaks, 0-100. Empty plays at whatever the device happens
+# to be set to — which is not a setting anyone controls: a Nest keeps media
+# volume apart from the assistant volume the buttons reach when nothing is
+# playing, and over one evening the level wandered through 0.4, 0.15, 0.4,
+# 0.3, 0.05 and 0.7 without the bot or its owner moving it.
+#
+# Set, the level is applied before each clip and left there. Not restored:
+# restoring is what let the wandering come back, and the point is that the
+# speaker stays where it was put. Whatever plays next plays at this level
+# too, until something sets it otherwise.
+SPEAK_VOLUME = _volume(os.getenv("SPEAK_VOLUME", ""))
+
+
 def parse_window(raw: str) -> tuple[int, int] | None:
     """Parse "23-8" into (23, 8): speak from 23:00 up to, not including, 8:00.
 
@@ -289,6 +311,8 @@ def cast_url(url: str) -> None:
             deadline = time.monotonic() + 10
             while cast.app_id not in (None, MEDIA_RECEIVER) and time.monotonic() < deadline:
                 time.sleep(0.5)
+        if SPEAK_VOLUME is not None:
+            cast.set_volume(SPEAK_VOLUME)
         controller = cast.media_controller
         # audio/mpeg is the registered MP3 type; audio/mp3 is not, and some
         # Cast receivers refuse it.
