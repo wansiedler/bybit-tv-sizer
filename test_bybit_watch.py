@@ -3739,3 +3739,68 @@ def test_tp_maker_does_not_touch_a_hand_moved_ladder(making):
 
     assert http.orders == []
     assert out.sent == []
+
+
+# --- a button eats the far end of the ladder -------------------------------
+#
+# Rebuilding after a partial close shrinks every rung in proportion,
+# including the breakeven one — which is the rung the ladder exists for.
+
+
+def _laddered_http(*rungs):
+    """A fake with a position and the exits standing against it."""
+    http = part_http()
+    http.order_rows = [
+        exit_row(order_id=f"e{n}", symbol="CLUSDT", price=f"{price:g}", qty=f"{qty:g}")
+        for n, (price, qty) in enumerate(rungs)
+    ]
+    return http
+
+
+def test_a_button_takes_its_share_off_the_far_rung(keyed):
+    http = _laddered_http((103.0, 1.0), (110.0, 1.0))
+
+    asyncio.run(bybit_watch.shave_ladder(http, "CLUSDT", "long", 0.4))
+
+    amended = [o for o in http.orders if "qty" in o and "price" not in o]
+    assert amended == [{"category": "linear", "symbol": "CLUSDT", "orderId": "e1", "qty": "0.6"}]
+
+
+def test_a_short_eats_from_the_bottom(keyed):
+    """A short's rungs buy below the entry, so the furthest is the lowest."""
+    http = _laddered_http((90.0, 1.0), (97.0, 1.0))
+
+    asyncio.run(bybit_watch.shave_ladder(http, "CLUSDT", "short", 0.4))
+
+    amended = [o for o in http.orders if "qty" in o and "price" not in o]
+    assert amended == [{"category": "linear", "symbol": "CLUSDT", "orderId": "e0", "qty": "0.6"}]
+
+
+def test_a_cut_bigger_than_the_far_rung_eats_downwards(keyed):
+    http = _laddered_http((103.0, 1.0), (110.0, 0.4))
+
+    asyncio.run(bybit_watch.shave_ladder(http, "CLUSDT", "long", 0.9))
+
+    cancelled = [o for o in http.orders if set(o) == {"category", "symbol", "orderId"}]
+    amended = [o for o in http.orders if "qty" in o and "price" not in o]
+    assert [o["orderId"] for o in cancelled] == ["e1"]  # the far one goes entirely
+    assert amended == [{"category": "linear", "symbol": "CLUSDT", "orderId": "e0", "qty": "0.5"}]
+
+
+def test_shaving_an_empty_ladder_does_nothing(keyed):
+    http = _laddered_http()
+
+    asyncio.run(bybit_watch.shave_ladder(http, "CLUSDT", "long", 0.4))
+
+    assert http.orders == []
+
+
+def test_a_refused_shave_is_logged_and_swallowed(keyed, caplog):
+    """The position is already smaller; an uncut ladder is the next rebuild's."""
+    http = _laddered_http((103.0, 1.0))
+    http.refuse_order = True
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        asyncio.run(bybit_watch.shave_ladder(http, "CLUSDT", "long", 0.4))
+
+    assert "could not shave the ladder" in caplog.text

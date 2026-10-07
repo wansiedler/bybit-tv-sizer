@@ -1226,6 +1226,58 @@ async def _exit_qty(
     return qty
 
 
+async def shave_ladder(http: httpx.AsyncClient, symbol: str, side: str, qty: float) -> None:
+    """Take `qty` out of the ladder, starting at the rung furthest from entry.
+
+    A button closes part of the position at market, and the exits are then
+    larger than what is left. Rebuilding would shrink every rung in
+    proportion, including the breakeven one — the whole reason the ladder
+    was built. Eating the far end instead leaves the near rungs exactly
+    where they stand: the cut comes out of the target, which is what taking
+    profit early means.
+
+    Downwards when the far rung is smaller than the cut, so the exits keep
+    adding up to the position. Nothing else in the ladder depends on more
+    than that.
+
+    Never raises: the market close already happened, and a ladder left
+    oversized is corrected by the next rebuild.
+    """
+    try:
+        orders = (await maker_exits(http)).get(symbol) or []
+        # Furthest from the entry first: a long's rungs sell above it, a
+        # short's buy below.
+        orders.sort(key=lambda o: float(o["price"]), reverse=side == "long")
+        left = qty
+        for order in orders:
+            if left <= 0:
+                break
+            have = float(order.get("qty") or 0)
+            if have <= left:
+                await _post(
+                    http,
+                    "/v5/order/cancel",
+                    {"category": "linear", "symbol": symbol, "orderId": order["orderId"]},
+                )
+                left -= have
+                continue
+            await _post(
+                http,
+                "/v5/order/amend",
+                {
+                    "category": "linear",
+                    "symbol": symbol,
+                    "orderId": order["orderId"],
+                    "qty": _qty(have - left),
+                },
+            )
+            left = 0.0
+    # Deliberately broad: the position is already smaller, and an uncut
+    # ladder is a cosmetic wrong the next rebuild fixes.
+    except Exception:  # noqa: BLE001
+        log.exception("could not shave the ladder on %s", symbol)
+
+
 async def close_fraction(http: httpx.AsyncClient, symbol: str, percent: float) -> str:
     """Close part of one position at market — what the exit buttons do."""
     if not enabled():
@@ -1256,6 +1308,10 @@ async def close_fraction(http: httpx.AsyncClient, symbol: str, percent: float) -
     except Exception as exc:  # noqa: BLE001
         log.exception("could not close %g%% of %s", percent, symbol)
         return f"❌ {base_symbol(symbol)}: {exc}"
+    # The exits now cover more than the position does. Take the difference
+    # off the far end rather than letting a rebuild shrink every rung.
+    if qty < size:
+        await shave_ladder(http, symbol, "long" if row.get("side") == "Buy" else "short", qty)
     part = "the whole position" if qty >= size else f"{percent:g}% ({qty:g})"
     return f"✂️ {base_symbol(symbol)}: closing {part} — 💸 report follows"
 
