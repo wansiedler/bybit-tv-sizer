@@ -106,6 +106,30 @@ for limit orders, the trimmer's cut, and the "risk X% depo" warning on a
 fresh entry. Reports, charts and journal rows keep showing the real balance
 and the real shares of it — only the risk arithmetic is capped.
 
+## Two entries, one risk budget
+
+`RISK_PCT` is a cap on the **symbol**, not on each order. Averaging down means
+two limits into one idea, and sized one at a time they risk twice:
+
+```text
+ONDO Buy @ 0.4608   131,406   stop 0.4544   risk 885.95$ = 1.00%
+ONDO Buy @ 0.4668    45,108   stop 0.4544   risk 606.38$ = 0.68%
+                                            ------------------
+          if both fill:                   1,492.33$ = 1.68%
+```
+
+Every managed order on a symbol is sized as before, their combined stop-out
+is measured, and if it overshoots the cap **all of them are scaled by one
+factor**. The proportions drawn survive exactly — 45,108 against 131,406
+stays 45,108 against 131,406 — because which entry should be the larger is
+the trader's call and not the bot's.
+
+One order is never scaled: sized to the cap on its own, it already fits it.
+
+Give both entries the **same stop**. With different stops the question has no
+answer: once both fill the position carries one stop, and the risk is
+measured from the average entry to that one.
+
 ## The drawn size as a ceiling (`RISK_GROW=0`)
 
 By default the sizer works both ways: it cuts an order that risks more than

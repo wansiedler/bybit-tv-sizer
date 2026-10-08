@@ -343,8 +343,18 @@ async def tick(http: httpx.AsyncClient, send) -> None:
         return
 
     equity = await get_equity(http)
+    by_symbol: dict[str, list[dict]] = {}
     for order in orders:
-        await _resize_order(http, order, equity, send)
+        by_symbol.setdefault(order["symbol"], []).append(order)
+    for symbol, group in by_symbol.items():
+        instrument = await get_instrument(http, symbol)
+        wants = [(order, target_qty(order, equity, instrument)) for order in group]
+        sized = [(order, qty) for order, qty in wants if qty is not None]
+        # The cap is the symbol's, not each order's: two entries into one
+        # idea must not risk twice over.
+        scale = risk_scale(sized, equity)
+        for order, qty in wants:
+            await _resize_order(http, order, equity, qty if qty is None else qty * scale, send)
 
 
 async def _warn_thin_rr(order: dict, send) -> None:
@@ -378,14 +388,48 @@ async def _fit_margin(
     return cap, True
 
 
-async def _resize_order(http: httpx.AsyncClient, order: dict, equity: Decimal, send) -> None:
+def order_risk(order: dict, qty: Decimal) -> Decimal:
+    """What `qty` of this order loses if its stop fires, fees included."""
+    entry = Decimal(order["price"])
+    stop_raw = order.get("stopLoss") or ""
+    if entry <= 0 or stop_raw in ("", "0"):
+        return Decimal(0)
+    stop = Decimal(stop_raw)
+    return (abs(entry - stop) + entry * MAKER_FEE + stop * TAKER_FEE) * qty
+
+
+def risk_scale(wants: list[tuple[dict, Decimal]], equity: Decimal) -> Decimal:
+    """How much to shrink a symbol's orders so together they risk the cap.
+
+    Each order is sized on its own to RISK_PCT, which is right for one entry
+    and wrong for two: an idea entered in two places then risks twice. Two
+    ONDO limits came to 1.68% of the deposit between them, each correct
+    alone.
+
+    One factor for the whole set, so the sizes drawn keep their proportions
+    — 45,108 against 131,406 stays 45,108 against 131,406, scaled. Which of
+    the two entries should be larger is not the bot's opinion to have.
+
+    1 when the set already fits, and when there is nothing to measure: a
+    cap cannot be shared out over orders whose risk is unknown.
+    """
+    total = sum((order_risk(order, qty) for order, qty in wants), Decimal(0))
+    budget = equity * RISK_PCT
+    if total <= 0 or budget <= 0 or total <= budget:
+        return Decimal(1)
+    return budget / total
+
+
+async def _resize_order(
+    http: httpx.AsyncClient, order: dict, equity: Decimal, want: Decimal | None, send
+) -> None:
     """Fit one managed order to the target risk, margin and lot allowing."""
     symbol, order_id = order["symbol"], order["orderId"]
     await _warn_thin_rr(order, send)
     instrument = await get_instrument(http, symbol)
-    want = target_qty(order, equity, instrument)
     if want is None:
         return
+    want = round_step(want, Decimal(instrument["lotSizeFilter"]["qtyStep"]))
     have = Decimal(order["qty"])
     # Sizing down is the guardrail; sizing up is the bot taking a bigger
     # trade than the one that was drawn. A 0.27% stop asks for three
