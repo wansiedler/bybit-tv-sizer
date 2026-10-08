@@ -144,7 +144,6 @@ nearest is the cheapest.
 Fewer shares than orders repeats the last one. Empty keeps the proportional
 scaling. A lone order takes the whole budget either way.
 
-
 Give both entries the **same stop**. With different stops the question has no
 answer: once both fill the position carries one stop, and the risk is
 measured from the average entry to that one.
