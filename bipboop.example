@@ -80,6 +80,13 @@ GUARD_GRACE_SEC=45
 # bybit-tv-sizer; variable names and arming match it one to one). Runs
 # whenever the API keys are present; DRY_RUN=1 keeps it harmless. Amending
 # needs a Read+Trade key — never withdrawal.
+# How stale a signed request may be when Bybit reads it, in milliseconds.
+# Docker Desktop's clock stalls while the Mac sleeps and catches up after:
+# ten seconds behind for thirteen minutes once, and every signed call came
+# back 10002 against the old 5000. The window is the replay guard, so wider
+# is not free — 20000 survives a nap without opening it far.
+RECV_WINDOW=20000
+
 # 1 = testnet, 0 = mainnet (separate keys!)
 BYBIT_TESTNET=0
 # 1 = only log the amend, 0 = actually send it

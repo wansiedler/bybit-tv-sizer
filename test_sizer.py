@@ -306,7 +306,8 @@ def test_notice_names_the_scaled_risk(monkeypatch):
 
     run_tick(http, out)
 
-    assert "risk 0.25% (RR 1.50 of 3)" in out.sent[-1]
+    # The figure is what the rounded quantity really risks, not the setting.
+    assert "risk 0.24% (RR 1.50 of 3)" in out.sent[-1]
 
 
 def test_notice_keeps_the_plain_risk_at_full_rr(monkeypatch):
@@ -316,7 +317,7 @@ def test_notice_keeps_the_plain_risk_at_full_rr(monkeypatch):
 
     run_tick(http, out)
 
-    assert "risk 0.50%\n" in out.sent[-1]
+    assert "risk 0.49%\n" in out.sent[-1]
     assert "RR 3" not in out.sent[-1]
 
 
@@ -379,7 +380,7 @@ def test_tick_amends_and_announces_when_live(monkeypatch):
     assert http.amended[0]["qty"] == "0.047"
     assert out.sent == [
         "⚖️ BTCUSDT Buy limit @ 60000\n"
-        "stop 59000 (1.67%) | risk 0.50%\n"
+        "stop 59000 (1.67%) | risk 0.49%\n"
         "qty 0.001 (60$, 0.6% depo) → 0.047 (2,820$, 28.2% depo)"
     ]
 
@@ -1086,6 +1087,7 @@ def test_the_near_entry_keeps_its_quarter(split_25_75):
 
     out = sizer.split_targets(wants, equity)
 
+    assert out is not None
     near = sizer.order_risk(ONDO_B, out["o-far"])  # 0.4668 is the dearer buy
     far = sizer.order_risk(ONDO_A, out["o-near"])
     assert float(near) == pytest.approx(float(equity * sizer.RISK_PCT / 4), rel=1e-9)
@@ -1099,6 +1101,7 @@ def test_a_sell_ladder_counts_from_the_cheapest(split_25_75):
 
     out = sizer.split_targets([(low, Decimal(1)), (high, Decimal(1))], Decimal("88590"))
 
+    assert out is not None
     near = sizer.order_risk(low, out["s-low"])
     far = sizer.order_risk(high, out["s-high"])
     assert near < far
@@ -1119,7 +1122,8 @@ def test_a_split_shorter_than_the_queue_repeats_its_last_share(monkeypatch):
 
     out = sizer.split_targets(wants, Decimal("88590"))
 
-    risks = [float(sizer.order_risk(o, out[o["orderId"]])) for o, _ in wants]
+    assert out is not None
+    risks = [float(sizer.order_risk(o, out[str(o["orderId"])])) for o, _ in wants]
     assert risks[0] == pytest.approx(risks[1], rel=1e-9)
     assert risks[1] == pytest.approx(risks[2], rel=1e-9)
 
@@ -1151,3 +1155,21 @@ def test_tick_splits_the_budget_between_two_entries(split_25_75, monkeypatch):
     far = sizer.order_risk(ONDO_A, sized["o-near"])
     assert near < far
     assert float(near + far) == pytest.approx(float(Decimal("88590") * sizer.RISK_PCT), rel=1e-3)
+
+
+def test_the_notice_reports_the_split_share_not_the_setting(split_25_75, monkeypatch):
+    """Two FARTCOIN entries split 75/25 both announced "risk 1.00%"."""
+    monkeypatch.setattr(sizer, "DRY_RUN", False)
+    monkeypatch.setattr(sizer, "RISK_PCT", Decimal("0.01"))
+    monkeypatch.setattr(bybit_watch, "RISK_GROW", True)
+    http, out = FakeHTTP(), Recorder()
+    http.equity = "88590"
+    http.instruments = [ONDO_LOT]
+    http.orders = [ONDO_A, ONDO_B]
+
+    run_tick(http, out)
+
+    said = " ".join(out.sent)
+    assert "risk 0.75%" in said  # the zone
+    assert "risk 0.25%" in said  # the feeler
+    assert "risk 1.00%" not in said  # which is what both used to say

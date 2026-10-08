@@ -113,8 +113,11 @@ def test_enabled_needs_both_keys(keyed, monkeypatch):
     assert bybit_watch.enabled() is False
 
 
-def test_sign_is_hmac_over_the_v5_payload(keyed):
-    # Vector computed independently: HMAC-SHA256("secret", "1700000000000key5000a=1")
+def test_sign_is_hmac_over_the_v5_payload(keyed, monkeypatch):
+    # Vector computed independently: HMAC-SHA256("secret", "1700000000000key5000a=1").
+    # The recv window is part of what is signed, so it is pinned here rather
+    # than left to a default the signature would silently follow.
+    monkeypatch.setattr(bybit_watch, "RECV_WINDOW", "5000")
     assert (
         bybit_watch.sign("1700000000000", "a=1")
         == "d026b6d817e30bf57f231da2f2e4c6cbb5b776a49bc545459332eaabf806ca3a"  # pragma: allowlist secret
