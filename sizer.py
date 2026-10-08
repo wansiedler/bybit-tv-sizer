@@ -538,10 +538,17 @@ async def _resize_order(
 async def _announce_resize(
     order: dict, equity: Decimal, have: Decimal, want: Decimal, capped: bool, send
 ) -> None:
-    """The ⚖️ notice: stop distance, RR-scaled risk, quantity before and after."""
+    """The ⚖️ notice: stop distance, the risk actually taken, sizes either side.
+
+    The share reported is the one the new quantity really carries, not the
+    one configured. Two FARTCOIN entries split 75/25 by ENTRY_SPLIT both
+    announced "risk 1.00%", which is what the setting says and not what
+    either order was about to do.
+    """
     entry_price = Decimal(order["price"])
+    taken = order_risk(order, want) / equity if equity > 0 else Decimal(0)
     share = risk_share(order)
-    risk_text = f"risk {share * 100:.2f}%"
+    risk_text = f"risk {taken * 100:.2f}%" if taken > 0 else f"risk {share * 100:.2f}%"
     if share != RISK_PCT:
         risk_text += f" (RR {reward_to_risk(order):.2f} of {RR_FULL_RISK:g})"
 

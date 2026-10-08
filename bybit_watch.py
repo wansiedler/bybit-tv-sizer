@@ -116,7 +116,13 @@ CHART_BARS = min(int(os.getenv("CHART_BARS", "1800")), 3000)
 CLOSE_INTERVALS = [
     x.strip() for x in os.getenv("CLOSE_INTERVALS", f"{CHART_INTERVAL},240").split(",") if x.strip()
 ]
-RECV_WINDOW = "5000"
+# How stale a signed request may be when Bybit reads it. Docker Desktop's
+# clock stalls while the Mac sleeps and catches up afterwards: one evening
+# the container ran ten seconds behind the exchange for thirteen minutes,
+# and every signed call came back 10002 against the old 5000 ms. The window
+# is the replay guard, so it is not free — twenty seconds buys surviving a
+# nap, and the signature still binds the timestamp it was made for.
+RECV_WINDOW = os.getenv("RECV_WINDOW", "20000")
 
 _POSITIONS = "/v5/position/list"
 _ORDERS = "/v5/order/realtime"
