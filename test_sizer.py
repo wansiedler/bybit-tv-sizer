@@ -976,6 +976,37 @@ def test_an_order_under_the_target_is_left_alone(shrink_only, caplog):
     assert "growing is off" in caplog.text
 
 
+def test_the_order_left_alone_says_so_once(shrink_only, caplog):
+    """At a half-second poll, one standing pre-entry logged the same line
+    thousands of times and buried every real event under it."""
+    http, out = DogeHTTP(), Recorder()
+    target = sizer.target_qty(DOGE, Decimal(http.equity), http.instruments[0])
+    assert target is not None
+    http.orders = [dict(DOGE, qty=str(target // 4))]
+
+    with caplog.at_level("INFO", logger="relay.sizer"):
+        run_tick(http, out)
+        run_tick(http, out)
+        run_tick(http, out)
+
+    assert caplog.text.count("growing is off") == 1
+
+
+def test_the_order_left_alone_says_so_again_when_the_target_moves(shrink_only, caplog):
+    """Dragging the stop is a new fact, and earns its own line."""
+    http, out = DogeHTTP(), Recorder()
+    target = sizer.target_qty(DOGE, Decimal(http.equity), http.instruments[0])
+    assert target is not None
+    http.orders = [dict(DOGE, qty=str(target // 4))]
+
+    with caplog.at_level("INFO", logger="relay.sizer"):
+        run_tick(http, out)
+        http.orders = [dict(DOGE, qty=str(target // 8))]
+        run_tick(http, out)
+
+    assert caplog.text.count("growing is off") == 2
+
+
 def test_an_order_over_the_target_is_still_cut(shrink_only):
     http, out = DogeHTTP(), Recorder()
     target = sizer.target_qty(DOGE, Decimal(http.equity), http.instruments[0])
