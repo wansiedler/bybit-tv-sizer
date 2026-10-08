@@ -1087,6 +1087,7 @@ def test_the_near_entry_keeps_its_quarter(split_25_75):
 
     out = sizer.split_targets(wants, equity)
 
+    assert out is not None
     near = sizer.order_risk(ONDO_B, out["o-far"])  # 0.4668 is the dearer buy
     far = sizer.order_risk(ONDO_A, out["o-near"])
     assert float(near) == pytest.approx(float(equity * sizer.RISK_PCT / 4), rel=1e-9)
@@ -1100,6 +1101,7 @@ def test_a_sell_ladder_counts_from_the_cheapest(split_25_75):
 
     out = sizer.split_targets([(low, Decimal(1)), (high, Decimal(1))], Decimal("88590"))
 
+    assert out is not None
     near = sizer.order_risk(low, out["s-low"])
     far = sizer.order_risk(high, out["s-high"])
     assert near < far
@@ -1120,7 +1122,8 @@ def test_a_split_shorter_than_the_queue_repeats_its_last_share(monkeypatch):
 
     out = sizer.split_targets(wants, Decimal("88590"))
 
-    risks = [float(sizer.order_risk(o, out[o["orderId"]])) for o, _ in wants]
+    assert out is not None
+    risks = [float(sizer.order_risk(o, out[str(o["orderId"])])) for o, _ in wants]
     assert risks[0] == pytest.approx(risks[1], rel=1e-9)
     assert risks[1] == pytest.approx(risks[2], rel=1e-9)
 
