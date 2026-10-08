@@ -1066,3 +1066,88 @@ def test_tick_caps_two_entries_together(monkeypatch):
     sized = {o["orderId"]: Decimal(o["qty"]) for o in http.amended}
     total = sizer.order_risk(ONDO_A, sized["o-near"]) + sizer.order_risk(ONDO_B, sized["o-far"])
     assert total <= Decimal("88590") * sizer.RISK_PCT * Decimal("1.001")
+
+
+# --- ENTRY_SPLIT: the pre-entry keeps its slice ----------------------------
+#
+# Scaling the drawn sizes let a big second entry swallow the budget: the
+# live ONDO pair had the deeper order at a full 1.00% on its own, which
+# leaves the feeler nothing at all.
+
+
+@pytest.fixture
+def split_25_75(monkeypatch):
+    monkeypatch.setattr(sizer, "ENTRY_SPLIT", (Decimal(25), Decimal(75)))
+
+
+def test_the_near_entry_keeps_its_quarter(split_25_75):
+    equity = Decimal("88590")
+    wants = [(ONDO_A, Decimal("131406")), (ONDO_B, Decimal("45108"))]
+
+    out = sizer.split_targets(wants, equity)
+
+    near = sizer.order_risk(ONDO_B, out["o-far"])  # 0.4668 is the dearer buy
+    far = sizer.order_risk(ONDO_A, out["o-near"])
+    assert float(near) == pytest.approx(float(equity * sizer.RISK_PCT / 4), rel=1e-9)
+    assert float(far) == pytest.approx(float(equity * sizer.RISK_PCT * 3 / 4), rel=1e-9)
+
+
+def test_a_sell_ladder_counts_from_the_cheapest(split_25_75):
+    """Sell limits rest above the price, so the nearest is the lowest."""
+    low = dict(ONDO_A, orderId="s-low", side="Sell", price="0.50", stopLoss="0.52")
+    high = dict(ONDO_A, orderId="s-high", side="Sell", price="0.55", stopLoss="0.52")
+
+    out = sizer.split_targets([(low, Decimal(1)), (high, Decimal(1))], Decimal("88590"))
+
+    near = sizer.order_risk(low, out["s-low"])
+    far = sizer.order_risk(high, out["s-high"])
+    assert near < far
+
+
+def test_the_split_is_not_used_for_one_order(split_25_75):
+    assert sizer.split_targets([(ONDO_A, Decimal("1"))], Decimal("88590")) is None
+
+
+def test_no_split_configured_leaves_the_scaling_alone():
+    assert sizer.split_targets([(ONDO_A, Decimal(1)), (ONDO_B, Decimal(1))], Decimal(1)) is None
+
+
+def test_a_split_shorter_than_the_queue_repeats_its_last_share(monkeypatch):
+    monkeypatch.setattr(sizer, "ENTRY_SPLIT", (Decimal(50),))
+    third = dict(ONDO_A, orderId="o-third", price="0.45")
+    wants = [(ONDO_A, Decimal(1)), (ONDO_B, Decimal(1)), (third, Decimal(1))]
+
+    out = sizer.split_targets(wants, Decimal("88590"))
+
+    risks = [float(sizer.order_risk(o, out[o["orderId"]])) for o, _ in wants]
+    assert risks[0] == pytest.approx(risks[1], rel=1e-9)
+    assert risks[1] == pytest.approx(risks[2], rel=1e-9)
+
+
+def test_a_split_cannot_divide_unmeasurable_risk(split_25_75):
+    stopless = dict(ONDO_B, stopLoss="")
+
+    assert sizer.split_targets([(ONDO_A, Decimal(1)), (stopless, Decimal(1))], Decimal(1)) is None
+
+
+def test_a_split_of_nothing_is_no_split(monkeypatch):
+    monkeypatch.setattr(sizer, "ENTRY_SPLIT", (Decimal(0), Decimal(0)))
+
+    assert sizer.split_targets([(ONDO_A, Decimal(1)), (ONDO_B, Decimal(1))], Decimal(1)) is None
+
+
+def test_tick_splits_the_budget_between_two_entries(split_25_75, monkeypatch):
+    monkeypatch.setattr(sizer, "DRY_RUN", False)
+    monkeypatch.setattr(bybit_watch, "RISK_GROW", True)
+    http, out = FakeHTTP(), Recorder()
+    http.equity = "88590"
+    http.instruments = [ONDO_LOT]
+    http.orders = [ONDO_A, ONDO_B]
+
+    run_tick(http, out)
+
+    sized = {o["orderId"]: Decimal(o["qty"]) for o in http.amended}
+    near = sizer.order_risk(ONDO_B, sized["o-far"])
+    far = sizer.order_risk(ONDO_A, sized["o-near"])
+    assert near < far
+    assert float(near + far) == pytest.approx(float(Decimal("88590") * sizer.RISK_PCT), rel=1e-3)

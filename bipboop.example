@@ -186,6 +186,14 @@ NO_PROXY=api.telegram.org
 # being under a ceiling is where a trade is supposed to sit.
 RISK_GROW=1
 
+# How RISK_PCT is divided between several entries into one idea, nearest to
+# price first. "25,75" gives the pre-entry a quarter and the deeper add
+# three quarters, whatever sizes were drawn — so the feeler stays alive and
+# the zone gets the bulk. Fewer shares than orders repeats the last one.
+# Empty scales the drawn sizes instead, keeping their proportions; a lone
+# order always takes the whole budget either way.
+ENTRY_SPLIT=
+
 # Cut a position whose stop-risk overshoots RISK_PCT back down to it with
 # a reduce-only market order. Exact: the only slack is the lot step. 1 = on.
 RISK_TRIM=1

@@ -126,6 +126,25 @@ the trader's call and not the bot's.
 
 One order is never scaled: sized to the cap on its own, it already fits it.
 
+### Who gives way (`ENTRY_SPLIT`)
+
+Scaling the drawn sizes keeps their proportions, which is fair and sometimes
+useless: the live ONDO pair had the deeper order at a full 1.00% on its own,
+so proportional scaling left the pre-entry a sliver of a sliver.
+
+`ENTRY_SPLIT=25,75` divides the budget by **position in the queue**, counted
+from the price outwards — a quarter to the feeler, three quarters to the zone
+— whatever sizes were drawn. The pre-entry is always alive and the add always
+gets the bulk.
+
+Which order is nearest needs no call to the exchange: a buy limit rests below
+the price, so the nearest is the dearest; a sell limit rests above it, so the
+nearest is the cheapest.
+
+Fewer shares than orders repeats the last one. Empty keeps the proportional
+scaling. A lone order takes the whole budget either way.
+
+
 Give both entries the **same stop**. With different stops the question has no
 answer: once both fill the position carries one stop, and the risk is
 measured from the average entry to that one.
