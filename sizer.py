@@ -83,6 +83,10 @@ _warned: dict[str, str] = {}
 # at a half-second poll one stuck order filed 110007 until it was cancelled
 # by hand. Asking once is diagnosis; asking forever is noise.
 _refused: dict[str, Decimal] = {}
+# orderId -> (the target declined, the quantity kept). At a half-second poll
+# a standing pre-entry announced the same refusal thousands of times and
+# buried every real event under it. Saying it once is the report.
+_left_alone: dict[str, tuple[Decimal, Decimal]] = {}
 
 
 def enabled() -> bool:
@@ -343,6 +347,7 @@ async def tick(http: httpx.AsyncClient, send) -> None:
         del _settling[stale]
         _warned.pop(stale, None)
         _refused.pop(stale, None)
+        _left_alone.pop(stale, None)
 
     orders = [order for order in open_orders if is_managed(order)]
     # has_settled() advances the counter, so it runs for every managed order
@@ -496,7 +501,14 @@ async def _resize_order(
     # back at 87,652$ — correct arithmetic, and not what was meant by it.
     # With RISK_GROW=0 an order risking less than the target is left alone.
     if not bybit_watch.RISK_GROW and want > have:
-        log.info("%s %s: under target and growing is off, leaving %s", symbol, order_id[:8], have)
+        if _left_alone.get(order_id) != (want, have):
+            _left_alone[order_id] = (want, have)
+            log.info(
+                "%s %s: under target and growing is off, leaving %s",
+                symbol,
+                order_id[:8],
+                have,
+            )
         return
     fitted = await _fit_margin(http, order, instrument, want, have)
     if fitted is None:

@@ -59,6 +59,7 @@ def _default_config(monkeypatch, tmp_path):
     sizer._settling.clear()
     sizer._warned.clear()
     sizer._refused.clear()
+    sizer._left_alone.clear()
     monkeypatch.setattr(tv_alerts, "TV_WEBHOOK_SECRET", "")
     monkeypatch.setattr(tv_alerts, "JOURNAL_URL", "")
     monkeypatch.setattr(tv_alerts, "TV_PUBLIC_URL", "")
