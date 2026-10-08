@@ -42,6 +42,15 @@ load_dotenv("bipboop")
 
 DRY_RUN = os.getenv("DRY_RUN", "1").lower() not in ("0", "false", "no", "")
 RISK_PCT = Decimal(os.getenv("RISK_PCT", "0.5")) / Decimal(100)
+# How the symbol's risk budget is split between several entries into one
+# idea, nearest to price first. "25,75" gives the pre-entry a quarter and
+# the deeper add three quarters, whatever sizes were drawn — so the feeler
+# is always alive and the zone always gets the bulk. Fewer shares than
+# orders repeats the last one. Empty scales the drawn sizes instead,
+# keeping their proportions. One order always takes the whole budget.
+ENTRY_SPLIT = tuple(
+    Decimal(part) for part in os.getenv("ENTRY_SPLIT", "").replace(" ", "").split(",") if part
+)
 # Ceiling on the deposit the percent is taken from; 0 = no ceiling.
 EQUITY_MAX = Decimal(os.getenv("RISK_EQUITY_MAX", "0"))
 FALLBACK_SL_PCT = Decimal(os.getenv("FALLBACK_SL_PCT", "0")) / Decimal(100)
@@ -352,9 +361,14 @@ async def tick(http: httpx.AsyncClient, send) -> None:
         sized = [(order, qty) for order, qty in wants if qty is not None]
         # The cap is the symbol's, not each order's: two entries into one
         # idea must not risk twice over.
-        scale = risk_scale(sized, equity)
+        split = split_targets(sized, equity)
+        scale = Decimal(1) if split else risk_scale(sized, equity)
         for order, qty in wants:
-            await _resize_order(http, order, equity, qty if qty is None else qty * scale, send)
+            if qty is None:
+                await _resize_order(http, order, equity, None, send)
+                continue
+            want = split[order["orderId"]] if split else qty * scale
+            await _resize_order(http, order, equity, want, send)
 
 
 async def _warn_thin_rr(order: dict, send) -> None:
@@ -396,6 +410,51 @@ def order_risk(order: dict, qty: Decimal) -> Decimal:
         return Decimal(0)
     stop = Decimal(stop_raw)
     return (abs(entry - stop) + entry * MAKER_FEE + stop * TAKER_FEE) * qty
+
+
+def _unit_risk(order: dict) -> Decimal:
+    """What one unit of this order loses at its stop, fees included."""
+    return order_risk(order, Decimal(1))
+
+
+def _nearest_first(orders: list[dict]) -> list[dict]:
+    """Entries ordered by distance from price, nearest first.
+
+    A buy limit rests below the price, so the nearest is the dearest; a sell
+    limit rests above it, so the nearest is the cheapest. Which saves asking
+    the exchange where the price is.
+    """
+    return sorted(orders, key=lambda o: Decimal(o["price"]), reverse=orders[0]["side"] == "Buy")
+
+
+def split_targets(wants: list[tuple[dict, Decimal]], equity: Decimal) -> dict[str, Decimal] | None:
+    """Quantity per order when ENTRY_SPLIT divides the budget; None if it does not.
+
+    The shares are positions in a queue ordered from the price outwards, not
+    a judgement about the sizes drawn: the pre-entry gets its slice because
+    it is the pre-entry, so it stays alive however large the deeper add was
+    drawn. Scaling the drawn sizes instead would let a big second entry
+    swallow the budget and leave the feeler at nothing.
+
+    None when there is nothing to divide — no split configured, one order,
+    or an order whose risk cannot be measured.
+    """
+    if not ENTRY_SPLIT or len(wants) < 2:
+        return None
+    orders = [order for order, _ in wants]
+    units = [_unit_risk(order) for order in orders]
+    if any(unit <= 0 for unit in units):
+        return None
+    shares = list(ENTRY_SPLIT[: len(orders)])
+    shares += [ENTRY_SPLIT[-1]] * (len(orders) - len(shares))
+    whole = sum(shares)
+    if whole <= 0:
+        return None
+    budget = equity * RISK_PCT
+    out: dict[str, Decimal] = {}
+    for order, share in zip(_nearest_first(orders), shares, strict=True):
+        out[order["orderId"]] = budget * share / whole / _unit_risk(order)
+    return out
 
 
 def risk_scale(wants: list[tuple[dict, Decimal]], equity: Decimal) -> Decimal:
