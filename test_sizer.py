@@ -997,3 +997,72 @@ def test_growing_is_the_default(monkeypatch):
     run_tick(http, out)
 
     assert http.amended != []
+
+
+# --- the risk cap belongs to the symbol ------------------------------------
+#
+# Two ONDO limits, each sized correctly on its own, came to 1.68% of the
+# deposit between them. An idea entered in two places risked twice.
+
+
+ONDO_A = dict(
+    ORDER, symbol="ONDOUSDT", orderId="o-near", price="0.4608", stopLoss="0.4544", qty="131406"
+)
+ONDO_B = dict(
+    ORDER, symbol="ONDOUSDT", orderId="o-far", price="0.4668", stopLoss="0.4544", qty="45108"
+)
+ONDO_LOT = {"lotSizeFilter": {"qtyStep": "1", "minOrderQty": "1", "maxOrderQty": "99999999"}}
+
+
+def test_one_order_at_its_target_is_not_scaled():
+    """A single entry sized to the cap already fits it, so nothing moves."""
+    equity = Decimal("88590")
+    target = sizer.target_qty(ONDO_A, equity, ONDO_LOT)
+    assert target is not None
+
+    assert sizer.risk_scale([(ONDO_A, target)], equity) == Decimal(1)
+
+
+def test_two_entries_share_one_cap():
+    equity = Decimal("88590")
+    wants = [(ONDO_A, Decimal("131406")), (ONDO_B, Decimal("45108"))]
+
+    scale = sizer.risk_scale(wants, equity)
+    total = sum(sizer.order_risk(o, q * scale) for o, q in wants)
+
+    assert scale < 1
+    assert float(total) == pytest.approx(float(equity * sizer.RISK_PCT), rel=1e-9)
+
+
+def test_scaling_keeps_the_drawn_proportions():
+    """Which entry should be larger is the trader's call, not the bot's."""
+    wants = [(ONDO_A, Decimal("131406")), (ONDO_B, Decimal("45108"))]
+
+    scale = sizer.risk_scale(wants, Decimal("88590"))
+
+    assert float((Decimal("131406") * scale) / (Decimal("45108") * scale)) == pytest.approx(
+        float(Decimal("131406") / Decimal("45108"))
+    )
+
+
+def test_a_cap_cannot_be_shared_over_unknown_risk():
+    stopless = dict(ONDO_A, stopLoss="")
+
+    assert sizer.risk_scale([(stopless, Decimal("1"))], Decimal("88590")) == Decimal(1)
+    assert sizer.risk_scale([], Decimal("88590")) == Decimal(1)
+    assert sizer.risk_scale([(ONDO_A, Decimal("1"))], Decimal(0)) == Decimal(1)
+
+
+def test_tick_caps_two_entries_together(monkeypatch):
+    monkeypatch.setattr(sizer, "DRY_RUN", False)
+    monkeypatch.setattr(bybit_watch, "RISK_GROW", True)
+    http, out = FakeHTTP(), Recorder()
+    http.equity = "88590"
+    http.instruments = [ONDO_LOT]
+    http.orders = [ONDO_A, ONDO_B]
+
+    run_tick(http, out)
+
+    sized = {o["orderId"]: Decimal(o["qty"]) for o in http.amended}
+    total = sizer.order_risk(ONDO_A, sized["o-near"]) + sizer.order_risk(ONDO_B, sized["o-far"])
+    assert total <= Decimal("88590") * sizer.RISK_PCT * Decimal("1.001")
