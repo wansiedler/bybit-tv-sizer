@@ -494,7 +494,19 @@ async def tp_maker(http: httpx.AsyncClient, open_now: dict[str, Position], send,
         if not exit_orders:
             continue
         lot, _ = await ladder_filters(http, symbol)
-        if ladder_covers(position, exit_orders, float(lot.get("qtyStep") or 0)):
+        step = float(lot.get("qtyStep") or 0)
+        if ladder_covers(position, exit_orders, step):
+            continue
+        # The snapshot this pass works from was read before the exits were:
+        # guard() and trim() each talk to the exchange in between. A rung
+        # that fills in that gap leaves the exits short by exactly what
+        # filled, and the ladder looks broken when it is not. One GALA
+        # position was closed in full on that reading — the rebuild
+        # cancelled two rungs that covered the remainder exactly.
+        #
+        # Nothing is rebuilt until the size the exits are measured against
+        # is the size the exchange has now. A real trim only waits a poll.
+        if await _position_size(http, symbol) != position.size:
             continue
         _tp_cooldown[symbol] = time.monotonic()
         await _rebuild_ladder(http, symbol, position, exit_orders, send)
@@ -660,6 +672,13 @@ async def _place_rung(
             "qty": _qty(qty),
             "price": _qty(price),
             "reduceOnly": True,
+            # A rung below a long's market price is not a resting exit: it
+            # crosses the book and fills at once, as a taker, which is the
+            # opposite of what a maker exit is for. One GALA rebuild posted
+            # the whole position at a take the price had passed an hour
+            # earlier and closed the trade at market. PostOnly makes the
+            # exchange refuse that order instead of executing it.
+            "timeInForce": "PostOnly",
             "positionIdx": position.position_idx,
         },
     )
@@ -734,6 +753,24 @@ def _qty(size: float) -> str:
     return f"{size:.8f}".rstrip("0").rstrip(".") or "0"
 
 
+async def _position_size(http: httpx.AsyncClient, symbol: str) -> float | None:
+    """The symbol's size as the exchange has it now; None when unreadable.
+
+    0.0 for a symbol with no position left. Unknown is not zero: a caller
+    about to cancel live orders must do nothing rather than act on a guess.
+    """
+    try:
+        result = await _get(http, _POSITIONS, {"category": "linear", "symbol": symbol})
+    # Deliberately broad: an unanswered read means "don't touch anything".
+    except Exception:  # noqa: BLE001
+        log.exception("could not re-read the position on %s", symbol)
+        return None
+    for row in result.get("list") or []:
+        if row.get("symbol") == symbol:
+            return float(row.get("size") or 0)
+    return 0.0
+
+
 async def _rebuild_ladder(
     http: httpx.AsyncClient, symbol: str, position: Position, exit_orders: list[dict], send
 ) -> None:
@@ -746,21 +783,58 @@ async def _rebuild_ladder(
     lot, tick = await ladder_filters(http, symbol)
     rungs = ladder_rungs(position, lot, tick)
     if not rungs:
-        rungs = [(position.take_profit or 0.0, position.size)]
+        # No take is nothing to fall back to. A limit at price 0 is not an
+        # exit, and asking for one only earns a refusal.
+        if not position.take_profit:
+            return
+        rungs = [(position.take_profit, position.size)]
     try:
         await _cancel_rungs(http, symbol, exit_orders)
-        for price, qty in rungs:
-            await _place_rung(http, symbol, position, price, qty)
-        _tp_refused.pop(symbol, None)
-        await send(_ladder_note(symbol, rungs, position.size) + " (rebuilt)")
-    # Deliberately broad: one refused rebuild must not strand the rest.
+    # Deliberately broad: a ladder that would not come down stays up, and
+    # the position keeps the exits it already had.
     except Exception as exc:  # noqa: BLE001
         log.exception("tp-maker rebuild failed for %s", symbol)
-        # The exchange refusing the same rebuild for the same reason is one
-        # piece of news, not one every ten seconds.
-        if _tp_refused.get(symbol) != str(exc):
-            _tp_refused[symbol] = str(exc)
-            await send(f"❌ {base_symbol(symbol)}: could not rebuild the ladder ({exc})")
+        await _rebuild_refused(symbol, exc, False, send)
+        return
+    # From here the old exits are gone, so every rung is placed on its own:
+    # aborting the loop on the first refusal left the position with nothing
+    # covering it at all.
+    stood: list[tuple[float, float]] = []
+    refusal = ""
+    for price, qty in rungs:
+        try:
+            await _place_rung(http, symbol, position, price, qty)
+            stood.append((price, qty))
+        # Deliberately broad: one rung the exchange will not hold must not
+        # cost the others. PostOnly makes this an ordinary answer.
+        except Exception as exc:  # noqa: BLE001
+            log.exception("tp-maker rung at %s refused on %s", price, symbol)
+            refusal = str(exc)
+    if not stood:
+        await _rebuild_refused(symbol, refusal, True, send)
+        return
+    _tp_refused.pop(symbol, None)
+    note = _ladder_note(symbol, stood, position.size) + " (rebuilt)"
+    if refusal:
+        note += f"\n⚠️ one rung the exchange would not hold: {refusal}"
+    await send(note)
+
+
+async def _rebuild_refused(symbol: str, reason: object, bare: bool, send) -> None:
+    """Report a refused rebuild once per distinct reason.
+
+    `bare` means the old exits are already cancelled and none of the new
+    ones stood, so the position is uncovered. That is the part worth saying
+    out loud: everything else is the exchange being briefly unhelpful.
+    """
+    text = str(reason)
+    if _tp_refused.get(symbol) == text:
+        return
+    _tp_refused[symbol] = text
+    line = f"❌ {base_symbol(symbol)}: could not rebuild the ladder ({text})"
+    if bare:
+        line += " — the position has no maker exits now"
+    await send(line)
 
 
 def ladder_covers(position: Position, orders: list[dict], step: float) -> bool:
