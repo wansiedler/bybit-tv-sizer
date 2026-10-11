@@ -2522,6 +2522,7 @@ def test_tp_maker_reposts_the_take_as_a_limit(making):
             "qty": "2",
             "price": "103",
             "reduceOnly": True,
+            "timeInForce": "PostOnly",
             "positionIdx": 0,
         },
         {"category": "linear", "symbol": "CLUSDT", "takeProfit": "0", "positionIdx": 0},
@@ -2544,6 +2545,7 @@ def test_tp_maker_only_clears_the_take_when_the_limit_already_stands(making):
 def test_tp_maker_resizes_the_exit_after_a_trim(making):
     http, out = ClosingHTTP(), Recorder()
     http.order_rows = [exit_row()]
+    http.position_pages = [[row(symbol="CLUSDT", size="1.5")]]
     trimmed = Position("long", 1.5, 100.0, 150.0, take_profit=103.0, maker_exit=True)
 
     asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": trimmed}, out.send, out.speak))
@@ -2560,6 +2562,7 @@ def test_tp_maker_resizes_the_exit_after_a_trim(making):
             "qty": "1.5",
             "price": "103",
             "reduceOnly": True,
+            "timeInForce": "PostOnly",
             "positionIdx": 0,
         },
     ]
@@ -2640,6 +2643,7 @@ def test_tp_maker_reports_a_refused_repost(making):
 def test_tp_maker_reports_a_refused_rebuild(making):
     http, out = ClosingHTTP(), Recorder()
     http.order_rows = [exit_row(qty="9")]
+    http.position_pages = [[row(symbol="CLUSDT", size="2")]]
     http.refuse_order = True
 
     asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": EXITED}, out.send, out.speak))
@@ -3408,7 +3412,7 @@ def test_rebuild_says_a_refusal_once(keyed, monkeypatch):
         raise RuntimeError("bybit /v5/order/amend: 10001 order not modified")
 
     monkeypatch.setattr(bybit_watch, "_post", _refuse)
-    position = Position("long", 149314.2, 0.2036, 30394.0)
+    position = Position("long", 149314.2, 0.2036, 30394.0, take_profit=0.25)
 
     for _ in range(5):
         asyncio.run(
@@ -3430,7 +3434,7 @@ def test_rebuild_speaks_again_when_the_refusal_changes(keyed, monkeypatch):
         raise RuntimeError(next(reasons))
 
     monkeypatch.setattr(bybit_watch, "_post", _refuse)
-    position = Position("long", 149314.2, 0.2036, 30394.0)
+    position = Position("long", 149314.2, 0.2036, 30394.0, take_profit=0.25)
 
     for _ in range(2):
         asyncio.run(
@@ -3453,7 +3457,7 @@ def test_rebuild_forgets_the_refusal_once_it_works(keyed, monkeypatch):
         return {}
 
     monkeypatch.setattr(bybit_watch, "_post", _sometimes)
-    position = Position("long", 149314.2, 0.2036, 30394.0)
+    position = Position("long", 149314.2, 0.2036, 30394.0, take_profit=0.25)
 
     for allowed in (False, True, False):
         allow["on"] = allowed
@@ -3624,6 +3628,7 @@ def test_tp_maker_rebuilds_the_ladder_after_a_trim(making):
     http, out = ClosingHTTP(), Recorder()
     http.instrument_pages = [LOT_PAGE, LOT_PAGE]
     http.order_rows = [exit_row(order_id="e1", price="110", qty="2")]
+    http.position_pages = [[row(symbol="CLUSDT", size="1")]]
     trimmed = replace(LADDERED, size=1.0, value=100.0, maker_exit=True)
 
     asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": trimmed}, out.send, out.speak))
@@ -3720,6 +3725,101 @@ def test_a_ladder_short_of_the_position_is_rebuilt(making):
     half = [exit_row(order_id="e0", price="110", qty="1")]
 
     assert bybit_watch.ladder_covers(laddered, half, 0.01) is False
+
+
+# --- a rebuild must never be able to execute -------------------------------
+#
+# 11.10.2026, GALA. A rung dragged to the price filled at 17:41:37. The
+# position had been read a moment earlier, the exits a moment later, so the
+# ladder looked short by exactly what had filled. The rebuild cancelled the
+# two rungs that covered the remainder exactly and posted the whole position
+# at the take, 0.002442, which the price had passed an hour before. A limit
+# below the market does not rest: it crossed the book, filled at 0.0024643,
+# and the trade closed in full. The next rung earned 110017.
+
+
+def test_no_rebuild_while_the_size_is_stale(making):
+    """A fill between the two reads is not a broken ladder."""
+    http, out = ClosingHTTP(), Recorder()
+    http.instrument_pages = [LOT_PAGE, LOT_PAGE]
+    # The exchange has half of it left; the snapshot still carries the whole.
+    http.position_pages = [[row(symbol="CLUSDT", size="1")]]
+    http.order_rows = [exit_row(order_id="e1", price="110", qty="1")]
+    stale = replace(LADDERED, maker_exit=True)
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": stale}, out.send, out.speak))
+
+    assert http.orders == []
+    assert out.sent == []
+
+
+def test_a_rung_is_posted_post_only(making):
+    """A maker exit that would cross the book is refused, not filled."""
+    http, out = ClosingHTTP(), Recorder()
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": TAKEN}, out.send, out.speak))
+
+    placed = [o for o in http.orders if o.get("orderType") == "Limit"]
+    assert [o["timeInForce"] for o in placed] == ["PostOnly"]
+
+
+def test_one_refused_rung_does_not_cost_the_others(making, monkeypatch):
+    """Aborting on the first refusal left the position covered by nothing."""
+    http, out = ClosingHTTP(), Recorder()
+    http.instrument_pages = [LOT_PAGE, LOT_PAGE]
+    http.position_pages = [[row(symbol="CLUSDT", size="2")]]
+    http.order_rows = [exit_row(order_id="e1", price="110", qty="1")]
+    laddered = replace(LADDERED, maker_exit=True)
+    posts = {"n": 0}
+    real = bybit_watch._place_rung
+
+    async def _second_one_refused(*args, **kwargs):
+        posts["n"] += 1
+        if posts["n"] == 2:
+            raise RuntimeError("bybit: 110079 order would take")
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(bybit_watch, "_place_rung", _second_one_refused)
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": laddered}, out.send, out.speak))
+
+    placed = [o for o in http.orders if o.get("orderType") == "Limit"]
+    assert len(placed) == 4  # five rungs, one refused
+    assert out.sent[0].startswith("🎯 CL:")
+    assert "one rung the exchange would not hold" in out.sent[0]
+
+
+def test_a_rebuild_that_stands_nothing_says_the_position_is_bare(making, monkeypatch):
+    http, out = ClosingHTTP(), Recorder()
+    http.instrument_pages = [LOT_PAGE, LOT_PAGE]
+    http.position_pages = [[row(symbol="CLUSDT", size="2")]]
+    http.order_rows = [exit_row(order_id="e1", price="110", qty="1")]
+    laddered = replace(LADDERED, maker_exit=True)
+
+    async def _all_refused(*_args, **_kwargs):
+        raise RuntimeError("bybit: 110079 order would take")
+
+    monkeypatch.setattr(bybit_watch, "_place_rung", _all_refused)
+
+    asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": laddered}, out.send, out.speak))
+
+    assert out.sent == [
+        "❌ CL: could not rebuild the ladder (bybit: 110079 order would take)"
+        " — the position has no maker exits now"
+    ]
+
+
+def test_no_take_means_no_fallback_rung(making):
+    """A limit at price 0 is not an exit, so it is not asked for."""
+    http, out = ClosingHTTP(), Recorder()
+    takeless = Position("long", 2.0, 100.0, 200.0, maker_exit=True)
+
+    asyncio.run(
+        bybit_watch._rebuild_ladder(http, "CLUSDT", takeless, [{"orderId": "e1"}], out.send)
+    )
+
+    assert [o for o in http.orders if o.get("orderType") == "Limit"] == []
+    assert out.sent == []
 
 
 def test_coverage_forgives_a_lot_step(making):
