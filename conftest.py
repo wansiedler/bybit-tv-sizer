@@ -47,6 +47,7 @@ def _default_config(monkeypatch, tmp_path):
     bybit_watch._trim_cooldown.clear()
     bybit_watch._tp_cooldown.clear()
     bybit_watch._tp_refused.clear()
+    bybit_watch._trim_refused.clear()
     bybit_watch._guard_seen.clear()
     bybit_watch._guard_closed.clear()
     bybit_watch._entry_levels.clear()
