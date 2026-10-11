@@ -3753,6 +3753,24 @@ def test_no_rebuild_while_the_size_is_stale(making):
     assert out.sent == []
 
 
+def test_an_unreadable_size_is_not_zero(making):
+    """A caller about to cancel live orders must not act on a guess."""
+
+    class Mute(ClosingHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise OSError("no answer")
+
+    assert asyncio.run(bybit_watch._position_size(Mute(), "CLUSDT")) is None
+
+
+def test_a_size_of_zero_for_a_symbol_that_is_gone(making):
+    """Rows for other symbols are not this one's size."""
+    http = ClosingHTTP()
+    http.position_pages = [[row(symbol="OPUSDT", size="7")]]
+
+    assert asyncio.run(bybit_watch._position_size(http, "CLUSDT")) == 0.0
+
+
 def test_a_rung_is_posted_post_only(making):
     """A maker exit that would cross the book is refused, not filled."""
     http, out = ClosingHTTP(), Recorder()
