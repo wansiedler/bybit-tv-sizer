@@ -2371,6 +2371,74 @@ def test_trim_cuts_back_to_the_target_risk(trimming):
     assert out.spoken == ["CL trimmed"]
 
 
+def test_trim_sends_a_million_units_as_a_number(trimming):
+    """11.10.2026, GALA: a 6,509,340 cut went out as "6.50934e+06".
+
+    %g keeps six significant digits and switches to an exponent above a
+    million, and the exchange answers 10001 "Qty invalid" — once every
+    eleven seconds, for as long as the position stood too large.
+    """
+    http, out = trim_http(step="1", min_qty="1"), Recorder()
+    # A cheap coin: the same arithmetic, seven digits of quantity.
+    http.equity_rows = [{"totalEquity": "85000", "totalWalletBalance": "85342.2"}]
+    huge = Position("short", 13143365.0, 0.00245277, 32243.0, stop_loss=0.002576)
+
+    asyncio.run(bybit_watch.trim(http, {"GALAUSDT": huge}, out.send, out.speak))
+
+    # "9.97016e+06" under %g, which is what Bybit called invalid.
+    assert [o["qty"] for o in http.orders] == ["9970157"]
+
+
+def test_trim_says_a_refusal_once(trimming):
+    """One refused cut is one piece of news, not one every eleven seconds."""
+    http, out = trim_http(), Recorder()
+    http.refuse_order = True
+    lot = http.instrument_pages[0]
+
+    for _ in range(3):
+        # The lot page is consumed per pass, and the cooldown is what keeps
+        # the trimmer off a position Bybit has not caught up with yet.
+        http.instrument_pages = [lot]
+        bybit_watch._trim_cooldown.clear()
+        asyncio.run(bybit_watch.trim(http, {"CLUSDT": OVERSIZED}, out.send, out.speak))
+
+    assert out.sent == ["❌ CL: could not trim (order rejected)"]
+
+
+def test_trim_speaks_again_when_the_refusal_changes(trimming, monkeypatch):
+    http, out = trim_http(), Recorder()
+    reasons = iter(["10001 Qty invalid", "110007 ab not enough"])
+
+    async def _refuse(*_args, **_kwargs):
+        raise RuntimeError(next(reasons))
+
+    monkeypatch.setattr(bybit_watch, "_close_market", _refuse)
+    lot = http.instrument_pages[0]
+
+    for _ in range(2):
+        http.instrument_pages = [lot]
+        bybit_watch._trim_cooldown.clear()
+        asyncio.run(bybit_watch.trim(http, {"CLUSDT": OVERSIZED}, out.send, out.speak))
+
+    assert len(out.sent) == 2
+
+
+def test_trim_forgets_the_refusal_once_it_cuts(trimming):
+    http, out = trim_http(), Recorder()
+    http.refuse_order = True
+    bybit_watch._trim_cooldown.clear()
+    asyncio.run(bybit_watch.trim(http, {"CLUSDT": OVERSIZED}, out.send, out.speak))
+
+    http.refuse_order = False
+    http.instrument_pages = [
+        {"list": [{"symbol": "CLUSDT", "lotSizeFilter": {"qtyStep": "0.1", "minOrderQty": "0.1"}}]}
+    ]
+    bybit_watch._trim_cooldown.clear()
+    asyncio.run(bybit_watch.trim(http, {"CLUSDT": OVERSIZED}, out.send, out.speak))
+
+    assert [line.split()[0] for line in out.sent] == ["❌", "✂️"]
+
+
 def test_trim_cuts_even_a_small_overshoot(trimming):
     """No tolerance band: 6.66$ of risk against a 5$ target gets cut."""
     http, out = trim_http(), Recorder()

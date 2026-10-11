@@ -442,7 +442,7 @@ async def _trim_cut(
             http,
             symbol,
             "Buy" if position.side == "long" else "Sell",
-            f"{cut:g}",
+            _qty(cut),
             position.position_idx,
         )
         await send(
@@ -450,10 +450,19 @@ async def _trim_cut(
             f"{RISK_TARGET * 100:.2f}% — cutting {_qty(position.size)}→{_qty(want)}"
         )
         await speak(f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} trimmed")
+        _trim_refused.pop(symbol, None)
     # Deliberately broad: one refused cut must not strand the rest.
     except Exception as exc:  # noqa: BLE001
         log.exception("trim failed for %s", symbol)
-        await send(f"❌ {base_symbol(symbol)}: could not trim ({exc})")
+        if _trim_refused.get(symbol) != str(exc):
+            _trim_refused[symbol] = str(exc)
+            await send(f"❌ {base_symbol(symbol)}: could not trim ({exc})")
+
+
+# symbol -> the refusal already announced for its trim, so one cut the
+# exchange will not take is one message and not one every eleven seconds.
+# GALA filed 10001 "Qty invalid" for as long as the position stood oversized.
+_trim_refused: dict[str, str] = {}
 
 
 # When each symbol's take was last touched: Bybit needs a moment to show a
