@@ -23,6 +23,7 @@ import math
 import os
 import time
 from dataclasses import dataclass, replace
+from decimal import Decimal
 
 import httpx
 from dotenv import load_dotenv
@@ -471,6 +472,20 @@ _tp_cooldown: dict[str, float] = {}
 # symbol -> the refusal already announced for its maker exit, so one broken
 # resize is one message and not one every pass.
 _tp_refused: dict[str, str] = {}
+# symbol -> (the position the ladder was last built for, what the exits then
+# added up to). A rebuild that leaves the ladder exactly as short as it found
+# it will do so again on the next pass and the one after — and a rung
+# cancelled every eleven seconds cannot be dragged anywhere. Anything real —
+# a fill, a trim, a dragged stop, a hand that cancels the exits — moves one
+# of the two and lets the next rebuild through.
+_ladder_built: dict[str, tuple[str, str]] = {}
+
+
+def _ladder_state(position: Position, orders: list[dict]) -> tuple[str, str]:
+    """What a rebuild would be answering: the position, and the exits it sees."""
+    total = sum((Decimal(str(order.get("qty") or 0)) for order in orders), Decimal(0))
+    levels = f"{position.size}|{position.price}|{position.stop_loss}|{position.take_profit}"
+    return levels, str(total)
 
 
 async def tp_maker(http: httpx.AsyncClient, open_now: dict[str, Position], send, speak) -> None:
@@ -517,6 +532,11 @@ async def tp_maker(http: httpx.AsyncClient, open_now: dict[str, Position], send,
         # is the size the exchange has now. A real trim only waits a poll.
         if await _position_size(http, symbol) != position.size:
             continue
+        # Rebuilding into the same shortfall twice is a loop, not a repair.
+        state = _ladder_state(position, exit_orders)
+        if _ladder_built.get(symbol) == state:
+            continue
+        _ladder_built[symbol] = state
         _tp_cooldown[symbol] = time.monotonic()
         await _rebuild_ladder(http, symbol, position, exit_orders, send)
 
@@ -532,6 +552,7 @@ async def _cancel_orphan_exits(
         if symbol in open_now or time.monotonic() - _tp_cooldown.get(symbol, 0.0) < 10.0:
             continue
         _tp_cooldown[symbol] = time.monotonic()
+        _ladder_built.pop(symbol, None)
         try:
             await _cancel_rungs(http, symbol, orders)
             await send(f"🎯 {base_symbol(symbol)}: take limit left without a position — cancelled")
@@ -585,8 +606,6 @@ def _on_tick(price: float, tick: float, up: bool) -> float:
     """
     if tick <= 0:
         return price
-    from decimal import Decimal
-
     step = Decimal(str(tick))
     rounding = "ROUND_CEILING" if up else "ROUND_FLOOR"
     return float((Decimal(str(price)) / step).to_integral_value(rounding=rounding) * step)
@@ -660,8 +679,6 @@ def _beyond(position: Position, price: float) -> bool:
 
 def _floor_step(qty: float, step: float) -> float:
     """Down to the lot step, without the float dust `//` leaves behind."""
-    from decimal import Decimal
-
     lot = Decimal(str(step))
     return float((Decimal(str(qty)) / lot).to_integral_value(rounding="ROUND_DOWN") * lot)
 
@@ -859,8 +876,13 @@ def ladder_covers(position: Position, orders: list[dict], step: float) -> bool:
 
     Cancel the exits to get the computed prices back.
     """
-    total = sum(float(order.get("qty") or 0) for order in orders)
-    return abs(total - position.size) <= max(step, 0.0)
+    # In decimal, not in float. Exits of 0.139 against a position of 0.14
+    # are one lot step apart — the slack this function exists to grant —
+    # but in binary the gap is 0.0010000000000000009, which is larger than
+    # 0.001 by 8.7e-19. On that difference one BTC ladder was torn down and
+    # rebuilt every eleven seconds, so no rung could be dragged anywhere.
+    total = sum((Decimal(str(order.get("qty") or 0)) for order in orders), Decimal(0))
+    return abs(total - Decimal(str(position.size))) <= max(Decimal(str(step)), Decimal(0))
 
 
 async def guard(http: httpx.AsyncClient, open_now: dict[str, Position], send, speak) -> None:
