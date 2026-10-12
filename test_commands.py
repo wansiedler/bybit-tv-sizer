@@ -431,6 +431,59 @@ def test_poll_backs_off_when_telegram_refuses(owner, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+#  the command menu                                                            #
+# --------------------------------------------------------------------------- #
+def test_the_menu_carries_every_command_help_lists(owner):
+    """The two lists cannot drift: one is read off the other."""
+    named = [entry["command"] for entry in commands.menu_commands()]
+
+    assert named == [
+        line.split()[0].lstrip("/") for line in commands.HELP.splitlines() if line.startswith("/")
+    ]
+
+
+def test_the_menu_leaves_the_argument_out_of_the_name(owner):
+    """Telegram matches `/cut`; `<ticker> <%>` is description, not name."""
+    menu = {entry["command"]: entry["description"] for entry in commands.menu_commands()}
+
+    assert menu["cut"] == "trim a position at market, e.g. /cut CL 25"
+    assert menu["statistics"] == "results with the equity curve, default 30"
+
+
+def test_the_menu_skips_the_prose(owner):
+    """The line about the exit buttons is not a command."""
+    menu = commands.menu_commands("/ping — answer if alive\nbuttons 5% · 25%: a tap cuts")
+
+    assert menu == [{"command": "ping", "description": "answer if alive"}]
+
+
+def test_publishing_the_menu_calls_set_my_commands(owner):
+    posted = {}
+
+    class Fake:
+        async def post(self, url, json=None, timeout=None):
+            posted["url"], posted["body"] = url, json
+
+    asyncio.run(commands.publish_menu(Fake()))
+
+    assert posted["url"].endswith("/setMyCommands")
+    assert posted["body"]["commands"][0]["command"] == "status"
+
+
+def test_a_refused_menu_does_not_stop_the_bot(owner, caplog):
+    """A bot that cannot publish its menu still answers commands."""
+
+    class Mute:
+        async def post(self, url, json=None, timeout=None):
+            raise httpx.ConnectError("no route")
+
+    with caplog.at_level("ERROR", logger="relay.commands"):
+        asyncio.run(commands.publish_menu(Mute()))
+
+    assert "setMyCommands failed" in caplog.text
+
+
+# --------------------------------------------------------------------------- #
 #  poll                                                                        #
 # --------------------------------------------------------------------------- #
 def _run_poll(monkeypatch, batches, rec, stats=None, http=None, handlers=None):

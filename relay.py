@@ -517,6 +517,9 @@ async def run() -> None:
             if audio is not None:
                 await speaker.lifecycle("Relay up")
 
+            # The menu button beside the message box is Telegram's, built
+            # from setMyCommands. Without the call there is no menu at all.
+            await commands.publish_menu(http)
             answering = asyncio.create_task(
                 commands.poll(
                     http,
