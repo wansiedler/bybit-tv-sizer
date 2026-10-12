@@ -42,6 +42,7 @@ class FakeHTTP:
             payload={"ok": True, "result": {"username": "bot"}}
         )
         self.posted: list[object] = []
+        self.called: list[str] = []
 
     async def __aenter__(self):
         return self
@@ -52,8 +53,11 @@ class FakeHTTP:
     async def post(self, url, json=None, data=None, files=None, timeout=None):
         if self._post_error is not None:
             raise self._post_error
-        if json is not None:
+        if json is not None and "text" in json:
             self.posted.append(json["text"])
+        elif json is not None:
+            # setMyCommands and friends: an API call, not a message.
+            self.called.append(url.rsplit("/", 1)[-1])
         elif "media" in (data or {}):
             import json as _json
 
@@ -1038,6 +1042,17 @@ def test_main_check_flag_runs_the_check(monkeypatch):
     relay.main()
 
     assert called == ["check"]
+
+
+def test_run_publishes_the_command_menu(config, monkeypatch):
+    """Without setMyCommands the chat offers no menu button at all."""
+
+    async def disconnect_immediately(client):
+        return None
+
+    http, _ = _run_relay(monkeypatch, disconnect_immediately)
+
+    assert "setMyCommands" in http.called
 
 
 def test_run_up_notice_carries_the_external_ip(config, monkeypatch):

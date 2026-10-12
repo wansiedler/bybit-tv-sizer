@@ -166,6 +166,44 @@ async def answer_tap(http: httpx.AsyncClient, query_id: str, text: str = "") -> 
         log.exception("answerCallbackQuery failed")
 
 
+def menu_commands(help_text: str = HELP) -> list[dict[str, str]]:
+    """The command menu, read off the /help list rather than kept beside it.
+
+    Two lists drift; one cannot. A line that does not open with a slash is
+    prose, and the argument placeholders — `<ticker>`, `[days]` — belong to
+    the description, not to the name Telegram matches.
+    """
+    menu = []
+    for line in help_text.splitlines():
+        if not line.startswith("/") or "—" not in line:
+            continue
+        head, description = line.split("—", 1)
+        menu.append(
+            {"command": head.strip().lstrip("/").split()[0], "description": description.strip()}
+        )
+    return menu
+
+
+async def publish_menu(http: httpx.AsyncClient) -> None:
+    """Hand Telegram the command list, so the client offers its menu button.
+
+    Without this the bot has no menu at all. The commands inside /help look
+    tappable only because Telegram linkifies any word that opens with a
+    slash — the button beside the message box comes from setMyCommands, and
+    it was never called.
+
+    Best effort: a bot that cannot publish its menu still answers.
+    """
+    try:
+        await http.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/setMyCommands",
+            json={"commands": menu_commands()},
+            timeout=10,
+        )
+    except httpx.HTTPError:
+        log.exception("setMyCommands failed")
+
+
 def uptime(seconds: float) -> str:
     minutes, secs = divmod(int(seconds), 60)
     hours, minutes = divmod(minutes, 60)
