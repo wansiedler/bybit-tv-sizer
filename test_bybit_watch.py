@@ -3908,6 +3908,78 @@ def test_no_take_means_no_fallback_rung(making):
     assert out.sent == []
 
 
+def test_a_rebuild_that_changes_nothing_is_not_repeated(making):
+    """Rebuilding into the same shortfall twice is a loop, not a repair.
+
+    Five BTC rungs were cancelled and re-posted every eleven seconds for as
+    long as the position stood, which is why none of them could be moved.
+    """
+    out = Recorder()
+    laddered = replace(LADDERED, maker_exit=True)
+
+    def fresh():
+        http = ClosingHTTP()
+        http.instrument_pages = [LOT_PAGE, LOT_PAGE]
+        http.position_pages = [[row(symbol="CLUSDT", size="2")]]
+        http.order_rows = [exit_row(order_id="e1", price="110", qty="1")]
+        return http
+
+    first, second = fresh(), fresh()
+    asyncio.run(bybit_watch.tp_maker(first, {"CLUSDT": laddered}, out.send, out.speak))
+    bybit_watch._tp_cooldown.clear()
+    asyncio.run(bybit_watch.tp_maker(second, {"CLUSDT": laddered}, out.send, out.speak))
+
+    assert first.orders != []
+    assert second.orders == []
+
+
+def test_a_hand_that_cancels_the_exits_gets_the_ladder_back(making):
+    """The documented escape hatch: cancel them for the computed prices."""
+    out = Recorder()
+    laddered = replace(LADDERED, maker_exit=True)
+
+    def fresh(exits):
+        http = ClosingHTTP()
+        http.instrument_pages = [LOT_PAGE, LOT_PAGE]
+        http.position_pages = [[row(symbol="CLUSDT", size="2")]]
+        http.order_rows = exits
+        return http
+
+    short = [exit_row(order_id="e1", price="110", qty="1")]
+    first, second = fresh(short), fresh([exit_row(order_id="e2", price="110", qty="0.5")])
+    asyncio.run(bybit_watch.tp_maker(first, {"CLUSDT": laddered}, out.send, out.speak))
+    bybit_watch._tp_cooldown.clear()
+    asyncio.run(bybit_watch.tp_maker(second, {"CLUSDT": laddered}, out.send, out.speak))
+
+    assert second.orders != []
+
+
+def test_coverage_forgives_a_lot_step_in_binary(making):
+    """12.10.2026, BTC. Exits of 0.139 against a position of 0.14 are one
+    lot step apart, which this is written to forgive. In float the gap is
+    0.0010000000000000009, which is more than 0.001 by 8.7e-19, so the
+    ladder was rebuilt every eleven seconds — cancelling all five rungs and
+    posting them again, so no rung could be dragged anywhere.
+    """
+    position = Position("long", 0.14, 82759.3, 11586.0, take_profit=84293.7, stop_loss=82594.1)
+    standing = [
+        exit_row(order_id="e0", price="83089.7", qty="0.034"),
+        exit_row(order_id="e1", price="83254.9", qty="0.034"),
+        exit_row(order_id="e2", price="83420.1", qty="0.034"),
+        exit_row(order_id="e3", price="84293.7", qty="0.037"),
+    ]
+
+    assert bybit_watch.ladder_covers(position, standing, 0.001) is True
+
+
+def test_a_ladder_two_steps_short_is_still_rebuilt(making):
+    """The slack is one step, not "whatever float says"."""
+    position = Position("long", 0.14, 82759.3, 11586.0, take_profit=84293.7, stop_loss=82594.1)
+    standing = [exit_row(order_id="e0", price="84293.7", qty="0.138")]
+
+    assert bybit_watch.ladder_covers(position, standing, 0.001) is False
+
+
 def test_coverage_forgives_a_lot_step(making):
     laddered = replace(LADDERED, maker_exit=True)
     dusty = [exit_row(order_id="e0", price="110", qty="1.995")]
