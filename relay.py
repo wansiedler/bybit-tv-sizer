@@ -465,7 +465,7 @@ def _spawn_watchers(http: httpx.AsyncClient) -> set[asyncio.Task]:
     if ip_watch.enabled():
         background.add(
             asyncio.create_task(
-                ip_watch.poll(http, lambda text: send_via_bot(http, text), speaker.trade)
+                ip_watch.poll(http, lambda text: send_via_bot(http, text), speaker.urgent)
             )
         )
     return background

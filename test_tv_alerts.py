@@ -203,11 +203,11 @@ def test_pump_lets_cancellation_through():
 @pytest.mark.parametrize(
     ("text", "price", "line", "spoken"),
     [
-        ("ETHUSDT.P Crossing 2,440.85", 2500.0, "ETH 📉 2,440.85, TV", "ETH down, 2,440.85, TV"),
-        ("ETHUSDT.P Crossing 2,440.85", 2400.0, "ETH 📈 2,440.85, TV", "ETH up, 2,440.85, TV"),
-        ("ETHUSDT.P Crossing 2,440.85", None, "ETH 2,440.85, TV", "ETH, 2,440.85, TV"),
-        ("BTCUSDT Crossing Up 76,893.7", None, "BTC 📈 76,893.7, TV", "BTC up, 76,893.7, TV"),
-        ("op Crossing down 0.1027", None, "OP 📉 0.1027, TV", "OP down, 0.1027, TV"),
+        ("ETHUSDT.P Crossing 2,440.85", 2500.0, "ETH 📉 2,440.85, TV", "Ethereum down, 2440, TV"),
+        ("ETHUSDT.P Crossing 2,440.85", 2400.0, "ETH 📈 2,440.85, TV", "Ethereum up, 2440, TV"),
+        ("ETHUSDT.P Crossing 2,440.85", None, "ETH 2,440.85, TV", "Ethereum, 2440, TV"),
+        ("BTCUSDT Crossing Up 76,893.7", None, "BTC 📈 76,893.7, TV", "Bitcoin up, 76900, TV"),
+        ("op Crossing down 0.1027", None, "OP 📉 0.1027, TV", "Optimism down, 0.103, TV"),
     ],
 )
 def test_format_alert_compacts_crossings(text, price, line, spoken):
@@ -242,7 +242,7 @@ def test_pump_orients_the_arrow_by_market_price():
 
     assert asked == ["ETH"]
     assert out.sent == ["ETH 📉 2,440.85, TV"]
-    assert out.spoken == ["ETH down, 2,440.85, TV"]
+    assert out.spoken == ["Ethereum down, 2440, TV"]
 
 
 def test_pump_survives_a_failing_price_lookup(caplog):

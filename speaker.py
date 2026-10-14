@@ -225,13 +225,13 @@ def serve_forever() -> ThreadingHTTPServer:
     return httpd
 
 
-def write_speech(text: str, name: str) -> Path:
+def write_speech(text: str, name: str, lang: str = "en") -> Path:
     """Render text to an mp3 in the served directory and return its path."""
     from gtts import gTTS
 
     ensure_dir()
     path = TTS_DIR / name
-    gTTS(text=text, lang="en").save(str(path))
+    gTTS(text=text, lang=lang).save(str(path))
     return path
 
 
@@ -281,7 +281,7 @@ def _resume(controller, media: tuple[str, str, float]) -> None:
     controller.block_until_active(timeout=15)
 
 
-def cast_url(url: str) -> None:
+def cast_url(url: str, volume: float | None = None) -> None:
     """Point the speaker at a URL and wait for it to accept the media.
 
     Whatever was playing is remembered and re-cast afterwards when it was
@@ -311,8 +311,9 @@ def cast_url(url: str) -> None:
             deadline = time.monotonic() + 10
             while cast.app_id not in (None, MEDIA_RECEIVER) and time.monotonic() < deadline:
                 time.sleep(0.5)
-        if SPEAK_VOLUME is not None:
-            cast.set_volume(SPEAK_VOLUME)
+        level = SPEAK_VOLUME if volume is None else volume
+        if level is not None:
+            cast.set_volume(level)
         controller = cast.media_controller
         # audio/mpeg is the registered MP3 type; audio/mp3 is not, and some
         # Cast receivers refuse it.
@@ -329,15 +330,15 @@ def cast_url(url: str) -> None:
         cast.disconnect()
 
 
-async def say(text: str, name: str) -> bool:
+async def say(text: str, name: str, lang: str = "en", volume: float | None = None) -> bool:
     """Render and speak arbitrary text. Never raises: best-effort by design."""
     if not enabled():
         return False
     try:
-        await asyncio.to_thread(write_speech, text, name)
+        await asyncio.to_thread(write_speech, text, name, lang)
         # Plain HTTP on purpose: the speaker fetches from this host on the
         # LAN, and a Cast device cannot validate a self-signed certificate.
-        await asyncio.to_thread(cast_url, f"http://{TTS_HOST}:{TTS_PORT}/{name}")  # NOSONAR
+        await asyncio.to_thread(cast_url, f"http://{TTS_HOST}:{TTS_PORT}/{name}", volume)  # NOSONAR
     # Deliberately broad: speaking is best-effort and must never propagate.
     except Exception:  # noqa: BLE001
         log.exception("could not speak %r", text)
@@ -370,6 +371,14 @@ async def trade(text: str) -> bool:
     return await say(text, "trade.mp3")
 
 
+async def urgent(text: str) -> bool:
+    """Speak an alarm that must be heard whatever the hour: the tunnel to Bybit
+    is down, the external IP changed. Exempt from SPEAK_HOURS like lifecycle
+    notices, but not from SPEAK_LIFECYCLE — muting start/stop chatter must not
+    mute the alarms."""
+    return await say(text, "urgent.mp3")
+
+
 async def lifecycle(text: str) -> bool:
     """Speak a start/stop notice, e.g. "Relay up".
 
@@ -379,3 +388,25 @@ async def lifecycle(text: str) -> bool:
     if not SPEAK_LIFECYCLE:
         return False
     return await say(text, "notice.mp3")
+
+
+def _main(argv: list[str]) -> int:
+    """`python -m speaker [--lang ru] [--volume 50] "text"`: speak one line from
+    outside the relay (OpenClaw's reminders use it through `docker exec`).
+    The relay's own file server hands the clip to the speaker."""
+    import argparse
+
+    ap = argparse.ArgumentParser(prog="speaker", description="Say one line on the Nest speaker.")
+    ap.add_argument("--lang", default="en")
+    ap.add_argument("--volume", type=float, default=None, help="0-100; default SPEAK_VOLUME")
+    ap.add_argument("text")
+    a = ap.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    volume = None if a.volume is None else min(max(a.volume, 0.0), 100.0) / 100
+    return 0 if asyncio.run(say(a.text, "external.mp3", a.lang, volume)) else 1
+
+
+if __name__ == "__main__":
+    import sys
+
+    raise SystemExit(_main(sys.argv[1:]))

@@ -732,7 +732,7 @@ def test_run_starts_the_ip_watcher_when_enabled(config, monkeypatch):
 
     _run_relay(monkeypatch, disconnect_immediately)
 
-    assert started == [relay.speaker.trade]
+    assert started == [relay.speaker.urgent]
 
 
 def test_run_starts_the_weekly_journal_when_sheets_are_wired(config, monkeypatch):

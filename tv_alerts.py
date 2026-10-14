@@ -22,6 +22,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from dotenv import load_dotenv
 
+from coin_names import COIN_NAMES
+from speaker import rounded
+
 log = logging.getLogger("relay.tv")
 
 # relay.py imports this module before its own load_dotenv, same as speaker.
@@ -132,7 +135,10 @@ def format_alert(text: str, came_from: float | None = None) -> tuple[str, str]:
         arrow = "📉" if came_from > float(level.replace(",", "")) else "📈"
     middle = f" {arrow} " if arrow else " "
     spoken_dir = {"📈": "up", "📉": "down"}.get(arrow, "")
-    spoken = f"{symbol}{f' {spoken_dir}' if spoken_dir else ''}, {level}, TV"
+    # Read the same way channel alerts are: coin name and a price for the ear,
+    # "Ethereum down, 2440, TV" rather than "ETH down, 2,440.85, TV".
+    name = COIN_NAMES.get(symbol, symbol)
+    spoken = f"{name}{f' {spoken_dir}' if spoken_dir else ''}, {rounded(level.replace(',', ''))}, TV"
     return f"{symbol}{middle}{level}, TV", spoken
 
 
