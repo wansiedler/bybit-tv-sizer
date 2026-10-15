@@ -674,3 +674,67 @@ def test_the_level_survives_a_second_clip(wired, stub_cast, monkeypatch):
 )
 def test_speak_volume_parses(raw, expected):
     assert speaker._volume(raw) == expected
+
+
+# --------------------------------------------------------------------------- #
+#  urgent alarms                                                               #
+# --------------------------------------------------------------------------- #
+def test_urgent_speaks_at_any_hour(wired, monkeypatch, stub_gtts, stub_cast):
+    # Like lifecycle: 12:00 is outside a 23-8 window, and a dead tunnel must
+    # still be heard.
+    monkeypatch.setattr(speaker, "SPEAK_WINDOW", (23, 8))
+    monkeypatch.setattr(speaker, "within_window", lambda now=None: False)
+
+    assert asyncio.run(speaker.urgent("Tunnel to Bybit is down")) is True
+    assert stub_gtts == [("Tunnel to Bybit is down", "en")]
+    assert stub_cast["played"][0][0] == "http://192.0.2.20:8422/urgent.mp3"
+
+
+def test_urgent_ignores_the_lifecycle_mute(wired, monkeypatch, stub_gtts, stub_cast):
+    """Muting start/stop chatter must not mute the alarms — unlike lifecycle."""
+    monkeypatch.setattr(speaker, "SPEAK_LIFECYCLE", False)
+
+    assert asyncio.run(speaker.urgent("External IP changed")) is True
+    assert stub_gtts == [("External IP changed", "en")]
+
+
+def test_urgent_silent_without_a_speaker(wired, monkeypatch, stub_gtts, stub_cast):
+    monkeypatch.setattr(speaker, "CAST_HOST", "")
+
+    assert asyncio.run(speaker.urgent("Tunnel to Bybit is down")) is False
+    assert stub_gtts == []
+
+
+# --------------------------------------------------------------------------- #
+#  python -m speaker                                                           #
+# --------------------------------------------------------------------------- #
+def test_main_speaks_one_line(wired, monkeypatch, stub_gtts, stub_cast):
+    monkeypatch.setattr(speaker, "SPEAK_VOLUME", None)
+
+    assert speaker._main(["Dinner is ready"]) == 0
+    assert stub_gtts == [("Dinner is ready", "en")]
+    assert stub_cast["played"][0][0] == "http://192.0.2.20:8422/external.mp3"
+    # No --volume: the dial is left wherever SPEAK_VOLUME put it.
+    assert stub_cast["volume"] == [0.4]
+
+
+def test_main_speaks_the_asked_language(wired, stub_gtts, stub_cast):
+    assert speaker._main(["--lang", "ru", "Ужин готов"]) == 0
+    assert stub_gtts == [("Ужин готов", "ru")]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("50", 0.5), ("0", 0.0), ("100", 1.0), ("150", 1.0), ("-5", 0.0)],
+)
+def test_main_takes_the_volume_as_a_percentage(wired, stub_gtts, stub_cast, raw, expected):
+    """0-100 on the command line, clamped, handed to Cast as 0.0-1.0."""
+    assert speaker._main(["--volume", raw, "Dinner is ready"]) == 0
+    assert stub_cast["volume"] == [0.4, expected]
+
+
+def test_main_reports_a_speaker_that_stayed_quiet(wired, monkeypatch, stub_gtts, stub_cast):
+    monkeypatch.setattr(speaker, "CAST_HOST", "")
+
+    assert speaker._main(["Dinner is ready"]) == 1
+    assert stub_gtts == []
