@@ -2368,8 +2368,11 @@ def test_trim_cuts_back_to_the_target_risk(trimming):
             "positionIdx": 0,
         }
     ]
-    assert out.sent == ["✂️ CL: risk 1.11% depo vs target 0.50% — cutting 10→3.9"]
+    # Nothing is announced here: the reason waits for the line that will
+    # know what the cut realised and what it really cost.
+    assert out.sent == []
     assert out.spoken == ["CL trimmed"]
+    assert bybit_watch._trim_why["CLUSDT"] == ("✂️ risk 1.11% depo vs target 0.50% — cut 10→3.9")
 
 
 def test_trim_sends_a_million_units_as_a_number(trimming):
@@ -2437,7 +2440,10 @@ def test_trim_forgets_the_refusal_once_it_cuts(trimming):
     bybit_watch._trim_cooldown.clear()
     asyncio.run(bybit_watch.trim(http, {"CLUSDT": OVERSIZED}, out.send, out.speak))
 
-    assert [line.split()[0] for line in out.sent] == ["❌", "✂️"]
+    # The refusal still speaks; the successful cut leaves its reason for
+    # the line that will carry the figures.
+    assert [line.split()[0] for line in out.sent] == ["❌"]
+    assert "CLUSDT" in bybit_watch._trim_why
 
 
 def test_trim_cuts_even_a_small_overshoot(trimming):
@@ -2448,7 +2454,8 @@ def test_trim_cuts_even_a_small_overshoot(trimming):
     asyncio.run(bybit_watch.trim(http, {"CLUSDT": slightly}, out.send, out.speak))
 
     assert [o["qty"] for o in http.orders] == ["1.7"]
-    assert out.sent == ["✂️ CL: risk 0.67% depo vs target 0.50% — cutting 6→4.3"]
+    assert out.sent == []
+    assert bybit_watch._trim_why["CLUSDT"] == ("✂️ risk 0.67% depo vs target 0.50% — cut 6→4.3")
 
 
 def test_trim_leaves_an_exact_position_alone(trimming):
@@ -2822,7 +2829,8 @@ def test_trim_measures_against_the_capped_deposit(trimming, monkeypatch):
     asyncio.run(bybit_watch.trim(http, {"CLUSDT": OVERSIZED}, out.send, out.speak))
 
     assert http.orders[0]["qty"] == "6.1"
-    assert out.sent == ["✂️ CL: risk 1.11% depo vs target 0.50% — cutting 10→3.9"]
+    assert out.sent == []
+    assert bybit_watch._trim_why["CLUSDT"] == ("✂️ risk 1.11% depo vs target 0.50% — cut 10→3.9")
 
 
 def test_trade_warnings_measure_the_risk_against_the_cap(monkeypatch):
@@ -3211,6 +3219,45 @@ def test_trim_notice_reports_what_the_slice_realised(keyed):
     note = asyncio.run(bybit_watch._trim_notice(http, "HYPEUSDT"))
 
     assert note == " · 💸<b>+6.16</b> (fees 3.10)"
+
+
+def test_trim_notice_carries_the_reason_the_bot_cut(keyed):
+    """One event, one message: why it cut, and what the cut actually cost.
+
+    15.10.2026, BTC. The ✂️ line went out at 15:51:30 and the realised
+    figures at 15:53:09 — one minute thirty-nine apart, reading as two
+    unrelated events.
+    """
+    http = FakeHTTP()
+    http.pnl_rows = [piece("6.16", "31.65", "89.20", fee="1.55")]
+    bybit_watch._trim_why["HYPEUSDT"] = "✂️ risk 1.02% depo vs target 1.00% — cut 10→3.9"
+
+    note = asyncio.run(bybit_watch._trim_notice(http, "HYPEUSDT"))
+
+    assert note == (
+        " · ✂️ risk 1.02% depo vs target 1.00% — cut 10→3.9 · 💸<b>+6.16</b> (fees 3.10)"
+    )
+    # Consumed, so a later shrink the bot did not cause stays silent about it.
+    assert "HYPEUSDT" not in bybit_watch._trim_why
+
+
+def test_trim_notice_says_why_even_when_the_record_is_late(keyed):
+    """Bybit books the slice when it feels like it; the reason still goes out."""
+    bybit_watch._trim_why["HYPEUSDT"] = "✂️ risk 1.02% depo vs target 1.00% — cut 10→3.9"
+
+    note = asyncio.run(bybit_watch._trim_notice(FakeHTTP(), "HYPEUSDT"))
+
+    assert note == " · ✂️ risk 1.02% depo vs target 1.00% — cut 10→3.9"
+
+
+def test_a_shrink_the_bot_did_not_cause_carries_no_reason(keyed):
+    """A hand-closed slice or a filled rung is not the trimmer's doing."""
+    http = FakeHTTP()
+    http.pnl_rows = [piece("6.16", "31.65", "89.20", fee="1.55")]
+
+    assert asyncio.run(bybit_watch._trim_notice(http, "HYPEUSDT")) == (
+        " · 💸<b>+6.16</b> (fees 3.10)"
+    )
 
 
 def test_trim_notice_is_empty_without_a_record(keyed):

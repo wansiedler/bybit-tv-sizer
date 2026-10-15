@@ -447,9 +447,13 @@ async def _trim_cut(
             _qty(cut),
             position.position_idx,
         )
-        await send(
-            f"✂️ {base_symbol(symbol)}: risk {risk / depo * 100:.2f}% depo vs target "
-            f"{RISK_TARGET * 100:.2f}% — cutting {_qty(position.size)}→{_qty(want)}"
+        # Not announced here. The cut's realised result and its real fees are
+        # only known once the exchange has booked the slice, and saying it
+        # twice — once guessing, once for real, a minute and a half apart —
+        # made one event look like two. The reason waits for the figures.
+        _trim_why[symbol] = (
+            f"✂️ risk {risk / depo * 100:.2f}% depo vs target "
+            f"{RISK_TARGET * 100:.2f}% — cut {_qty(position.size)}→{_qty(want)}"
         )
         await speak(f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} trimmed")
         _trim_refused.pop(symbol, None)
@@ -465,6 +469,12 @@ async def _trim_cut(
 # exchange will not take is one message and not one every eleven seconds.
 # GALA filed 10001 "Qty invalid" for as long as the position stood oversized.
 _trim_refused: dict[str, str] = {}
+
+
+# symbol -> why the trimmer cut it, waiting for the line that will carry the
+# realised figures. One event, one message, with the exchange's own numbers
+# rather than an estimate made before the fill.
+_trim_why: dict[str, str] = {}
 
 
 # When each symbol's take was last touched: Bybit needs a moment to show a
@@ -2589,12 +2599,14 @@ async def _trim_notice(http: httpx.AsyncClient, symbol: str) -> str:
     is announced here; the journal still gets one row per position, written
     when the last slice closes it.
     """
+    why = _trim_why.pop(symbol, "")
+    head = f" · {why}" if why else ""
     record = await closed_record(http, symbol)
     if record is None:
-        return ""
+        return head
     pnl = float(record.get("closedPnl") or 0)
     fees = float(record.get("openFee") or 0) + float(record.get("closeFee") or 0)
-    note = f" · 💸<b>{_usd(pnl)}</b>"
+    note = f"{head} · 💸<b>{_usd(pnl)}</b>"
     return note + (f" (fees {_sig2(fees)})" if fees else "")
 
 
@@ -2633,6 +2645,9 @@ async def tick(
         elif kind == "changed" and was is not None and now is not None and now.size < was.size:
             line += await _trim_notice(http, symbol)
         elif kind == "closed" and was is not None:
+            # A trim swallowed by a full close in the same breath: the close
+            # notice reports the money, so only the reason is lost.
+            _trim_why.pop(symbol, None)
             closed_line, spoken_line, png, buttons = await _close_notice(
                 http, symbol, was, spoken_line
             )
