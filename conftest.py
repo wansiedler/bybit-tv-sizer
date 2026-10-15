@@ -22,6 +22,8 @@ import sheets
 import sizer
 import speaker
 import tv_alerts
+import tv_capture
+import tv_shot
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +67,13 @@ def _default_config(monkeypatch, tmp_path):
     monkeypatch.setattr(tv_alerts, "TV_WEBHOOK_SECRET", "")
     monkeypatch.setattr(tv_alerts, "JOURNAL_URL", "")
     monkeypatch.setattr(tv_alerts, "TV_PUBLIC_URL", "")
+    # The capture service and its client: a suite that ran against the real
+    # ones would drive the developer's own Chrome and write entry frames into
+    # the checkout.
+    monkeypatch.setattr(tv_capture, "TV_SHOT_SECRET", "")
+    monkeypatch.setattr(tv_capture, "TV_SHOT_LAYOUT", "")
+    monkeypatch.setattr(tv_shot, "TV_SHOT_SECRET", "")
+    monkeypatch.setattr(tv_shot, "TV_SHOT_DIR", str(tmp_path / "tv-entry"))
     monkeypatch.setattr(sheets, "SHEETS_URL", "")
     monkeypatch.setattr(sheets, "SHEETS_SECRET", "")
     monkeypatch.setattr(ip_watch, "ENABLED", False)

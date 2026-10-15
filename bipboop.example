@@ -163,6 +163,55 @@ TV_PORT=8423
 # needs 0.0.0.0.
 TV_BIND=127.0.0.1
 
+# Your own chart in the journal. A capture service on the Mac (tv_capture.py,
+# started by com.bybit.tv-capture.plist) shoots the TradingView layout you
+# actually trade from and hands the relay one pane: on entry, and again on
+# close. The entry frame waits in TV_SHOT_DIR until the trade closes, then
+# both land in the row — the close in column G, the entry in Q.
+#
+# Empty disables the whole thing and the journal keeps the chart the bot
+# draws itself, exactly as before. So does a Mac asleep, a signed-out
+# profile or a symbol TradingView will not show: the row gets the drawn
+# chart and Telegram says which of those it was. It never attaches a blank
+# or a frame of the wrong symbol.
+#
+# The same secret goes to both sides. It is the only thing guarding the
+# service, so make it long and random.
+TV_SHOT_SECRET=
+# The saved layout to shoot, as its URL. Required: without it the service
+# refuses to start rather than guess.
+TV_SHOT_LAYOUT=
+# Relay side: where the Mac is, seen from inside the container. Docker
+# Desktop points host.docker.internal at the host's own loopback, so the
+# service never has to listen on the LAN.
+TV_SHOT_URL=http://host.docker.internal:8424
+# Host side. Keep the bind on loopback.
+TV_SHOT_PORT=8424
+TV_SHOT_BIND=127.0.0.1
+# The Chrome profile holding the TradingView session, and the DevTools port
+# it is driven through. That port is the whole browser to anyone who reaches
+# it — it stays on 127.0.0.1, and the service never proxies it.
+TV_SHOT_PROFILE=~/.bybit-tv-sizer/tv-profile
+TV_SHOT_CDP=http://127.0.0.1:9222
+# A symbol your layout does not hold gets a pane driven to it for that one
+# tab. TV_SHOT_EXCHANGE is the feed it is drawn from; TV_SHOT_INTERVAL is
+# the timeframe, and empty means whatever TradingView last showed you for
+# that symbol — which can be a weekly chart of a five-minute trade. Set it
+# to "15" or "5" and every such frame reads the same.
+TV_SHOT_EXCHANGE=BYBIT
+TV_SHOT_INTERVAL=
+# Bybit's SOLUSDT is TradingView's SOLUSDT.P on a perpetual.
+TV_SHOT_SUFFIX=.P
+# One pane, in pixels. Bigger reads better and costs more Drive.
+TV_SHOT_WIDTH=760
+TV_SHOT_HEIGHT=460
+# Where an entry frame waits for its close. Inside the session volume, so a
+# rebuild does not lose the trades that are open.
+TV_SHOT_DIR=session/tv-entry
+# How long the relay waits for a frame before giving up on it. A warm shot
+# is 8-12s; a symbol the layout has to be driven to is about 20.
+TV_SHOT_WAIT=40
+
 # Trade journal: every closed trade lands as a row in a Google Sheet via a
 # tiny Apps Script web app (see README). Both empty disables it. The secret
 # must match the SECRET constant inside the script.

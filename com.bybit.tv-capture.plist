@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.bybit.tv-capture</string>
+    <!-- The TradingView capture service: shoots the user's own chart layout
+         out of a logged-in Chrome and hands single panes to the relay.
+         It runs on the Mac rather than in the container because the frame
+         has to come from a browser holding a real TradingView session.
+
+         KeepAlive, unlike the relay's job: there is no container with its
+         own restart policy behind this one, so launchd is what brings it
+         back. The service itself keeps Chrome warm and reattaches to a
+         Chrome that is already up, so a restart here costs one page load,
+         not a sign-in. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/me/bybit-tv-sizer/capture-start.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/me/bybit-tv-sizer</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <!-- A crash loop against a signed-out profile should not spin a core. -->
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>StandardOutPath</key>
+    <string>/Users/me/Library/Logs/bybit-tv-capture.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/me/Library/Logs/bybit-tv-capture.log</string>
+</dict>
+</plist>

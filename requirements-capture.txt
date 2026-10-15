@@ -1,0 +1,13 @@
+# The host-side capture service only. This is NOT installed into the relay
+# image: the container has no browser and no business driving one, and
+# playwright would add a few hundred megabytes to a slim image for nothing.
+#
+#     python3 -m venv ~/.bybit-tv-sizer/capture-venv
+#     ~/.bybit-tv-sizer/capture-venv/bin/pip install -r requirements-capture.txt
+#
+# No `playwright install`: the service drives the Google Chrome already on
+# the Mac, through its DevTools port, so there is no bundled browser to
+# download. That is also what makes the logged-in TradingView session
+# possible — it lives in a real Chrome profile, not a throwaway one.
+playwright>=1.56.0
+python-dotenv>=1.2.3
