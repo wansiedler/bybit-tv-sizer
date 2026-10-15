@@ -138,7 +138,9 @@ def format_alert(text: str, came_from: float | None = None) -> tuple[str, str]:
     # Read the same way channel alerts are: coin name and a price for the ear,
     # "Ethereum down, 2440, TV" rather than "ETH down, 2,440.85, TV".
     name = COIN_NAMES.get(symbol, symbol)
-    spoken = f"{name}{f' {spoken_dir}' if spoken_dir else ''}, {rounded(level.replace(',', ''))}, TV"
+    spoken = (
+        f"{name}{f' {spoken_dir}' if spoken_dir else ''}, {rounded(level.replace(',', ''))}, TV"
+    )
     return f"{symbol}{middle}{level}, TV", spoken
 
 

@@ -30,6 +30,7 @@ from dotenv import load_dotenv
 
 import chart
 import sheets
+import tv_shot
 from coin_names import COIN_NAMES
 from parser import base_symbol
 
@@ -2044,6 +2045,11 @@ def _ru(word: str) -> str:
 # so a position the relay never saw open is known to be unknown.
 _entry_levels: dict[str, tuple[int, float | None, float | None, float]] = {}
 
+# The entry screenshots in flight. asyncio keeps only a weak reference to a
+# running task, so a shot nobody holds can be collected mid-flight and the
+# journal quietly loses the frame; these hold them until they are done.
+_shooting: set[asyncio.Task] = set()
+
 
 def remember_levels(symbol: str, now: Position) -> None:
     """Keep the stop, the take and the moment an opening position appeared."""
@@ -2520,19 +2526,30 @@ async def _close_notice(
     # a single screenshot column, and Telegram reads better with the pair side
     # by side than as two attachments.
     drawn = []
+    # The host shoots the user's own TradingView pane while the bot draws its
+    # own chart: both take seconds, and there is no reason to spend them twice.
+    shooting = asyncio.create_task(tv_shot.shot(http, symbol))
     for interval in CLOSE_INTERVALS:
         one = await close_chart(http, symbol, was, record, exit_note=exit_note, interval=interval)
         if one is not None:
             drawn.append(one)
     png = chart.side_by_side(drawn) if len(drawn) > 1 else next(iter(drawn), None)
+    seen, why = await shooting
     forced = _guard_closed.pop(symbol, "")
     kind = "risk-guard" if forced else await close_kind(http, record)
     entry: dict = {"row": journal_row(symbol, was, record, pnl, depo, forced, kind)}
-    if png is not None:
+    # The journal would rather have the chart the trade was actually read on.
+    # Without it the row gets the bot's own, exactly as it always has.
+    journalled = seen or png
+    if journalled is not None:
         # The Apps Script saves it to Drive and writes the link
         # into the "Link" column of the same row.
-        entry["png"] = base64.b64encode(png).decode()
+        entry["png"] = base64.b64encode(journalled).decode()
         entry["name"] = f"{base_symbol(symbol)}-{record.get('updatedTime', '')}"
+    # The frame kept since the entry notice, into its own column.
+    opened_png = tv_shot.take(symbol)
+    if opened_png is not None:
+        entry["png_entry"] = base64.b64encode(opened_png).decode()
     # The journal goes first so the notice can point at the row it produced;
     # a refusal only costs the link, never the notice.
     link = sheets.row_link(await sheets.log_close(http, entry))
@@ -2549,6 +2566,10 @@ async def _close_notice(
         if funding:
             costs += f", funding {_sig2(funding)}"
         line += f" ({costs})"
+    if why:
+        # Never a silent downgrade: the row has the drawn chart, not the one
+        # the trade was read on, and this is why.
+        line += f"\n📷 {html.escape(why)}"
     if record["closes"] > 1:
         # Each trim already announced its own slice. Saying how many closes
         # this figure covers is what keeps the two from reading as one sum
@@ -2601,6 +2622,12 @@ async def tick(
             # The levels this trade was entered on, before anything drags them.
             remember_levels(symbol, now)
             line, png = await _entry_notice(http, symbol, now, line)
+            if tv_shot.enabled():
+                # Behind the notice: the entry is news now, the picture can
+                # take its twelve seconds and be there by the close.
+                shot = asyncio.create_task(tv_shot.capture_entry(http, symbol, send))
+                _shooting.add(shot)
+                shot.add_done_callback(_shooting.discard)
             # Exits hang off the entry notice, where the position is news.
             buttons = exit_buttons(symbol)
         elif kind == "changed" and was is not None and now is not None and now.size < was.size:

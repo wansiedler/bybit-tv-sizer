@@ -4,10 +4,15 @@
 
 const SECRET = "put-your-own-long-random-string-here"; // pragma: allowlist secret
 
-// Columns a trade row occupies, A..P. The banner rows below paint this same
+// Columns a trade row occupies, A..Q. The banner rows below paint this same
 // width: painting fewer left column P out of the TOTAL and WEEK bands, which
 // is why it stayed readable while the rest of a row went white.
-const COLS = 16;
+//
+// Q is the entry screenshot — the chart as it looked when the trade was
+// opened, against G's picture of it closed. It sits past the end of the row
+// the bot writes rather than next to G so that every letter the formulas
+// above name (D, F, K, L) still means the same column.
+const COLS = 17;
 
 function doPost(e) {
   const d = JSON.parse(e.postData.contents);
@@ -43,21 +48,25 @@ function doPost(e) {
   // the band that was painted — stayed readable. Reset what we just wrote.
   sheet.getRange(r, 1, 1, COLS)
     .setBackground(null).setFontColor(null).setFontWeight("normal");
-  if (d.png) {
-    const blob = Utilities.newBlob(Utilities.base64Decode(d.png), "image/png",
-                                   (d.name || "trade") + ".png");
-    const file = folder_().createFile(blob);
-    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-    try {
-      chip_(sheet, r, 7, file.getUrl());
-    } catch (err) {
-      sheet.getRange(r, 7).setValue(file.getUrl());
-    }
-  }
+  // G: the trade closed. Q: the same chart when it was opened, when the
+  // capture service on the Mac managed to take one.
+  if (d.png) shot_(sheet, r, 7, d.png, d.name || "trade");
+  if (d.png_entry) shot_(sheet, r, 17, d.png_entry, (d.name || "trade") + "-entry");
   // The row number and the sheet id go back so the close notice can link the
   // figure it just announced straight at the row it landed in.
   return ContentService.createTextOutput(
     JSON.stringify({ ok: true, row: r, gid: sheet.getSheetId() }));
+}
+
+function shot_(sheet, row, col, png, name) {
+  const blob = Utilities.newBlob(Utilities.base64Decode(png), "image/png", name + ".png");
+  const file = folder_().createFile(blob);
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  try {
+    chip_(sheet, row, col, file.getUrl());
+  } catch (err) {
+    sheet.getRange(row, col).setValue(file.getUrl());
+  }
 }
 
 function chip_(sheet, row, col, url) {

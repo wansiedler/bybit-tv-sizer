@@ -725,9 +725,113 @@ journal from row 3.
 The script itself lives in the spreadsheet, not in this repo; the reference
 copy is in [docs/sheets-script.js](docs/sheets-script.js). It handles four
 payloads: `{row: [...]}` appends a trade (with an optional base64 `png`
-saved to the Drive folder `trade-screens` and chipped into column G),
-`{week: true}` appends the weekly total, `{headers: [...]}` rewrites row 1,
-`{totals: true}` builds the frozen running-total row 2.
+saved to the Drive folder `trade-screens` and chipped into column G, and an
+optional `png_entry` chipped into column Q), `{week: true}` appends the
+weekly total, `{headers: [...]}` rewrites row 1, `{totals: true}` builds the
+frozen running-total row 2.
+
+## Your own TradingView chart in the journal
+
+The chart in column G is one the bot draws itself, from Bybit klines — it
+works in a slim container with no browser, and it always will. This adds the
+other one: the chart **you** were reading, with your layout, your levels and
+your annotations on it. Two frames per trade — the pane as the position
+opened (column Q) and as it closed (column G).
+
+A container cannot take that picture: it needs a browser holding a real
+TradingView session. So a small service runs on the Mac instead
+([tv_capture.py](tv_capture.py)), owns a dedicated Chrome profile, and
+answers exactly one question — "a PNG of symbol X".
+
+### Setting it up
+
+1. **A Chrome profile of its own**, never your everyday one and never your
+   working window:
+
+   ```bash
+   mkdir -p ~/.bybit-tv-sizer/tv-profile && chmod 700 ~/.bybit-tv-sizer/tv-profile
+   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+       --user-data-dir=~/.bybit-tv-sizer/tv-profile \
+       --remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 \
+       https://www.tradingview.com/#signin
+   ```
+
+   Sign in, dismiss the cookie banner once, open the layout you trade from.
+   That window can be closed afterwards — the session stays in the profile,
+   and the service starts Chrome headless on it when nothing is up.
+
+2. **The secret and the layout** in `bipboop`: `TV_SHOT_SECRET` (long and
+   random, the same string on both sides) and `TV_SHOT_LAYOUT`, the URL of
+   the saved layout.
+
+3. **The service**, under launchd beside the relay:
+
+   ```bash
+   cp com.bybit.tv-capture.plist ~/Library/LaunchAgents/
+   launchctl load ~/Library/LaunchAgents/com.bybit.tv-capture.plist
+   ```
+
+   `capture-start.sh` builds its own virtualenv from
+   [requirements-capture.txt](requirements-capture.txt) on first run. There
+   is no `playwright install`: it drives the Chrome already on the Mac,
+   which is the whole point — a bundled browser would have no session in it.
+
+4. **Rebuild the relay** so it ships the client module:
+   `docker compose up -d --build`. `--force-recreate` alone reuses the old
+   image and silently runs the old code.
+
+### What it will not do
+
+- **It never proxies the DevTools port.** Chrome's debugging port is the
+  blunt door behind this one: whoever reaches it drives the whole browser
+  and every session in the profile. It stays bound to `127.0.0.1`, the
+  service refuses anything but its own secret path, and off that path it
+  hangs up without a byte — the same posture as the alert webhook.
+- **It never listens on the LAN.** The default bind is loopback. Docker
+  Desktop forwards `host.docker.internal` to the host's own loopback, so the
+  container reaches it without the port ever being offered to the network.
+- **It never edits your layout.** A symbol your grid does not hold is loaded
+  through a URL parameter, which overrides the active pane for that one tab;
+  TradingView autosaves layout *edits*, and driving a pane by clicking and
+  typing would quietly rewrite your own grid. The saved layout comes back
+  untouched on the next plain load.
+- **It never attaches the wrong symbol.** Panes are matched on the exact
+  ticker, never a prefix, and the match is re-checked after the window is
+  resized and the grid reflows.
+
+### When there is no frame
+
+Degradation is the feature, not an afterthought. A profile signed out, a Mac
+asleep, a service not running, a symbol TradingView will not show, a shot
+slower than `TV_SHOT_WAIT` — each ends the same way: **the row gets the
+chart the bot drew, exactly as before, and the close notice says which of
+those it was**, on a line of its own:
+
+```text
+💸<b>+512.30</b>=<b>10,000.00$</b>(+5.12%)·📈FARTCOIN·manual
+📷 the TradingView profile is signed out
+```
+
+An entry frame that cannot be taken says so under the entry notice instead.
+Nothing is ever attached blank, and nothing is ever attached silently wrong.
+
+### Things worth knowing
+
+- **The frame is your view, zoom and all.** It shoots the pane as the layout
+  sits — if that pane is a daily chart scrolled across three years, that is
+  what the journal gets. Changing what you look at changes what is recorded.
+- **A symbol outside the grid has no "your view" to inherit**, so it comes
+  back on whatever timeframe TradingView last showed you for it — easily a
+  weekly chart of a five-minute trade. `TV_SHOT_INTERVAL=15` pins those.
+- **The viewport is derived, not fixed.** The service measures the pane grid
+  and sizes the window so one pane lands on `TV_SHOT_WIDTH`x`TV_SHOT_HEIGHT`
+  — a 4x4 grid and a 5x1 of tall columns need very different windows, and a
+  window chosen for the wrong one yields a portrait strip with the candles
+  crushed into it.
+- **Entry frames wait on disk** in `TV_SHOT_DIR`, inside the session volume,
+  because trades stay open across the rebuilds that a code change needs. A
+  frame is consumed when its trade closes; a trade opened before this was
+  switched on simply has none.
 
 ## Tuning
 

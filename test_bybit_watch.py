@@ -1,6 +1,7 @@
 """Tests for the Bybit position watcher. No network: HTTP is faked wholesale."""
 
 import asyncio
+import base64
 from dataclasses import replace
 from typing import Any
 
@@ -4065,3 +4066,120 @@ def test_a_refused_shave_is_logged_and_swallowed(keyed, caplog):
         asyncio.run(bybit_watch.shave_ladder(http, "CLUSDT", "long", 0.4))
 
     assert "could not shave the ladder" in caplog.text
+
+
+def _closing_http():
+    """A FakeHTTP with one closed FARTCOIN long on the books."""
+    http = FakeHTTP()
+    http.position_pages = [[]]
+    http.pnl_rows = [closed() | {"orderId": "o1"}]
+    http.equity_rows = [{"totalEquity": "10000"}]
+    http.history_rows = [{"createType": "CreateByUser", "stopOrderType": ""}]
+    http.kline_rows = KLINES  # so the bot's own chart really draws
+    return http
+
+
+def test_tick_close_journals_the_chart_the_trade_was_read_on(keyed, monkeypatch):
+    """The user's own TradingView pane goes in the row, not the drawn one."""
+    http, out = _closing_http(), Recorder()
+    journaled = []
+
+    async def _journaled(_http, entry):
+        journaled.append(entry)
+        return {"ok": True, "row": 42, "gid": 7}
+
+    async def _shot(_http, symbol):
+        return b"TVPNG", ""
+
+    monkeypatch.setattr(bybit_watch.sheets, "log_close", _journaled)
+    monkeypatch.setattr(bybit_watch.tv_shot, "shot", _shot)
+    monkeypatch.setattr(bybit_watch.tv_shot, "take", lambda symbol: None)
+
+    asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
+
+    assert base64.b64decode(journaled[0]["png"]) == b"TVPNG"
+    assert "png_entry" not in journaled[0]
+    # Telegram still gets the drawn chart; only the journal changes.
+    assert out.photo_bytes and out.photo_bytes[0].startswith(b"\x89PNG")
+
+
+def test_tick_close_keeps_the_drawn_chart_and_says_why(keyed, monkeypatch):
+    """A shot that did not happen costs the picture and earns a reason."""
+    http, out = _closing_http(), Recorder()
+    journaled = []
+
+    async def _journaled(_http, entry):
+        journaled.append(entry)
+        return None
+
+    async def _shot(_http, symbol):
+        return None, "the TradingView profile is signed out"
+
+    monkeypatch.setattr(bybit_watch.sheets, "log_close", _journaled)
+    monkeypatch.setattr(bybit_watch.tv_shot, "shot", _shot)
+    monkeypatch.setattr(bybit_watch.tv_shot, "take", lambda symbol: None)
+
+    asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
+
+    # The row still gets a picture — the bot's own, exactly as before.
+    assert base64.b64decode(journaled[0]["png"]).startswith(b"\x89PNG")
+    assert out.photos[0].endswith("\n📷 the TradingView profile is signed out")
+
+
+def test_tick_close_attaches_the_frame_kept_since_the_entry(keyed, monkeypatch):
+    http, out = _closing_http(), Recorder()
+    journaled = []
+    taken = []
+
+    async def _journaled(_http, entry):
+        journaled.append(entry)
+        return {"ok": True, "row": 42, "gid": 7}
+
+    async def _shot(_http, symbol):
+        return b"TVPNG", ""
+
+    def _take(symbol):
+        taken.append(symbol)
+        return b"ENTRYPNG"
+
+    monkeypatch.setattr(bybit_watch.sheets, "log_close", _journaled)
+    monkeypatch.setattr(bybit_watch.tv_shot, "shot", _shot)
+    monkeypatch.setattr(bybit_watch.tv_shot, "take", _take)
+
+    asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
+
+    assert taken == ["FARTCOINUSDT"]
+    assert base64.b64decode(journaled[0]["png_entry"]) == b"ENTRYPNG"
+
+
+def test_tick_entry_shoots_the_chart_behind_the_notice(keyed, monkeypatch):
+    """The entry notice never waits on the picture; the picture follows it."""
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[row()]]
+    shot_for = []
+
+    async def _capture_entry(_http, symbol, say):
+        shot_for.append(symbol)
+
+    monkeypatch.setattr(bybit_watch.tv_shot, "enabled", lambda: True)
+    monkeypatch.setattr(bybit_watch.tv_shot, "capture_entry", _capture_entry)
+
+    asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
+
+    assert shot_for == ["FARTCOINUSDT"]
+    assert bybit_watch._shooting == set()  # and nothing is left dangling
+
+
+def test_tick_entry_shoots_nothing_when_the_feature_is_off(keyed, monkeypatch):
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[row()]]
+
+    async def _never(_http, symbol, say):
+        raise AssertionError("the capture must not be asked for")
+
+    monkeypatch.setattr(bybit_watch.tv_shot, "enabled", lambda: False)
+    monkeypatch.setattr(bybit_watch.tv_shot, "capture_entry", _never)
+
+    asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
+
+    assert out.sent or out.photos
