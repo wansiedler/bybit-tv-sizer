@@ -697,6 +697,54 @@ def ladder_rungs(
     return rungs
 
 
+def reshare_rungs(
+    position: Position, prices: list[float], lot: dict, entry_fee: float = 0.0
+) -> list[tuple[float, float]]:
+    """Quantities for rungs that already stand, at the prices they stand at.
+
+    A rung moved by hand is the trader's decision, and a position that grew
+    is no reason to undo it — only the quantities have to add back up. So
+    the prices come in rather than being computed, nearest to the entry
+    first, and the furthest carries the rounding the way the take does in a
+    fresh ladder.
+
+    The breakeven share is worked out for the price the rung really has,
+    which is what lets a dragged first rung still pay for the trade.
+    """
+    step = float(lot.get("qtyStep") or 0)
+    least = float(lot.get("minOrderQty") or 0)
+    if step <= 0 or not prices:
+        return []
+    free = breakeven_share(position, prices[0], entry_fee) if TP_FREE > 0 else 0.0
+    rest = len(prices) - 1
+    if free > 0 and rest:
+        shares = [free] + [(1.0 - free) / rest] * rest
+    else:
+        shares = [1.0 / len(prices)] * len(prices)
+
+    rungs: list[tuple[float, float]] = []
+    placed = Decimal(0)
+    for price, share in zip(prices[:-1], shares[:-1], strict=True):
+        qty = _floor_step(position.size * share, step)
+        if qty < least:
+            continue
+        rungs.append((price, qty))
+        placed += Decimal(str(qty))
+    tail = _floor_step(float(Decimal(str(position.size)) - placed), step)
+    if tail >= least:
+        rungs.append((prices[-1], tail))
+    return rungs
+
+
+def _nearest_first_exits(position: Position, orders: list[dict]) -> list[dict]:
+    """Standing exits ordered from the entry outwards.
+
+    A long's exits sell above it, so the cheapest is nearest; a short's buy
+    below it, so the dearest is.
+    """
+    return sorted(orders, key=lambda o: float(o["price"]), reverse=position.side == "short")
+
+
 # How close to the take a rung may stand before it stops being its own
 # step, in R. A ZEC trade whose take sat at 3.19R put the 4R rung at 1399.12
 # against a take of 1403.65 — half a percent apart, two orders doing one
@@ -781,7 +829,11 @@ async def _repost_take(
     lot, tick = await ladder_filters(http, symbol)
     rungs = ladder_rungs(position, lot, tick, await _entry_cost(http, symbol, position))
     if not rungs:
-        rungs = [(position.take_profit or 0.0, position.size)]
+        # No take is nothing to fall back to. A limit at price 0 is not an
+        # exit, and asking for one only earns a refusal.
+        if not position.take_profit:
+            return
+        rungs = [(position.take_profit, position.size)]
     try:
         if not exit_orders:
             for price, qty in rungs:
@@ -846,67 +898,76 @@ async def _position_size(http: httpx.AsyncClient, symbol: str) -> float | None:
 async def _rebuild_ladder(
     http: httpx.AsyncClient, symbol: str, position: Position, exit_orders: list[dict], send
 ) -> None:
-    """Take the ladder down and build it again from the size that is left.
+    """Fit the standing exits back to the position, without moving them.
 
-    A trim invalidates every rung at once — their shares were cut from the
-    old size — so resizing one of them is not a smaller version of this. A
-    rung that already filled is simply not there to cancel.
+    Reached only with exits in the book — tp_maker stands a fresh ladder
+    through _repost_take and skips a position with nothing covering it. So
+    there is never anything to cancel here, and the prices are not ours to
+    change: a rung moved by hand is the trader's decision, and a position
+    that grew is no reason to undo it. Only the quantities have to add back
+    up.
     """
-    lot, tick = await ladder_filters(http, symbol)
-    rungs = ladder_rungs(position, lot, tick, await _entry_cost(http, symbol, position))
-    if not rungs:
-        # No take is nothing to fall back to. A limit at price 0 is not an
-        # exit, and asking for one only earns a refusal.
-        if not position.take_profit:
-            return
-        rungs = [(position.take_profit, position.size)]
-    try:
-        await _cancel_rungs(http, symbol, exit_orders)
-    # Deliberately broad: a ladder that would not come down stays up, and
-    # the position keeps the exits it already had.
-    except Exception as exc:  # noqa: BLE001
-        log.exception("tp-maker rebuild failed for %s", symbol)
-        await _rebuild_refused(symbol, exc, False, send)
+    lot, _ = await ladder_filters(http, symbol)
+    await _resize_rungs(
+        http,
+        symbol,
+        position,
+        exit_orders,
+        lot,
+        await _entry_cost(http, symbol, position),
+        send,
+    )
+
+
+async def _resize_rungs(
+    http: httpx.AsyncClient,
+    symbol: str,
+    position: Position,
+    exit_orders: list[dict],
+    lot: dict,
+    entry_fee: float,
+    send,
+) -> None:
+    """Fit the standing exits back to the position without moving them.
+
+    16.10.2026, HYPE. One entry order filled in six pieces, and every piece
+    left the ladder short of the position. The rule said rebuild, so six
+    times the rungs were cancelled and re-posted at computed prices — and
+    six times the places they had been dragged to were lost.
+    """
+    step = float(lot.get("qtyStep") or 0)
+    ordered = _nearest_first_exits(position, exit_orders)
+    wanted = reshare_rungs(position, [float(o["price"]) for o in ordered], lot, entry_fee)
+    if not wanted:
         return
-    # From here the old exits are gone, so every rung is placed on its own:
-    # aborting the loop on the first refusal left the position with nothing
-    # covering it at all.
-    stood: list[tuple[float, float]] = []
+    done: list[tuple[float, float]] = []
     refusal = ""
-    for price, qty in rungs:
+    for order, (price, qty) in zip(ordered, wanted, strict=False):
+        done.append((price, qty))
+        # Already the right size, to within the lot step the exchange counts in.
+        if abs(float(order.get("qty") or 0) - qty) < step:
+            continue
         try:
-            await _place_rung(http, symbol, position, price, qty)
-            stood.append((price, qty))
-        # Deliberately broad: one rung the exchange will not hold must not
-        # cost the others. PostOnly makes this an ordinary answer.
+            await _post(
+                http,
+                "/v5/order/amend",
+                {
+                    "category": "linear",
+                    "symbol": symbol,
+                    "orderId": order["orderId"],
+                    "qty": _qty(qty),
+                },
+            )
+        # Deliberately broad: one rung the exchange will not resize must not
+        # cost the others, and none of them has been cancelled.
         except Exception as exc:  # noqa: BLE001
-            log.exception("tp-maker rung at %s refused on %s", price, symbol)
+            log.exception("tp-maker rung at %s would not resize on %s", price, symbol)
             refusal = str(exc)
-    if not stood:
-        await _rebuild_refused(symbol, refusal, True, send)
-        return
     _tp_refused.pop(symbol, None)
-    note = _ladder_note(symbol, stood, position.size) + " (rebuilt)"
+    note = _ladder_note(symbol, done, position.size) + " (resized)"
     if refusal:
-        note += f"\n⚠️ one rung the exchange would not hold: {refusal}"
+        note += f"\n⚠️ one rung the exchange would not resize: {refusal}"
     await send(note)
-
-
-async def _rebuild_refused(symbol: str, reason: object, bare: bool, send) -> None:
-    """Report a refused rebuild once per distinct reason.
-
-    `bare` means the old exits are already cancelled and none of the new
-    ones stood, so the position is uncovered. That is the part worth saying
-    out loud: everything else is the exchange being briefly unhelpful.
-    """
-    text = str(reason)
-    if _tp_refused.get(symbol) == text:
-        return
-    _tp_refused[symbol] = text
-    line = f"❌ {base_symbol(symbol)}: could not rebuild the ladder ({text})"
-    if bare:
-        line += " — the position has no maker exits now"
-    await send(line)
 
 
 def ladder_covers(position: Position, orders: list[dict], step: float) -> bool:
