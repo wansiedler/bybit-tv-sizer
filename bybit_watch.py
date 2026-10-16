@@ -771,10 +771,18 @@ async def _repost_take(
         )
         await send(_ladder_note(symbol, rungs, position.size) + " (maker)")
         await speak(f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} take reposted")
+        _tp_refused.pop(symbol, None)
     # Deliberately broad: one refused repost must not strand the rest.
     except Exception as exc:  # noqa: BLE001
         log.exception("tp-maker repost failed for %s", symbol)
-        await send(f"❌ {base_symbol(symbol)}: could not repost the take ({exc})")
+        # A standing reason gives a standing refusal: a wallet with no free
+        # margin turns one down on every pass alike. 16.10.2026 — twelve
+        # identical lines in three minutes while resting entry orders held
+        # 48,680$ of an 86,680$ wallet. The rebuild beside this already
+        # answered that with one message; the repost did not.
+        if _tp_refused.get(symbol) != str(exc):
+            _tp_refused[symbol] = str(exc)
+            await send(f"❌ {base_symbol(symbol)}: could not repost the take ({exc})")
 
 
 def _qty(size: float) -> str:
