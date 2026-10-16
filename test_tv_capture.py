@@ -233,8 +233,13 @@ def test_playwright_browser_attaches_over_cdp(monkeypatch):
     class FakePlay:
         chromium = FakeChromium()
 
-    module = types.ModuleType("playwright.sync_api")
-    module.sync_playwright = lambda: types.SimpleNamespace(start=lambda: FakePlay())
+    # Built with the attribute rather than given one afterwards: `from
+    # playwright.sync_api import sync_playwright` only ever getattrs what is
+    # in sys.modules, and assigning onto a ModuleType is the one shape ruff
+    # and mypy disagree about.
+    module = types.SimpleNamespace(
+        sync_playwright=lambda: types.SimpleNamespace(start=lambda: FakePlay())
+    )
     monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
     monkeypatch.setitem(sys.modules, "playwright.sync_api", module)
     assert tv_capture._playwright_browser("http://127.0.0.1:9222") == "browser"
@@ -242,9 +247,15 @@ def test_playwright_browser_attaches_over_cdp(monkeypatch):
 
 
 def test_browser_reuses_a_running_chrome_and_caches_it():
-    launched, connected = [], []
+    launched: list[bool] = []
+    connected: list[str] = []
+
+    def connect(url: str) -> str:
+        connected.append(url)
+        return "browser"
+
     shooter = tv_capture.Shooter(
-        connect=lambda url: connected.append(url) or "browser",
+        connect=connect,
         alive=lambda url: True,
         launch=lambda: launched.append(True),
     )
