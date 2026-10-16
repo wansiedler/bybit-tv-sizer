@@ -3559,11 +3559,16 @@ def test_breakeven_share_pays_for_the_stop_out(making):
     risk = BTC.price - (BTC.stop_loss or 0)
     price = BTC.price + risk
 
-    took = share * (price - BTC.price) - share * price * bybit_watch.MAKER_FEE
-    lost = (1 - share) * risk + (1 - share) * (BTC.stop_loss or 0) * bybit_watch.TAKER_FEE
-    paid = BTC.price * bybit_watch.MAKER_FEE
+    def square(share: float, entry_fee: float) -> None:
+        took = share * (price - BTC.price) - share * price * bybit_watch.MAKER_FEE
+        lost = (1 - share) * risk + (1 - share) * (BTC.stop_loss or 0) * bybit_watch.TAKER_FEE
+        assert took == pytest.approx(lost + entry_fee, rel=1e-9)
 
-    assert took == pytest.approx(lost + paid, rel=1e-9)
+    # Unmeasured, so the entry is assumed taker — the way it is actually billed.
+    square(share, BTC.price * bybit_watch.TAKER_FEE)
+    # And measured, for the entry that genuinely rested in the book.
+    cheap = BTC.price * bybit_watch.MAKER_FEE
+    square(bybit_watch.breakeven_share(BTC, price, cheap), cheap)
 
 
 def test_breakeven_share_needs_somewhere_to_measure_from(making):
@@ -3583,7 +3588,22 @@ def test_ladder_shares_add_up_to_the_whole_position(making):
         [100829.08, 101658.16, 102487.24, 103316.32, 110000.0], abs=0.01
     )
     assert sum(qty for _, qty in rungs) == pytest.approx(BTC.size)
-    assert rungs[0][1] / BTC.size == pytest.approx(0.533, abs=0.001)
+    # Bigger than it used to be: the entry is now budgeted at taker, which
+    # is what the exchange charges, so the rung has more to pay for.
+    assert rungs[0][1] / BTC.size == pytest.approx(0.554, abs=0.001)
+
+
+def test_the_ladder_strands_no_lot_step_above_the_take(making):
+    """The tail carries the rounding, so the exits cover the whole position.
+
+    0.554 + 0.111 x 3 leaves 1.0 - 0.887, which binary renders as
+    0.11299999999999999 — floored, a whole step of the position would have
+    had no exit order at all.
+    """
+    rungs = bybit_watch.ladder_rungs(BTC, LADDER_LOT)
+
+    assert sum(qty for _, qty in rungs) == pytest.approx(BTC.size, abs=1e-9)
+    assert rungs[-1][1] == pytest.approx(0.113, abs=1e-9)
 
 
 def test_ladder_mirrors_for_a_short(making):
@@ -3670,11 +3690,11 @@ def test_tp_maker_stands_the_whole_ladder(making):
 
     placed = [o for o in http.orders if o.get("orderType") == "Limit"]
     assert [o["price"] for o in placed] == ["101", "102", "103", "104", "110"]
-    # R is 1 here, so the breakeven rung stands at 101 and takes 52.8% —
-    # floored to the lot step, 1.05 of 2.
-    assert placed[0]["qty"] == "1.05"
+    # R is 1 here, so the breakeven rung stands at 101 and takes 55.5% —
+    # floored to the lot step, 1.09 of 2.
+    assert placed[0]["qty"] == "1.09"
     assert sum(float(o["qty"]) for o in placed) == pytest.approx(2.0, abs=0.01)
-    assert out.sent[0] == ("🎯 CL: 101×52% · 102×12% · 103×12% · 104×12% · 110×13% (maker)")
+    assert out.sent[0] == ("🎯 CL: 101×55% · 102×11% · 103×11% · 104×11% · 110×12% (maker)")
 
 
 def test_tp_maker_leaves_a_standing_ladder_alone(making):
@@ -3707,6 +3727,81 @@ def test_tp_maker_rebuilds_the_ladder_after_a_trim(making):
     assert [o["orderId"] for o in cancelled] == ["e1"]
     assert sum(float(o["qty"]) for o in placed) == pytest.approx(1.0, abs=0.01)
     assert out.sent[0].endswith("(rebuilt)")
+
+
+# --- the breakeven rung must pay for the entry that really happened -------
+#
+# 16.10.2026, HYPE. The rung filled at 81.42 as designed, nothing was
+# dragged, and the stop still cost 3.16$. The share was right for the
+# formula and the formula was wrong: it budgeted a maker entry at 0.02%
+# while the exchange had charged taker at 0.055% on all 106.19 units.
+# Over seven days 72 of 74 entries paid taker.
+
+HYPE_SHORT = Position("short", 106.19, 81.5537043, 8661.0, take_profit=80.105, stop_loss=81.687)
+
+
+def test_entry_cost_reports_what_the_fill_really_charged(keyed):
+    http = FakeHTTP()
+    http.trade_rows = [{"execFee": "0.3"}, {"execFee": "0.1"}]
+    pos = Position("long", 10.0, 100.0, 1000.0, created_ms=1_700_000_000_000)
+
+    assert asyncio.run(bybit_watch._entry_cost(http, "CLUSDT", pos)) == pytest.approx(0.04)
+
+
+def test_entry_cost_is_zero_when_the_exchange_will_not_say(keyed):
+    """Unknown means "assume taker" — the answer that cannot undersize the rung."""
+
+    class Mute(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise OSError("no answer")
+
+    pos = Position("long", 10.0, 100.0, 1000.0, created_ms=1_700_000_000_000)
+
+    assert asyncio.run(bybit_watch._entry_cost(Mute(), "CLUSDT", pos)) == 0.0
+
+
+def test_the_ladder_sizes_its_rung_from_the_measured_entry(making):
+    """A genuinely maker entry earns a smaller breakeven slice than taker."""
+    cheap = bybit_watch.ladder_rungs(BTC, LADDER_LOT, 0.0, BTC.price * bybit_watch.MAKER_FEE)
+    assumed = bybit_watch.ladder_rungs(BTC, LADDER_LOT)
+
+    assert cheap[0][1] < assumed[0][1]
+    assert cheap[0][1] / BTC.size == pytest.approx(0.533, abs=0.001)
+
+
+def test_breakeven_assumes_a_taker_entry_when_it_cannot_measure():
+    """Maker was the optimistic guess; taker is the one that does not lose."""
+    share = bybit_watch.breakeven_share(HYPE_SHORT, 81.42)
+
+    assert share == pytest.approx(0.7546, abs=0.0005)
+
+
+def test_breakeven_rung_leaves_a_stop_out_square():
+    """The whole promise: sell this much here, and the stop costs nothing."""
+    share = bybit_watch.breakeven_share(HYPE_SHORT, 81.42)
+    sell = HYPE_SHORT.size * share
+    keep = HYPE_SHORT.size - sell
+    entry, stop, rung = HYPE_SHORT.price, 81.687, 81.42
+
+    net = (
+        (entry - rung) * sell  # the rung's gain
+        - sell * rung * bybit_watch.MAKER_FEE  # it rests, so maker
+        + (entry - stop) * keep  # the stop's loss
+        - keep * stop * bybit_watch.TAKER_FEE  # it fires at market
+        - HYPE_SHORT.size * entry * bybit_watch.TAKER_FEE  # the entry, as billed
+    )
+
+    assert net == pytest.approx(0.0, abs=0.01)
+
+
+def test_breakeven_uses_the_entry_fee_it_is_given():
+    """A genuinely maker entry needs a smaller slice to pay for itself."""
+    measured = HYPE_SHORT.price * bybit_watch.MAKER_FEE
+    cheap = bybit_watch.breakeven_share(HYPE_SHORT, 81.42, measured)
+    assumed = bybit_watch.breakeven_share(HYPE_SHORT, 81.42)
+
+    assert cheap < assumed
+    assert cheap == pytest.approx(0.658, abs=0.0005)
 
 
 def test_beyond_says_no_without_a_take_or_a_stop():
