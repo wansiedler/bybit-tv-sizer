@@ -572,7 +572,18 @@ async def _cancel_orphan_exits(
             log.exception("orphan exit cancel failed for %s", symbol)
 
 
-def breakeven_share(position: Position, price: float) -> float:
+async def _entry_cost(http: httpx.AsyncClient, symbol: str, position: Position) -> float:
+    """What one unit of this position cost to enter, or 0 when unknown.
+
+    Best-effort, and deliberately so: the execution log reaches seven days
+    back, a fresh fill takes a moment to appear in it, and an unanswered
+    call is already swallowed below. Zero means "assume taker", which is
+    the answer that cannot make the breakeven rung too small.
+    """
+    return await entry_fee_per_unit(http, symbol, position) or 0.0
+
+
+def breakeven_share(position: Position, price: float, entry_fee: float = 0.0) -> float:
     """Fraction of the position whose sale at `price` pays for a stop-out.
 
     Sell it and the rest is free: if the stop then fires, the trade is
@@ -595,7 +606,17 @@ def breakeven_share(position: Position, price: float) -> float:
     reach = abs(price - stop)
     if risk <= 0 or reach <= 0:
         return 0.0
-    owed = risk + stop * TAKER_FEE + position.price * MAKER_FEE
+    # The entry fee is the one the exchange really charged, not the one a
+    # maker limit would have cost. 16.10.2026, HYPE: the rung filled where
+    # it should have and the stop still took 3.16$, because the formula
+    # budgeted 0.02% for an entry billed at 0.055% — across all 106 units.
+    # Over seven days 72 of 74 entries paid taker: a limit the price walks
+    # into crosses the book, and crossing is taker.
+    #
+    # Unmeasured means taker, never maker. Guessing low here is what turns
+    # a breakeven rung into a losing one; guessing high only sells a little
+    # more than it had to.
+    owed = risk + stop * TAKER_FEE + (entry_fee or position.price * TAKER_FEE)
     paid = reach - price * MAKER_FEE + stop * TAKER_FEE
     share = owed / paid if paid > 0 else 0.0
     return share if 0.0 < share < 1.0 else 0.0
@@ -629,7 +650,9 @@ def _rung_price(position: Position, multiple: float) -> float:
     return position.price + step if position.side == "long" else position.price - step
 
 
-def ladder_rungs(position: Position, lot: dict, tick: float = 0.0) -> list[tuple[float, float]]:
+def ladder_rungs(
+    position: Position, lot: dict, tick: float = 0.0, entry_fee: float = 0.0
+) -> list[tuple[float, float]]:
     """(price, quantity) per rung, nearest first; [] to leave the one limit.
 
     The breakeven rung takes the share that pays for the trade, the rest
@@ -651,20 +674,24 @@ def ladder_rungs(position: Position, lot: dict, tick: float = 0.0) -> list[tuple
     prices = [_on_tick(_rung_price(position, m), tick, up) for m in TP_LADDER if m > 0]
     if TP_FREE > 0:
         prices.insert(0, _on_tick(_rung_price(position, TP_FREE), tick, up))
-    free_share = breakeven_share(position, prices[0]) if TP_FREE > 0 and prices else 0.0
+    free_share = breakeven_share(position, prices[0], entry_fee) if TP_FREE > 0 and prices else 0.0
     shares = [free_share] if free_share else []
     rest = [p for p in prices[len(shares) :] if _beyond(position, p)]
     if rest:
         shares += [(1.0 - free_share) / (len(rest) + 1)] * len(rest)
     rungs = []
-    placed = 0.0
+    placed = Decimal(0)
     for price, share in zip(prices[: len(shares)], shares, strict=True):
         qty = _floor_step(position.size * share, step)
         if qty < least or qty * price < floor_value:
             continue
         rungs.append((price, qty))
-        placed += qty
-    tail = _floor_step(position.size - placed, step)
+        placed += Decimal(str(qty))
+    # In decimal, because the remainder is the one number here that must be
+    # exact: 1.0 - 0.887 comes to 0.11299999999999999 in binary, which floors
+    # to 0.112 and strands a whole lot step of the position above the take,
+    # covered by nothing.
+    tail = _floor_step(float(Decimal(str(position.size)) - placed), step)
     if tail >= least and tail * position.take_profit >= floor_value:
         rungs.append((position.take_profit, tail))
     return rungs
@@ -752,7 +779,7 @@ async def _repost_take(
     the exit stays the single limit it has always been.
     """
     lot, tick = await ladder_filters(http, symbol)
-    rungs = ladder_rungs(position, lot, tick)
+    rungs = ladder_rungs(position, lot, tick, await _entry_cost(http, symbol, position))
     if not rungs:
         rungs = [(position.take_profit or 0.0, position.size)]
     try:
@@ -826,7 +853,7 @@ async def _rebuild_ladder(
     rung that already filled is simply not there to cancel.
     """
     lot, tick = await ladder_filters(http, symbol)
-    rungs = ladder_rungs(position, lot, tick)
+    rungs = ladder_rungs(position, lot, tick, await _entry_cost(http, symbol, position))
     if not rungs:
         # No take is nothing to fall back to. A limit at price 0 is not an
         # exit, and asking for one only earns a refusal.
