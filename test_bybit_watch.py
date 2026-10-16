@@ -2709,6 +2709,62 @@ def test_tp_maker_reports_a_refused_repost(making):
     assert out.sent == ["❌ CL: could not repost the take (order rejected)"]
 
 
+def test_tp_maker_says_a_refused_repost_once(making):
+    """16.10.2026, HYPE: twelve identical refusals in three minutes.
+
+    Resting entry orders had locked 48,680$ of the 86,680$ wallet, so there
+    was no margin left to place the maker exits. A standing reason produces
+    a standing refusal, and every sibling in this file already answers that
+    with one message — the repost was the one that did not.
+    """
+    out = Recorder()
+
+    for _ in range(4):
+        http = ClosingHTTP()
+        http.refuse_order = True
+        bybit_watch._tp_cooldown.clear()
+        asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": TAKEN}, out.send, out.speak))
+
+    assert out.sent == ["❌ CL: could not repost the take (order rejected)"]
+
+
+def test_tp_maker_speaks_again_when_the_repost_refusal_changes(making, monkeypatch):
+    out = Recorder()
+    reasons = iter(["110007 ab not enough for new order", "110001 order not exists"])
+
+    async def _refuse(*_args, **_kwargs):
+        raise RuntimeError(next(reasons))
+
+    monkeypatch.setattr(bybit_watch, "_place_rung", _refuse)
+
+    for _ in range(2):
+        bybit_watch._tp_cooldown.clear()
+        asyncio.run(bybit_watch.tp_maker(ClosingHTTP(), {"CLUSDT": TAKEN}, out.send, out.speak))
+
+    assert len(out.sent) == 2
+
+
+def test_tp_maker_forgets_the_repost_refusal_once_it_stands(making):
+    """Silence must not outlive the reason for it.
+
+    The same refusal after a take that stood is news again: something broke
+    a second time, and a memory that is never cleared would swallow it.
+    """
+    out = Recorder()
+
+    def pass_(refuse: bool):
+        http = ClosingHTTP()
+        http.refuse_order = refuse
+        bybit_watch._tp_cooldown.clear()
+        asyncio.run(bybit_watch.tp_maker(http, {"CLUSDT": TAKEN}, out.send, out.speak))
+
+    pass_(True)  # refused — said once
+    pass_(False)  # stood — the memory is dropped
+    pass_(True)  # refused again, same reason, and it is news again
+
+    assert [line.split()[0] for line in out.sent] == ["❌", "🎯", "❌"]
+
+
 def test_tp_maker_reports_a_refused_rebuild(making):
     http, out = ClosingHTTP(), Recorder()
     http.order_rows = [exit_row(qty="9")]
