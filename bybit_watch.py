@@ -2680,6 +2680,23 @@ def _sig2(amount: float) -> str:
     return f"{amount:.{decimals}f}"
 
 
+def _held(seconds: float) -> str:
+    """How long a position was held, in the two units that matter.
+
+    Days and hours, or hours and minutes, or minutes: a trade that ran
+    eleven minutes does not want "0д0ч", and one that ran a fortnight does
+    not want the minutes.
+    """
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{max(minutes, 1)}м"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}ч{minutes}м" if minutes else f"{hours}ч"
+    days, hours = divmod(hours, 24)
+    return f"{days}д{hours}ч" if hours else f"{days}д"
+
+
 def _usd(amount: float) -> str:
     """Signed money: cents normally, two significant fraction digits below."""
     if abs(amount) >= 0.995:
@@ -2841,7 +2858,15 @@ async def _close_notice(
     record = merge_closes(group)
     # Bybit's closedPnl nets both trading fees; funding it does
     # not — that is charged separately, so it comes off here.
-    funding = await accrued_funding(http, symbol, was.created_ms)
+    #
+    # Measured from when the relay saw this position open, not from
+    # `was.created_ms`: that is the symbol's slot on the account, dated
+    # 08.09.2020 for BTCUSDT, and a window built from it would charge this
+    # trade for funding an earlier one on the same symbol paid.
+    opened = opened_at(symbol, was)
+    since_ms = int(opened * 1000) if opened else was.created_ms
+    funding = await accrued_funding(http, symbol, since_ms)
+    held = _held(time.time() - opened) if opened else ""
     pnl = float(record["closedPnl"]) - funding
     depo = await equity(http)
     opened_fee = float(record.get("openFee") or 0)
@@ -2896,7 +2921,11 @@ async def _close_notice(
     if opened_fee or closed_fee or funding:
         costs = f"fees {_sig2(opened_fee + closed_fee)}"
         if funding:
-            costs += f", funding {_sig2(funding)}"
+            # What it cost to hold, and how long the holding was. Without a
+            # sighting of the open the figure is whatever the log holds for
+            # the symbol, so it is named as a window rather than as a hold.
+            costs += f", funding {_sig2(funding)} за "
+            costs += held if held else f"последние {_held(EXEC_LOG_MS / 1000)}"
         line += f" ({costs})"
     if why:
         # Never a silent downgrade: the row has the drawn chart, not the one

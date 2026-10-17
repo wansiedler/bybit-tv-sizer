@@ -2485,6 +2485,60 @@ def test_an_empty_page_that_still_offers_a_cursor_does_not_spin(keyed):
     )
 
 
+# --- what it cost to hold, and for how long -------------------------------
+
+
+def test_a_span_reads_in_the_two_units_that_matter():
+    assert bybit_watch._held(40) == "1м"  # never "0м"
+    assert bybit_watch._held(11 * 60) == "11м"
+    assert bybit_watch._held(3 * 3600 + 40 * 60) == "3ч40м"
+    assert bybit_watch._held(5 * 3600) == "5ч"
+    assert bybit_watch._held(2 * 86400 + 7 * 3600) == "2д7ч"
+    assert bybit_watch._held(14 * 86400) == "14д"
+
+
+def test_close_says_what_the_hold_cost_and_how_long_it_ran(keyed):
+    """ "сколько накапало за время в позе", 17.10.2026."""
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[]]
+    http.pnl_rows = [closed()]
+    http.funding_rows = [{"execFee": "12.3"}]
+    aged = Position("long", 100.0, 0.16, 16.0, created_ms=reachable_ms())
+    # The relay watched this one open, two days and seven hours ago.
+    bybit_watch._entry_levels["FARTCOINUSDT"] = (
+        aged.created_ms,
+        None,
+        None,
+        time.time() - 2 * 86400 - 7 * 3600,
+    )
+
+    asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": aged}, out.send, out.speak, out.send_photo))
+
+    assert "funding 12.30 за 2д7ч" in out.sent[0]
+
+
+def test_funding_is_measured_from_the_sighting_not_the_symbols_slot(keyed):
+    """Otherwise this trade is charged for what an earlier one paid.
+
+    Bybit dates a position from when the symbol's slot was made on the
+    account — 08.09.2020 for the BTCUSDT position open on 17.10.2026.
+    """
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[]]
+    http.pnl_rows = [closed()]
+    http.funding_rows = [{"execFee": "1"}]
+    aged = Position("long", 100.0, 0.16, 16.0, created_ms=reachable_ms(hours_ago=100))
+    seen_at = time.time() - 3600
+    bybit_watch._entry_levels["FARTCOINUSDT"] = (aged.created_ms, None, None, seen_at)
+
+    asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": aged}, out.send, out.speak, out.send_photo))
+
+    asked = [u for u in http.requests if "execType=Funding" in u][0]
+    start = int(asked.split("startTime=")[1].split("&")[0])
+    assert abs(start - int(seen_at * 1000)) < 2000
+    assert abs(start - aged.created_ms) > 3600_000
+
+
 def test_accrued_funding_sums_the_charges(keyed):
     http = FakeHTTP()
     http.funding_rows = [{"execFee": "0.012"}, {"execFee": "-0.004"}]
@@ -2583,7 +2637,9 @@ def test_tick_close_subtracts_funding(keyed):
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": aged}, out.send, out.speak, out.send_photo))
 
-    assert out.sent == ["💸<b>+500.00</b>·📈FARTCOIN (fees 0.15, funding 12.30)"]
+    # No sighting of this open, so the figure is named as a window: whatever
+    # the log holds for the symbol, which may include an earlier position.
+    assert out.sent == ["💸<b>+500.00</b>·📈FARTCOIN (fees 0.15, funding 12.30 за последние 7д)"]
 
 
 # --------------------------------------------------------------------------- #
