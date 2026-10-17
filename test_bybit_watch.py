@@ -461,13 +461,221 @@ def guarding(keyed, monkeypatch):
     monkeypatch.setattr(bybit_watch, "RISK_GUARD", True)
 
 
+@pytest.fixture
+def no_auto_stop(monkeypatch):
+    """The guard's old teeth: a stopless position is closed, not fixed."""
+    monkeypatch.setattr(bybit_watch, "GUARD_STOP_PCT", 0.0)
+
+
+def _budget_http(equity="10000"):
+    http = ClosingHTTP()
+    http.equity_rows = [{"totalEquity": equity}]
+    return http
+
+
+# --- the stop a hand-made entry never got ---------------------------------
+#
+# "если я входил маркетом то стоп ставился автоматически с расчетом что
+# максимальная длинна стопа 1% от депозита", 17.10.2026. Until then a
+# stopless position was closed at market once the grace ran out.
+
+
+def _loss_at(side, entry, stop, size, entry_fee_per_unit=None):
+    """What stopping out really costs: the distance and both fees."""
+    paid = entry_fee_per_unit if entry_fee_per_unit is not None else entry * bybit_watch.TAKER_FEE
+    return (abs(entry - stop) + paid + stop * bybit_watch.TAKER_FEE) * size
+
+
+def test_the_auto_stop_spends_the_whole_budget_and_no_more():
+    equity, entry, size = 80_000.0, 81_000.0, 1.0
+
+    stop = bybit_watch.auto_stop_price("long", entry, size, equity, mark=entry, tick=0.1)
+
+    assert stop is not None and stop < entry
+    budget = equity * bybit_watch.GUARD_STOP_PCT
+    loss = _loss_at("long", entry, stop, size)
+    assert loss <= budget  # never over
+    assert loss > budget * 0.999  # and not needlessly tight
+
+
+def test_a_short_puts_its_stop_above_and_pays_more_for_it():
+    """A short's exit fee grows with the distance, so the room is smaller."""
+    equity, entry, size = 80_000.0, 81_000.0, 1.0
+
+    long_stop = bybit_watch.auto_stop_price("long", entry, size, equity, mark=entry)
+    short_stop = bybit_watch.auto_stop_price("short", entry, size, equity, mark=entry)
+
+    assert long_stop is not None and short_stop is not None
+    assert short_stop > entry > long_stop
+    assert _loss_at("short", entry, short_stop, size) <= equity * bybit_watch.GUARD_STOP_PCT
+    # The short's distance is the smaller of the two, by the fee on it.
+    assert short_stop - entry < entry - long_stop
+
+
+def test_the_budget_is_the_whole_cost_not_the_price_distance():
+    """1% means the same here as in the sizer: fees inside, not beside."""
+    equity, entry, size = 80_000.0, 81_000.0, 1.0
+
+    stop = bybit_watch.auto_stop_price("long", entry, size, equity, mark=entry)
+
+    assert stop is not None
+    fee_free = entry - equity * bybit_watch.GUARD_STOP_PCT / size
+    assert stop > fee_free  # tighter, because the fees are paid out of it
+
+
+def test_a_measured_entry_fee_is_used_over_the_taker_guess():
+    equity, entry, size = 80_000.0, 81_000.0, 1.0
+
+    guessed = bybit_watch.auto_stop_price("long", entry, size, equity, mark=entry)
+    cheap = bybit_watch.auto_stop_price(
+        "long", entry, size, equity, mark=entry, entry_fee_per_unit=0.0
+    )
+
+    # Nothing paid on the way in leaves more room for the distance.
+    assert cheap is not None and guessed is not None
+    assert cheap < guessed
+
+
+def test_a_position_too_big_for_the_budget_has_no_stop():
+    """The fees alone spend it: there is no distance that fits."""
+    equity, entry = 80_000.0, 81_000.0
+    huge = equity * bybit_watch.GUARD_STOP_PCT / (entry * bybit_watch.TAKER_FEE * 2)
+
+    assert bybit_watch.auto_stop_price("long", entry, huge, equity, mark=entry) is None
+
+
+def test_a_market_already_past_the_stop_has_no_stop():
+    """The budget is gone before the stop could be placed."""
+    equity, entry, size = 80_000.0, 81_000.0, 1.0
+
+    assert bybit_watch.auto_stop_price("long", entry, size, equity, mark=70_000.0) is None
+    assert bybit_watch.auto_stop_price("short", entry, size, equity, mark=90_000.0) is None
+
+
+def test_the_tick_rounds_the_stop_inwards(monkeypatch):
+    """Away from the budget, never over it: a tick of slack costs money."""
+    equity, entry, size = 80_000.0, 81_000.0, 1.0
+
+    loose = bybit_watch.auto_stop_price("long", entry, size, equity, mark=entry)
+    ticked = bybit_watch.auto_stop_price("long", entry, size, equity, mark=entry, tick=10.0)
+
+    assert ticked is not None and loose is not None
+    assert ticked >= loose  # a long's stop moves up, towards the entry
+    assert _loss_at("long", entry, ticked, size) <= equity * bybit_watch.GUARD_STOP_PCT
+
+
+def test_nothing_is_placed_when_the_feature_is_off(monkeypatch):
+    monkeypatch.setattr(bybit_watch, "GUARD_STOP_PCT", 0.0)
+
+    assert bybit_watch.auto_stop_price("long", 81_000.0, 1.0, 80_000.0, mark=81_000.0) is None
+
+
+def test_the_mark_is_read_off_the_positions_own_pnl():
+    """No ticker call: uPnL is the distance times the size."""
+    long = Position("long", 2.0, 100.0, 200.0, unrealised=20.0)
+    short = Position("short", 2.0, 100.0, 200.0, unrealised=20.0)
+
+    assert bybit_watch.mark_price(long) == pytest.approx(110.0)
+    assert bybit_watch.mark_price(short) == pytest.approx(90.0)
+
+
+def test_a_sizeless_position_reads_its_mark_as_its_entry():
+    """Nothing to divide the PnL by, and no mark to infer."""
+    assert bybit_watch.mark_price(Position("long", 0.0, 100.0, 0.0)) == 100.0
+
+
+def test_the_auto_stop_asks_for_nothing_when_switched_off(guarding, monkeypatch):
+    """Not merely skipped upstream: the placement itself refuses."""
+    http, out = _budget_http(), Recorder()
+    monkeypatch.setattr(bybit_watch, "GUARD_STOP_PCT", 0.0)
+
+    placed = asyncio.run(bybit_watch._auto_stop(http, "CLUSDT", NAKED, out.send))
+
+    assert placed is False
+    assert http.requests == []  # no equity call, no instrument call
+
+
+def test_a_refused_stop_is_logged_and_handed_back_to_the_close(guarding, caplog):
+    class Refusing(ClosingHTTP):
+        async def post(self, url, content=None, headers=None, timeout=None):
+            if "trading-stop" in url:
+                raise OSError("stop rejected")
+            return await super().post(url, content=content, headers=headers, timeout=timeout)
+
+    http, out = Refusing(), Recorder()
+    http.equity_rows = [{"totalEquity": "10000"}]
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        placed = asyncio.run(bybit_watch._auto_stop(http, "CLUSDT", NAKED, out.send))
+
+    assert placed is False
+    assert "auto stop failed" in caplog.text
+    assert out.sent == []  # nothing claimed that was not done
+
+
+def test_the_auto_stop_needs_a_deposit_to_measure_against(guarding):
+    http, out = ClosingHTTP(), Recorder()  # no equity rows at all
+
+    assert asyncio.run(bybit_watch._auto_stop(http, "CLUSDT", NAKED, out.send)) is False
+
+
+def test_guard_sets_the_stop_instead_of_closing(guarding, monkeypatch):
+    http, out = _budget_http(), Recorder()
+    monkeypatch.setattr(bybit_watch, "GUARD_GRACE", 0.0)
+
+    asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
+
+    placed = [o for o in http.orders if "stopLoss" in o]
+    assert len(placed) == 1
+    stop = float(placed[0]["stopLoss"])
+    assert stop < NAKED.price
+    assert _loss_at("long", NAKED.price, stop, NAKED.size) <= 10_000 * bybit_watch.GUARD_STOP_PCT
+    # And the position is still open: nothing was closed.
+    assert not [o for o in http.orders if o.get("reduceOnly")]
+    assert any("no stop — set at" in line for line in out.sent)
+
+
+def test_guard_still_closes_when_the_stop_cannot_be_placed(guarding, monkeypatch):
+    http, out = _budget_http(), Recorder()
+    monkeypatch.setattr(bybit_watch, "GUARD_GRACE", 0.0)
+    monkeypatch.setattr(bybit_watch, "auto_stop_price", lambda *a, **k: None)
+
+    asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
+
+    assert [o for o in http.orders if o.get("reduceOnly")]
+    assert any("closed at market by the risk manager" in line for line in out.sent)
+
+
+def test_guard_closes_a_stopless_position_when_the_feature_is_off(
+    guarding, no_auto_stop, monkeypatch
+):
+    http, out = _budget_http(), Recorder()
+    monkeypatch.setattr(bybit_watch, "GUARD_GRACE", 0.0)
+
+    asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
+
+    assert [o for o in http.orders if o.get("reduceOnly")]
+    assert not [o for o in http.orders if "stopLoss" in o]
+
+
+def test_a_leverage_breach_is_still_closed_not_fixed(guarding, monkeypatch):
+    """Only a missing stop is something the guard can supply."""
+    http, out = _budget_http(), Recorder()
+    monkeypatch.setattr(bybit_watch, "GUARD_GRACE", 0.0)
+
+    asyncio.run(bybit_watch.guard(http, {"OPUSDT": LEVERED}, out.send, out.speak))
+
+    assert [o for o in http.orders if o.get("reduceOnly")]
+    assert not [o for o in http.orders if "stopLoss" in o]
+
+
 def test_guard_warns_once_and_waits_out_the_grace_window(guarding):
     http, out = ClosingHTTP(), Recorder()
 
     asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
     asyncio.run(bybit_watch.guard(http, {"CLUSDT": NAKED}, out.send, out.speak))
 
-    assert out.sent == ["🛑 CL: no stop — closing at market in 45s"]
+    assert out.sent == ["🛑 CL: no stop — setting a stop in 45s"]
     assert out.spoken == ["CL risk breach"]
     assert http.orders == []
 
