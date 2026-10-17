@@ -152,24 +152,38 @@ def wanted(query: str) -> str:
     return symbol if _SYMBOL.match(symbol) else ""
 
 
-def grid(boxes: list[dict]) -> tuple[int, int]:
-    """Columns and rows of panes, read off where the panes actually sit."""
-    return len({round(box["x"]) for box in boxes}), len({round(box["y"]) for box in boxes})
+def extent(boxes: list[dict]) -> tuple[float, float]:
+    """How much of the window the pane grid itself spans.
 
-
-def viewport(probe: tuple[int, int], pane: tuple[float, float], cells: tuple[int, int]) -> tuple:
-    """The window size that makes one pane come out TV_SHOT_WIDTH x HEIGHT.
-
-    The grid never fills the window: toolbars and the watchlist take a fixed
-    bite out of it. Measuring that bite once, at the probe size, is what lets
-    the second pass land the pane on an exact size whatever grid the layout
-    is in — a 4x4 of small panes, or a 5x1 of tall columns where every pane
-    is a portrait strip and the candles are unreadable.
+    Everything else — the toolbars down the side, the watchlist, the top
+    bar — is a fixed bite that does not grow with the window, which is what
+    makes one measurement at the probe size enough to aim the next.
     """
-    cols, rows = cells
     return (
-        round(TV_SHOT_WIDTH * cols + (probe[0] - pane[0] * cols)),
-        round(TV_SHOT_HEIGHT * rows + (probe[1] - pane[1] * rows)),
+        max(box["x"] + box["width"] for box in boxes) - min(box["x"] for box in boxes),
+        max(box["y"] + box["height"] for box in boxes) - min(box["y"] for box in boxes),
+    )
+
+
+def viewport(
+    probe: tuple[int, int], pane: tuple[float, float], spans: tuple[float, float]
+) -> tuple[int, int]:
+    """The window size that makes this pane come out TV_SHOT_WIDTH x HEIGHT.
+
+    From the pane's share of the grid, not from a column count. A layout
+    does not have to be a tidy lattice and this one is not: sixteen panes
+    in four rows of four, every row split differently — 575, 406, 416 and
+    291 across the top, 834, 244, 316 and 294 below it. Counting distinct
+    pane corners read that as twelve columns and sized the window half
+    again too wide, so every frame came back a 1331x460 strip where
+    760x460 was asked for.
+
+    A share is well defined whatever the split, and on an even grid it is
+    exactly what counting columns used to give.
+    """
+    return (
+        round(TV_SHOT_WIDTH * spans[0] / pane[0] + (probe[0] - spans[0])),
+        round(TV_SHOT_HEIGHT * spans[1] / pane[1] + (probe[1] - spans[1])),
     )
 
 
@@ -362,8 +376,11 @@ class Shooter:
                 raise Unavailable(f"TradingView would not show {symbol}")
         panes = page.locator(PANE)
         boxes = [panes.nth(i).bounding_box() for i in range(panes.count())]
-        first = boxes[0]
-        width, height = viewport(PROBE, (first["width"], first["height"]), grid(boxes))
+        # The pane being shot, not the first one: with the rows split
+        # unevenly the two are different sizes, and aiming at the wrong one
+        # lands the frame anywhere.
+        mine = boxes[index]
+        width, height = viewport(PROBE, (mine["width"], mine["height"]), extent(boxes))
         page.set_viewport_size({"width": width, "height": height})
         page.wait_for_timeout(int(TV_SHOT_SETTLE * 1000))
         # The resize reflows the grid. Read the headings again rather than
