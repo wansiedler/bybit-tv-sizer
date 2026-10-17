@@ -23,6 +23,7 @@ from telethon import TelegramClient, events
 
 import bybit_watch
 import commands
+import errors
 import ip_watch
 import sheets
 import sizer
@@ -516,6 +517,15 @@ async def run() -> None:
             )
             if audio is not None:
                 await speaker.lifecycle("Relay up")
+
+            # From here anything logged at ERROR, anywhere, reaches the chat.
+            # Installed after the up notice so a failure during startup is
+            # still reported by the thing that failed, and before the
+            # watchers, which are what tends to fail later.
+            errors.watch(
+                asyncio.get_running_loop(),
+                lambda text: send_via_bot(http, text, quiet=True, preview=False),
+            )
 
             # The menu button beside the message box is Telegram's, built
             # from setMyCommands. Without the call there is no menu at all.

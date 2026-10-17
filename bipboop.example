@@ -253,3 +253,12 @@ ENTRY_SPLIT=
 # Cut a position whose stop-risk overshoots RISK_PCT back down to it with
 # a reduce-only market order. Exact: the only slack is the lot step. 1 = on.
 RISK_TRIM=1
+
+# Every ERROR the relay logs, forwarded to the chat. The journal stopped
+# writing for five days and the only trace was a line in the container log,
+# so silence is not the default. One message per distinct reason, and a cap
+# so a storm cannot bury the chat.
+NOTIFY_ERRORS=1
+ERROR_REPEAT_SEC=900     # the same reason again, no sooner than this
+ERROR_BURST=4            # at most this many in a window
+ERROR_WINDOW_SEC=60      # the window the burst is counted over

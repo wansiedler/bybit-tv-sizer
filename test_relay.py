@@ -1044,6 +1044,24 @@ def test_main_check_flag_runs_the_check(monkeypatch):
     assert called == ["check"]
 
 
+def test_run_starts_forwarding_errors_to_the_chat(config, monkeypatch):
+    """The journal refused for five days and the only trace was the log."""
+    installed = {}
+
+    def fake_watch(loop, send):
+        installed["loop"], installed["send"] = loop, send
+        return None
+
+    monkeypatch.setattr(relay.errors, "watch", fake_watch)
+
+    async def disconnect_immediately(client):
+        return None
+
+    _run_relay(monkeypatch, disconnect_immediately)
+
+    assert installed["send"] is not None
+
+
 def test_run_publishes_the_command_menu(config, monkeypatch):
     """Without setMyCommands the chat offers no menu button at all."""
 
