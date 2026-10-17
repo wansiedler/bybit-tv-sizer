@@ -280,6 +280,41 @@ def test_the_real_path_lets_a_real_fault_through_untouched():
         shooter._take_through(Broken(), "BTCUSDT")
 
 
+# --- TradingView's perpetual suffix ----------------------------------------
+#
+# 17.10.2026. Every shot answered "TradingView would not show FARTCOINUSDT"
+# while the pane right there read FARTCOINUSDT.P. The exchange names a
+# perpetual FARTCOINUSDT; TradingView suffixes it .P, and an exact match
+# can never bridge that.
+
+
+def test_a_perpetual_pane_matches_the_exchange_symbol():
+    heads = ["FARTCOINUSDT.P", "AEROUSDT.P", "NEARUSDT.P"]
+
+    assert tv_capture.pick(heads, "FARTCOINUSDT") == 0
+    assert tv_capture.pick(heads, "NEARUSDT") == 2
+
+
+def test_the_suffix_is_accepted_from_either_side():
+    """Asked with it or without, the answer is the same pane."""
+    assert tv_capture.pick(["ARBUSDT.P"], "ARBUSDT.P") == 0
+    assert tv_capture.pick(["ARBUSDT"], "ARBUSDT.P") == 0
+
+
+def test_a_prefix_is_still_not_a_match():
+    """The reason the comparison is exact: ARB is the start of plenty."""
+    heads = ["ARBUSDT.P", "1000PEPEUSDT.P"]
+
+    assert tv_capture.pick(heads, "ARB") is None
+    assert tv_capture.pick(heads, "PEPEUSDT") is None
+    assert tv_capture.pick(heads, "USDT") is None
+
+
+def test_a_different_instrument_is_still_refused():
+    assert tv_capture.pick(["BTCUSDT.P"], "BTCUSDC") is None
+    assert tv_capture.pick(["BTCUSDT.P"], "ETHUSDT") is None
+
+
 @pytest.mark.parametrize(
     "text",
     [

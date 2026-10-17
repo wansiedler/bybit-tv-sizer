@@ -149,14 +149,25 @@ def viewport(probe: tuple[int, int], pane: tuple[float, float], cells: tuple[int
     )
 
 
+# TradingView suffixes a perpetual with ".P" where the exchange does not:
+# a pane reading FARTCOINUSDT.P is the FARTCOINUSDT position. Any other
+# difference is a different instrument.
+PERPETUAL = ".P"
+
+
 def pick(heads: list[str], want: str) -> int | None:
     """Which pane shows `want`, or None.
 
-    Exact match, never a prefix: a frame of the wrong symbol in the journal
-    is worse than no frame at all, and "ARB" is a prefix of plenty.
+    Exact once TradingView's perpetual suffix is off, and never a prefix: a
+    frame of the wrong symbol in the journal is worse than no frame at all,
+    and "ARB" is a prefix of plenty.
+
+    17.10.2026: every shot answered "TradingView would not show
+    FARTCOINUSDT" while the pane right there read FARTCOINUSDT.P.
     """
+    wanted = want.removesuffix(PERPETUAL)
     for index, head in enumerate(heads):
-        if head == want:
+        if head.removesuffix(PERPETUAL) == wanted:
             return index
     return None
 
