@@ -88,6 +88,30 @@ class Unavailable(Exception):
     """No frame, and the reason a human should be told."""
 
 
+def is_closed(exc: BaseException) -> bool:
+    """Whether the browser went away, rather than something really breaking.
+
+    Matched on the words rather than the class: playwright keeps its error
+    types under a private module, and pinning this file to an internal path
+    is how it breaks on the next upgrade.
+    """
+    text = str(exc).lower()
+    return (
+        "connection closed" in text
+        or "target page, context or browser has been closed" in text
+        or "browser has been closed" in text
+    )
+
+
+class Closed(Exception):
+    """The attached browser went away under us.
+
+    Not the same as Chrome being down: the port can answer while the handle
+    we hold belongs to a Chrome that has since restarted. Worth one
+    reconnect rather than a message.
+    """
+
+
 def enabled() -> bool:
     return bool(TV_SHOT_SECRET and TV_SHOT_LAYOUT)
 
@@ -212,8 +236,11 @@ class Shooter:
     thread-per-request server would hand it to a different one.
     """
 
-    def __init__(self, connect=_playwright_browser, alive=cdp_alive, launch=launch_chrome):
+    def __init__(
+        self, connect=_playwright_browser, alive=cdp_alive, launch=launch_chrome, take=None
+    ):
         self._connect, self._alive, self._launch = connect, alive, launch
+        self._take = take or self._take_through
         self._browser = None
 
     def browser(self):
@@ -224,15 +251,45 @@ class Shooter:
             self._browser = self._connect(TV_SHOT_CDP)
         return self._browser
 
+    def forget(self) -> None:
+        """Drop the cached handle, so the next shot attaches afresh."""
+        self._browser = None
+
     def shot(self, symbol: str) -> bytes:
-        """A PNG of the pane showing `symbol`. Raises Unavailable with a reason."""
-        context = self.browser().contexts[0]
-        self._check_signed_in(context)
-        page = context.new_page()
+        """A PNG of the pane showing `symbol`. Raises Unavailable with a reason.
+
+        17.10.2026: every shot came back "Playwright connection closed" for
+        hours. Chrome had restarted; the port answered, so `alive` said yes,
+        and the handle belonging to the Chrome that was gone was handed out
+        again on every request. A live port is not a live channel, and the
+        only way to find out is to use it.
+
+        One reconnect, not a loop — a Chrome that is really gone should
+        still fail, and say so.
+        """
         try:
-            return self._shoot(page, symbol)
-        finally:
-            page.close()
+            return self._take(self.browser(), symbol)
+        except Closed:
+            self.forget()
+        return self._take(self.browser(), symbol)
+
+    def _take_through(self, browser, symbol: str) -> bytes:
+        try:
+            context = browser.contexts[0]
+            self._check_signed_in(context)
+            page = context.new_page()
+            try:
+                return self._shoot(page, symbol)
+            finally:
+                page.close()
+        except Unavailable:
+            raise
+        # Deliberately broad: anything the handle throws is examined, and
+        # only a gone-browser is turned into a reconnect.
+        except Exception as exc:  # noqa: BLE001
+            if is_closed(exc):
+                raise Closed(str(exc)) from exc
+            raise
 
     def _check_signed_in(self, context) -> None:
         """Refuse early when the profile is signed out.

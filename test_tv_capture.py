@@ -246,6 +246,138 @@ def test_playwright_browser_attaches_over_cdp(monkeypatch):
     assert attached["url"] == "http://127.0.0.1:9222"
 
 
+class Gone:
+    """A handle whose Chrome has restarted under it."""
+
+    @property
+    def contexts(self):
+        raise RuntimeError("Playwright connection closed")
+
+
+class Broken:
+    """A handle that is fine; something else is wrong."""
+
+    @property
+    def contexts(self):
+        raise RuntimeError("net::ERR_CONNECTION_REFUSED")
+
+
+def test_the_real_path_turns_a_gone_browser_into_a_reconnect():
+    shooter = tv_capture.Shooter(
+        connect=lambda url: Gone(), alive=lambda url: True, launch=lambda: None
+    )
+
+    with pytest.raises(tv_capture.Closed):
+        shooter._take_through(Gone(), "BTCUSDT")
+
+
+def test_the_real_path_lets_a_real_fault_through_untouched():
+    shooter = tv_capture.Shooter(
+        connect=lambda url: Broken(), alive=lambda url: True, launch=lambda: None
+    )
+
+    with pytest.raises(RuntimeError, match="ERR_CONNECTION_REFUSED"):
+        shooter._take_through(Broken(), "BTCUSDT")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Playwright connection closed",
+        "Target page, context or browser has been closed",
+        "Browser has been closed",
+    ],
+)
+def test_a_gone_browser_is_recognised(text):
+    assert tv_capture.is_closed(RuntimeError(text)) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["net::ERR_CONNECTION_REFUSED", "Timeout 30000ms exceeded", "no pane for BTCUSDT"],
+)
+def test_a_real_fault_is_not_mistaken_for_one(text):
+    """Reconnecting past a genuine failure would hide it twice over."""
+    assert tv_capture.is_closed(RuntimeError(text)) is False
+
+
+def test_a_missing_pane_is_not_retried(making_no_fixture_needed=None):
+    """Unavailable says the layout is wrong, and a new handle will not help."""
+    tries = []
+
+    def take(browser, symbol):
+        tries.append(browser)
+        raise tv_capture.Unavailable("no pane for BTCUSDT")
+
+    shooter = tv_capture.Shooter(
+        connect=lambda url: "handle", alive=lambda url: True, launch=lambda: None, take=take
+    )
+
+    with pytest.raises(tv_capture.Unavailable):
+        shooter.shot("BTCUSDT")
+    assert len(tries) == 1
+
+
+def test_a_dead_connection_is_dropped_and_remade():
+    """17.10.2026: every shot failed with "Playwright connection closed".
+
+    Chrome had been restarted. The port answered, so `alive` said yes, and
+    the cached connection — belonging to the Chrome that was gone — was
+    handed out again on every request, for hours. A live port is not a live
+    channel.
+    """
+    handles = iter(["dead", "fresh"])
+    shooter = tv_capture.Shooter(
+        connect=lambda url: next(handles),
+        alive=lambda url: True,
+        launch=lambda: None,
+    )
+    assert shooter.browser() == "dead"
+
+    shooter.forget()
+
+    assert shooter.browser() == "fresh"
+
+
+def test_a_shot_through_a_dead_connection_is_retried_once():
+    """One reconnect, not a loop: a Chrome that is really gone still fails."""
+    handles = iter(["dead", "fresh"])
+    tries = []
+
+    def take(browser, symbol):
+        tries.append(browser)
+        if browser == "dead":
+            raise tv_capture.Closed("Playwright connection closed")
+        return b"PNG"
+
+    shooter = tv_capture.Shooter(
+        connect=lambda url: next(handles),
+        alive=lambda url: True,
+        launch=lambda: None,
+        take=take,
+    )
+
+    assert shooter.shot("BTCUSDT") == b"PNG"
+    assert tries == ["dead", "fresh"]
+
+
+def test_a_second_dead_connection_gives_up():
+    """Reconnecting forever would hide a Chrome that will not come back."""
+
+    def take(browser, symbol):
+        raise tv_capture.Closed("Playwright connection closed")
+
+    shooter = tv_capture.Shooter(
+        connect=lambda url: "handle",
+        alive=lambda url: True,
+        launch=lambda: None,
+        take=take,
+    )
+
+    with pytest.raises(tv_capture.Closed):
+        shooter.shot("BTCUSDT")
+
+
 def test_browser_reuses_a_running_chrome_and_caches_it():
     launched: list[bool] = []
     connected: list[str] = []
