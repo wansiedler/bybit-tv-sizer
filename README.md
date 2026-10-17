@@ -47,6 +47,26 @@ breach that many seconds to be fixed; at zero it acts immediately. A
 forced close is labelled everywhere — in Telegram, and in the journal as
 "force-stopped" with the broken rule.
 
+A missing stop is the one breach the guard can repair rather than punish.
+When the grace runs out on a stopless position it places a stop worth
+`GUARD_STOP_PCT` of the wallet (1% by default) instead of closing the
+trade — an entry thrown in at market is a trade that wanted to happen, and
+a stop is what it was missing:
+
+```text
+🛑 BTC: no stop — setting a stop in 45s
+🛡 BTC: no stop — set at 80288.8 (-799.91, 1% of the deposit)
+```
+
+That percent is the whole cost of stopping out, both fees inside, exactly
+as `RISK_PCT` means it in the sizer. Your own stop always wins: the grace
+runs first, and a stop you set yourself is never moved, however wide.
+`GUARD_STOP_PCT=0` goes back to closing.
+
+When no such stop exists — the position is large enough that the fees
+alone spend the budget, or the market has already run past where the stop
+would sit — the budget is gone, and the guard closes as it always did.
+
 ## Auto-trim: a market entry is cut back to the target risk
 
 The sizer shapes limit orders before they fill. But sometimes the entry is

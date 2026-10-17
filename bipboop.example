@@ -74,6 +74,16 @@ CLOSE_INTERVALS=15,240
 RISK_GUARD=1
 # Seconds a breach may live before the market close fires.
 GUARD_GRACE_SEC=45
+# A position entered by hand and never given a stop gets this one instead
+# of being closed, as a percent of the wallet — the whole cost of stopping
+# out, both fees included, exactly as RISK_PCT means it in the sizer. The
+# grace still runs first, so your own stop always wins; this is only what
+# happens when none arrives. 0 goes back to closing the position.
+#
+# Not to be confused with RISK_TRIM below: that one keeps the stop you drew
+# and cuts the size down to it. This one keeps the size you took and places
+# the stop that fits. A position with no stop has nothing to trim against.
+GUARD_STOP_PCT=1
 
 # Auto-size the limit orders you draw on the TradingView chart so the
 # entry-to-stop distance always risks RISK_PCT of equity (ported from

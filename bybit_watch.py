@@ -106,6 +106,12 @@ TP_LADDER = tuple(
 MAKER_FEE = float(os.getenv("MAKER_FEE", "0.0002"))
 GUARD_MAX_LEVERAGE = float(os.getenv("MAX_LEVERAGE", "1"))
 GUARD_GRACE = float(os.getenv("GUARD_GRACE_SEC", "45"))
+# What a position entered by hand may lose, as a percent of the wallet. When
+# the grace runs out on a stopless position the guard places this stop
+# instead of closing the trade: a market entry nobody gave a stop to is a
+# trade that wanted to happen, and a stop is what it was missing. 0 keeps
+# the old behaviour, which is to close it.
+GUARD_STOP_PCT = float(os.getenv("GUARD_STOP_PCT", "1")) / 100
 
 # Kline timeframe for every chart the relay draws, in minutes.
 CHART_INTERVAL = os.getenv("CHART_INTERVAL", "15")
@@ -338,6 +344,65 @@ _guard_seen: dict[str, float] = {}
 # Symbols the guard itself market-closed, with the rule they broke: the
 # journal row carries the reason.
 _guard_closed: dict[str, str] = {}
+
+
+def auto_stop_price(
+    side: str,
+    entry: float,
+    size: float,
+    equity: float,
+    mark: float,
+    entry_fee_per_unit: float | None = None,
+    tick: float = 0.0,
+) -> float | None:
+    """The stop that holds this position's loss to GUARD_STOP_PCT of equity.
+
+    "Risk 1%" means the same thing here as it does in the sizer: everything
+    the stop costs, both fees included, not the price distance alone. The
+    exit is a taker — a stop fires as a market order — and the entry fee is
+    whatever was really billed, falling back to taker, which is what a
+    market entry pays.
+
+    Solving for the distance d, long:
+
+        (d + entry*fe + (entry - d)*fx) * size = equity * pct
+        d = (budget/size - entry*(fe + fx)) / (1 - fx)
+
+    and short, where the stop sits above and its fee grows with d, the
+    divisor is (1 + fx) instead.
+
+    None when there is no such stop: the position is large enough that the
+    fees alone spend the budget, or the market has already moved past where
+    the stop would have to sit. Either way the budget is gone, and the
+    caller is right to close instead.
+    """
+    if GUARD_STOP_PCT <= 0 or size <= 0 or equity <= 0 or entry <= 0:
+        return None
+    entry_fee = entry_fee_per_unit if entry_fee_per_unit is not None else entry * TAKER_FEE
+    both = entry_fee + entry * TAKER_FEE
+    room = equity * GUARD_STOP_PCT / size - both
+    if room <= 0:
+        return None
+    if side == "long":
+        # Rounding moves the stop towards the entry, never away: a tick of
+        # slack the wrong way is a tick more than the budget allows.
+        stop = _on_tick(entry - room / (1 - TAKER_FEE), tick, up=True)
+        return stop if 0 < stop < mark else None
+    stop = _on_tick(entry + room / (1 + TAKER_FEE), tick, up=False)
+    return stop if stop > mark > 0 else None
+
+
+def mark_price(position: Position) -> float:
+    """Where the market is, read off the position's own unrealised PnL.
+
+    The position list does not carry a mark price and a ticker call for one
+    is a request the guard does not need: uPnL is the price difference
+    times the size, and the difference is the only unknown.
+    """
+    if position.size <= 0:
+        return position.price
+    move = position.unrealised / position.size
+    return position.price + move if position.side == "long" else position.price - move
 
 
 def _guard_violation(position: Position) -> str | None:
@@ -1090,6 +1155,55 @@ async def _cancel_naked(http: httpx.AsyncClient, naked: dict[str, dict], send, s
             await send(f"❌ {base_symbol(symbol)}: could not cancel the limit order ({exc})")
 
 
+async def _auto_stop(http: httpx.AsyncClient, symbol: str, position: Position, send) -> bool:
+    """Give a stopless position the budget stop. True when one is now on it.
+
+    Entered by hand and never given a stop: the trade wanted to happen, so
+    the guard supplies what it was missing rather than closing it. False
+    when there is no stop that fits the budget, and the caller closes as it
+    always did.
+    """
+    if GUARD_STOP_PCT <= 0:
+        return False
+    try:
+        depo = await equity(http)
+        if not depo:
+            return False
+        _, tick = await ladder_filters(http, symbol)
+        stop = auto_stop_price(
+            position.side,
+            position.price,
+            position.size,
+            depo,
+            mark_price(position),
+            await entry_fee_per_unit(http, symbol, position),
+            tick,
+        )
+        if stop is None:
+            return False
+        await _post(
+            http,
+            "/v5/position/trading-stop",
+            {
+                "category": "linear",
+                "symbol": symbol,
+                "stopLoss": f"{stop:g}",
+                "positionIdx": position.position_idx,
+            },
+        )
+    # Deliberately broad: a refused stop is not a reason to leave the
+    # position standing, and the caller's close is the fallback.
+    except Exception:  # noqa: BLE001
+        log.exception("auto stop failed for %s", symbol)
+        return False
+    risk = abs(position.price - stop) * position.size
+    await send(
+        f"🛡 {base_symbol(symbol)}: no stop — set at {stop:g} "
+        f"({_usd(-risk)}, {GUARD_STOP_PCT * 100:g}% of the deposit)"
+    )
+    return True
+
+
 async def _enforce_rules(
     http: httpx.AsyncClient, open_now: dict[str, Position], send, speak
 ) -> None:
@@ -1098,13 +1212,19 @@ async def _enforce_rules(
         reason = _guard_violation(position)
         if reason is None:
             continue
+        # A stop the guard can supply is a breach that gets fixed rather
+        # than punished; everything else is still closed.
+        fixing = reason == "no stop" and GUARD_STOP_PCT > 0
+        coming = "setting a stop" if fixing else "closing at market"
         if await _grace_holds(
             symbol,
-            f"🛑 {base_symbol(symbol)}: {reason} — closing at market in {GUARD_GRACE:.0f}s",
+            f"🛑 {base_symbol(symbol)}: {reason} — {coming} in {GUARD_GRACE:.0f}s",
             f"{COIN_NAMES.get(base_symbol(symbol), base_symbol(symbol))} risk breach",
             send,
             speak,
         ):
+            continue
+        if fixing and await _auto_stop(http, symbol, position, send):
             continue
         try:
             await _close_market(
