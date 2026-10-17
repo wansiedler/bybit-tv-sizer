@@ -2574,7 +2574,16 @@ async def _entry_notice(
     if exits:
         line += "\n" + "\n".join(exits)
     if fee:
-        line += f"\nfees{_sig2(fee)}"
+        # Named at the moment it is paid: 97% of entries on this account are
+        # billed taker, which is 2.75x the maker rate the ladder assumes.
+        word = fee_word(fee, now.value)
+        line += f"\nfees{_sig2(fee)}" + (f" ({word})" if word else "")
+    # What the position has cost to enter so far, so the next add reports
+    # its own cost rather than this one again. From the same source the add
+    # measures against: `fee` above is only the last minute's fills, and an
+    # entry that rested longer than that would make the first add look
+    # dearer than it was.
+    _entry_paid[symbol] = await accrued_fees(http, symbol, now.created_ms, "Trade")
     # The line is HTML: a bare "<" in "RR 0.63 < 2" makes Telegram
     # refuse the whole notice, photo and text fallback both.
     for warn in trade_warnings(now, depo):
@@ -2686,6 +2695,48 @@ async def _close_notice(
     return line, spoken_line, png, tithe_buttons(pnl)
 
 
+# symbol -> the entry fee already reported for this position, so an add
+# reports what the add cost rather than the whole history again.
+_entry_paid: dict[str, float] = {}
+
+
+def fee_word(paid: float, notional: float) -> str:
+    """ "maker" or "taker" for what was actually billed; "" when unclear.
+
+    Three months on this account: 97% of entries were billed taker, and the
+    difference is 2.75x. A limit the price walks into crosses the book, and
+    crossing is taker — which is worth saying at the moment it is paid, not
+    discovered in a fee report later.
+    """
+    if paid <= 0 or notional <= 0:
+        return ""
+    rate = paid / notional
+    near = min((MAKER_FEE, "maker"), (TAKER_FEE, "taker"), key=lambda f: abs(rate - f[0]))
+    # Something neither rate explains is not worth naming wrongly.
+    return f"{near[1]} {rate * 100:.3f}%" if abs(rate - near[0]) < near[0] * 0.3 else ""
+
+
+async def _added_notice(http: httpx.AsyncClient, symbol: str, was: Position, now: Position) -> str:
+    """What this add cost, and at which rate.
+
+    Over three months the commission came to 6,963$ against a 11,855$ loss
+    — 59% of it — and the moment it was paid went unmentioned. A position
+    that grew from 90$ to 41,505$ said only that.
+    """
+    # Everything this position has paid to enter, not the last minute's
+    # fills: adds that land inside one minute would otherwise be counted
+    # twice, and the delta is what makes this the cost of *this* add.
+    paid = await accrued_fees(http, symbol, now.created_ms, "Trade")
+    if not paid:
+        return ""
+    added = paid - _entry_paid.get(symbol, 0.0)
+    _entry_paid[symbol] = paid
+    if added <= 0:
+        return ""
+    word = fee_word(added, now.value - was.value)
+    return f" · 💱{_sig2(added)}$" + (f" {word}" if word else "")
+
+
 async def _trim_notice(http: httpx.AsyncClient, symbol: str) -> str:
     """What a trim just realised, for the resize line to carry.
 
@@ -2740,10 +2791,18 @@ async def tick(
             buttons = exit_buttons(symbol)
         elif kind == "changed" and was is not None and now is not None and now.size < was.size:
             line += await _trim_notice(http, symbol)
-        elif kind == "closed" and was is not None:
+        elif kind == "changed" and was is not None and now is not None:
+            line += await _added_notice(http, symbol, was, now)
+        else:
+            # Everything left is a close, and diff() never reports one
+            # without the position it closed. Spelling that as a condition
+            # would leave a branch nothing can take; the assert narrows the
+            # type the same way describe() does.
+            assert was is not None  # noqa: S101
             # A trim swallowed by a full close in the same breath: the close
             # notice reports the money, so only the reason is lost.
             _trim_why.pop(symbol, None)
+            _entry_paid.pop(symbol, None)
             closed_line, spoken_line, png, buttons = await _close_notice(
                 http, symbol, was, spoken_line
             )
