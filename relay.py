@@ -459,6 +459,11 @@ def _spawn_watchers(http: httpx.AsyncClient) -> set[asyncio.Task]:
         background.add(
             asyncio.create_task(bybit_watch.money_poll(http, lambda text: send_via_bot(http, text)))
         )
+        background.add(
+            asyncio.create_task(
+                bybit_watch.daily_poll(http, lambda text: send_via_bot(http, text, True))
+            )
+        )
     if sizer.enabled():
         background.add(asyncio.create_task(sizer.poll(http, lambda text: send_via_bot(http, text))))
     if sheets.enabled():
