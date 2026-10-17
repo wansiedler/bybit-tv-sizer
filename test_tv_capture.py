@@ -147,21 +147,45 @@ def test_wanted_takes_tickers_and_nothing_else(query, expected):
     assert tv_capture.wanted(query) == expected
 
 
-def test_grid_reads_the_layout_off_the_pane_corners():
-    assert tv_capture.grid([box.bounding_box() for box in row_of(["A", "B", "C"])]) == (3, 1)
-    four = [
-        {"x": 0, "y": 0, "width": 1, "height": 1},
-        {"x": 10, "y": 0, "width": 1, "height": 1},
-        {"x": 0, "y": 10, "width": 1, "height": 1},
-        {"x": 10, "y": 10, "width": 1, "height": 1},
-    ]
-    assert tv_capture.grid(four) == (2, 2)
+def test_the_grid_is_measured_from_corner_to_corner():
+    spans = tv_capture.extent([box.bounding_box() for box in row_of(["A", "B", "C"])])
+
+    assert spans == (3 * 377.0, 1119.0)
 
 
 def test_viewport_sizes_the_window_so_one_pane_lands_on_target():
-    # 5 columns of 377 wide inside a 2000 probe: 115px of that window is
-    # toolbar. Five 760-wide panes plus the same toolbar is 3915.
-    assert tv_capture.viewport((2000, 1200), (377.0, 1119.0), (5, 1)) == (3915, 541)
+    # 5 columns of 377 wide inside a 2000 probe: the grid spans 1885, so
+    # 115px of that window is toolbar. Five 760-wide panes plus the same
+    # toolbar is 3915.
+    assert tv_capture.viewport((2000, 1200), (377.0, 1119.0), (1885.0, 1119.0)) == (3915, 541)
+
+
+def test_an_unevenly_split_row_still_lands_its_own_pane(monkeypatch):
+    """17.10.2026: four rows of four, every row split differently.
+
+    575, 406, 416 and 291 across the top. Counting pane corners called
+    that twelve columns and every frame came back a 1331x460 strip.
+    """
+    monkeypatch.setattr(tv_capture, "TV_SHOT_WIDTH", 760)
+    monkeypatch.setattr(tv_capture, "TV_SHOT_HEIGHT", 460)
+    spans = (1688.0, 1119.0)  # 575 + 406 + 416 + 291 across
+
+    for pane_width in (575.0, 406.0, 291.0):
+        width, _ = tv_capture.viewport((2000, 1200), (pane_width, 278.0), spans)
+        # At that window the grid is everything but the toolbar, and this
+        # pane keeps the share it had.
+        grid_width = width - (2000 - spans[0])
+        assert round(pane_width / spans[0] * grid_width) == 760
+
+
+def test_an_even_grid_is_sized_exactly_as_counting_columns_did():
+    """The share is a generalisation, not a different answer."""
+    cols, pane, probe = 4, 575.0, 2000
+
+    by_share = tv_capture.viewport((probe, 1200), (pane, 278.0), (pane * cols, 1112.0))
+    by_counting = round(tv_capture.TV_SHOT_WIDTH * cols + (probe - pane * cols))
+
+    assert by_share[0] == by_counting
 
 
 def test_pick_matches_a_pane_exactly_never_by_prefix():
@@ -490,7 +514,9 @@ def test_shot_crops_the_pane_already_in_the_grid():
     assert shooter_for(page).shot("ARBUSDT.P") == b"PNG"
     # Probe first, then the window that makes a pane 760x460.
     assert page.viewports[0] == (2000, 1200)
-    assert page.viewports[1] == (tv_capture.viewport((2000, 1200), (377.0, 1119.0), (3, 1)))
+    assert page.viewports[1] == tv_capture.viewport(
+        (2000, 1200), (377.0, 1119.0), (3 * 377.0, 1119.0)
+    )
     assert page.closed == [True]
 
 
