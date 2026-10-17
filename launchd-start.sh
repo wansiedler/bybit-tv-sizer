@@ -27,4 +27,11 @@ for _ in $(seq 1 60); do
     sleep 5
 done
 
+# The capture service lives here on the Mac, not in the container, so
+# `docker compose up` leaves it running whatever it started with. On
+# 17.10.2026 it served two-day-old code for two days while the fix sat
+# unread beside it, and three deploys reported success without going near
+# it. Starting the bot now means starting both.
+launchctl kickstart -k "gui/$(id -u)/com.bybit.tv-capture" 2>/dev/null || true
+
 exec /usr/local/bin/docker compose up -d

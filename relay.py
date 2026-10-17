@@ -29,6 +29,7 @@ import sheets
 import sizer
 import speaker
 import tv_alerts
+import tv_shot
 from parser import parse_alert
 
 load_dotenv("bipboop")
@@ -430,6 +431,7 @@ def _command_handlers(http: httpx.AsyncClient, links: str) -> commands.Handlers:
             http, lambda caption, png: send_photo_via_bot(http, caption, png), arg
         ),
         links=links.strip(),
+        capture=lambda: tv_shot.version(http),
         ip=lambda: ip_watch.current(http),
         deposit=lambda: bybit_watch.deposit_line(http),
         lev_one=lambda arg: bybit_watch.force_leverage_one(http, arg),

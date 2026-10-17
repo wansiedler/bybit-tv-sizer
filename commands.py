@@ -248,6 +248,7 @@ class Handlers:
     close_part: Any = None
     tithe: Any = None
     cut: Any = None
+    capture: Any = None
 
 
 def tithe_tap(update: dict) -> tuple[str, float] | None:
@@ -322,6 +323,14 @@ async def _status(stats: Stats, speaking: bool, handlers: Handlers, send) -> Non
         except Exception:  # noqa: BLE001
             log.exception("no deposit figure for /status")
             text += "\n💰 deposit unavailable"
+    if handlers.capture is not None:
+        try:
+            seen = await handlers.capture()
+            if seen:
+                text += f"\n📷 {seen}"
+        # Deliberately broad: a version line must not eat /status either.
+        except Exception:  # noqa: BLE001
+            log.exception("no capture version for /status")
     if handlers.ip is not None:
         try:
             text += f"\n🌐 {await handlers.ip()}"

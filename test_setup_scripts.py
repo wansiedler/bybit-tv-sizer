@@ -178,3 +178,24 @@ def test_main_reports_nothing_filled(setup_env, monkeypatch, capsys):
     setup_env.main()
 
     assert "Filled: SOURCE_CHAT" in capsys.readouterr().out
+
+
+def test_starting_the_bot_restarts_the_capture_service():
+    """17.10.2026: three deploys reported success without touching it.
+
+    The capture service runs on the Mac under launchd, not in the
+    container, so `docker compose up` leaves it serving whatever code it
+    started with — two days old, in that case.
+    """
+    lines = (REPO / "launchd-start.sh").read_text().splitlines()
+    code = [line for line in lines if not line.lstrip().startswith("#")]
+    kick = next(
+        (n for n, line in enumerate(code) if "kickstart" in line and "tv-capture" in line), None
+    )
+    compose = next(n for n, line in enumerate(code) if "docker compose up" in line)
+
+    assert kick is not None, "launchd-start.sh starts the bot, not the capture"
+    # Failing to kick it must not stop the bot from coming up.
+    assert code[kick].rstrip().endswith("|| true")
+    # And it must happen before the bot, not after it or never.
+    assert kick < compose

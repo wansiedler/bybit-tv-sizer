@@ -1762,20 +1762,29 @@ async def market_report(http: httpx.AsyncClient, send_photo) -> None:
     try:
         pngs = []
         closes = []
+        layout = tv_shot.enabled()
+        refused = ""
         for market in ("BTCUSDT", "ETHUSDT"):
             _, candles = await _klines(http, market, CHART_INTERVAL, CHART_BARS)
             closes.append(candles[-1].close)
-            pngs.append(
-                chart.render(
-                    base_symbol(market),
-                    "",
-                    candles,
-                    candles[-1].close,
-                    timeframe=f"{CHART_INTERVAL}m",
-                    plain=True,
-                )
+            drawn = chart.render(
+                base_symbol(market),
+                "",
+                candles,
+                candles[-1].close,
+                timeframe=f"{CHART_INTERVAL}m",
+                plain=True,
             )
+            if layout:
+                seen, why = await tv_shot.shot(http, market)
+                if seen is not None:
+                    drawn = seen
+                else:
+                    layout, refused = False, why
+            pngs.append(drawn)
         caption = f"BTC {closes[0]:,.0f} · ETH {closes[1]:,.0f} · {CHART_INTERVAL}m"
+        if refused:
+            caption += f"\n📷 {html.escape(refused)}"
         await send_photo(caption, chart.side_by_side(pngs))
     # Deliberately broad: the market picture is garnish on /status.
     except Exception:  # noqa: BLE001
@@ -1804,6 +1813,13 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
     pngs = []
     total = 0.0
     total_net = 0.0
+    # The layout's own panes, while the Mac will give them. One symbol at a
+    # time, because there is one browser: four shots at once would mean
+    # three of them waiting out their timeout in its queue. And the first
+    # refusal ends the asking — a sleeping Mac says no to the fourth symbol
+    # exactly as slowly as to the first.
+    layout = tv_shot.enabled()
+    refused = ""
     for symbol, position in sorted(open_now.items()):
         # uPnL is pure price difference; what was really paid so far (entry
         # fills, from the execution log) and the taker exit still to come
@@ -1818,14 +1834,24 @@ async def positions_report(http: httpx.AsyncClient, send_album=None) -> str:
         total_net += net
         lines.append(block)
         if send_album is not None:
-            png = await _position_chart(
+            drawing = _position_chart(
                 http, symbol, position, real, fees, funding, net, rr, at_sl, at_tp, depo
             )
+            if layout:
+                png, why = await tv_shot.best(http, symbol, drawing)
+                if why:
+                    layout, refused = False, why
+            else:
+                png = await drawing
             if png is not None:
                 pngs.append(png)
     # A total of one position would just repeat its line.
     if len(lines) > 1:
         lines.append(f"ΣPnL{_usd(total)}=<b>{_usd(total_net)}{_share(total_net, depo)}</b>")
+    if refused:
+        # Said once, not per symbol: these are the bot's own drawings and
+        # this is why, which beats wondering where the layout went.
+        lines.append(f"📷 {html.escape(refused)}")
     text = "\n".join(lines)
     # Telegram caps a media-group caption at 1024 characters.
     if send_album is not None and pngs and len(text) <= 1024 and await send_album(text, pngs):
@@ -2284,11 +2310,6 @@ def _ru(word: str) -> str:
 # so a position the relay never saw open is known to be unknown.
 _entry_levels: dict[str, tuple[int, float | None, float | None, float]] = {}
 
-# The entry screenshots in flight. asyncio keeps only a weak reference to a
-# running task, so a shot nobody holds can be collected mid-flight and the
-# journal quietly loses the frame; these hold them until they are done.
-_shooting: set[asyncio.Task] = set()
-
 
 def remember_levels(symbol: str, now: Position) -> None:
     """Keep the stop, the take and the moment an opening position appeared."""
@@ -2722,7 +2743,7 @@ async def _entry_notice(
     for warn in trade_warnings(now, depo):
         line += f"\n{html.escape(warn)}"
     tp_note, sl_note = _chart_notes(target, at_sl, depo)
-    png = await entry_chart(
+    drawing = entry_chart(
         http,
         symbol,
         now,
@@ -2740,6 +2761,16 @@ async def _entry_notice(
         tp_note=tp_note,
         sl_note=sl_note,
     )
+    # The layout's own pane if the Mac can give one, the drawing behind it.
+    # The same frame is kept for the close, so the layout is driven to this
+    # symbol once per trade rather than twice.
+    png, why = await tv_shot.best(http, symbol, drawing)
+    if why:
+        line += f"\n📷 {html.escape(why)}"
+    elif png is not None and tv_shot.enabled():
+        kept = tv_shot.keep(symbol, png)
+        if kept:
+            line += f"\n📷 {html.escape(kept)}"
     return line, png
 
 
@@ -2789,6 +2820,9 @@ async def _close_notice(
     # The journal would rather have the chart the trade was actually read on.
     # Without it the row gets the bot's own, exactly as it always has.
     journalled = seen or png
+    # And to Telegram: the drawn chart is the backup everywhere, not only
+    # in the sheet.
+    png = journalled
     if journalled is not None:
         # The Apps Script saves it to Drive and writes the link
         # into the "Link" column of the same row.
@@ -2913,13 +2947,9 @@ async def tick(
         if kind in ("opened", "flipped") and now is not None:
             # The levels this trade was entered on, before anything drags them.
             remember_levels(symbol, now)
+            # The notice waits for the layout's pane — the picture is the
+            # point of the notice — and _entry_notice keeps it for the close.
             line, png = await _entry_notice(http, symbol, now, line)
-            if tv_shot.enabled():
-                # Behind the notice: the entry is news now, the picture can
-                # take its twelve seconds and be there by the close.
-                shot = asyncio.create_task(tv_shot.capture_entry(http, symbol, send))
-                _shooting.add(shot)
-                shot.add_done_callback(_shooting.discard)
             # Exits hang off the entry notice, where the position is news.
             buttons = exit_buttons(symbol)
         elif kind == "changed" and was is not None and now is not None and now.size < was.size:
