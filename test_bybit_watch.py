@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import time
 from dataclasses import replace
 from io import BytesIO
 from typing import Any
@@ -81,6 +82,15 @@ class FakeHTTP:
         if "/v5/asset/transfer/query-inter-transfer-list" in url:
             return FakeResponse({"retCode": 0, "result": {"list": self.transfer_rows}})
         return FakeResponse({"retCode": 0, "result": {"list": self.pnl_rows}})
+
+
+def reachable_ms(hours_ago: float = 2.0) -> int:
+    """A createdTime the execution log still answers for.
+
+    Bybit reaches seven days back, so a fixed epoch written into a test
+    ages quietly into the past and one day stops being asked about at all.
+    """
+    return int(time.time() * 1000) - int(hours_ago * 3_600_000)
 
 
 def row(
@@ -2368,11 +2378,118 @@ def test_breakeven_carries_the_funding_cost():
     )
 
 
+# --- what the execution log will and will not answer ----------------------
+#
+# 17.10.2026, /positions: "10001 Can't query order earlier than 2 years".
+# Bybit's createdTime for the open BTCUSDT position said 08.09.2020 — when
+# the symbol's slot was made on the account, not when the trade opened.
+
+
+def test_a_start_the_log_cannot_reach_is_never_asked_about(keyed):
+    """Zero means "unknown" and every caller estimates. Asking means 10001."""
+    http = FakeHTTP()
+    http.trade_rows = [{"execFee": "99"}]
+    ancient = 1_599_564_302_931  # 08.09.2020, as Bybit reported it
+
+    paid = asyncio.run(bybit_watch.accrued_fees(http, "BTCUSDT", ancient, "Trade"))
+
+    assert paid == 0.0
+    assert not [url for url in http.requests if "execution/list" in url]
+
+
+def test_fees_within_reach_are_still_measured(keyed):
+    http = FakeHTTP()
+    http.trade_rows = [{"execFee": "1.5"}]
+
+    assert asyncio.run(
+        bybit_watch.accrued_fees(http, "BTCUSDT", reachable_ms(), "Trade")
+    ) == pytest.approx(1.5)
+
+
+def test_funding_out_of_reach_is_clamped_rather_than_refused(keyed):
+    """Funding is charged to whatever is open, so the window is this trade's.
+
+    Half an answer beats none: a close notice subtracts funding from the
+    PnL, and calling it zero overstates what the trade made.
+    """
+    http = FakeHTTP()
+    http.funding_rows = [{"execFee": "12.3"}]
+    ancient = 1_599_564_302_931
+
+    assert asyncio.run(bybit_watch.accrued_funding(http, "BTCUSDT", ancient)) == pytest.approx(12.3)
+    asked = [url for url in http.requests if "execution/list" in url][0]
+    # Clamped to the log's reach, not sent as 2020.
+    assert "startTime=1599564302931" not in asked
+
+
+def test_the_window_ends_now_and_not_a_week_after_the_open(keyed):
+    """Given only a start, Bybit answers the seven days that follow it.
+
+    A fortnight-old position would then be billed for a window that closed
+    a week ago, with everything since missing from the figure.
+    """
+    http = FakeHTTP()
+    http.trade_rows = [{"execFee": "1"}]
+    since = reachable_ms(hours_ago=48)
+
+    asyncio.run(bybit_watch.accrued_fees(http, "BTCUSDT", since, "Trade"))
+
+    asked = [url for url in http.requests if "execution/list" in url][0]
+    assert f"startTime={since}" in asked
+    end = int(asked.split("endTime=")[1].split("&")[0])
+    assert end >= since
+    assert abs(end - int(time.time() * 1000)) < 60_000
+
+
+def test_every_page_of_fees_is_counted(keyed):
+    """One page is a hundred fills; a hundred fills is a week of BTCUSDT.
+
+    17.10.2026 that week read 170.54 from a single page where the window
+    held 219.92 — not an estimate, a complete-looking answer that had
+    quietly stopped counting.
+    """
+
+    class Paged(FakeHTTP):
+        def __init__(self):
+            super().__init__()
+            self.pages = [
+                {"list": [{"execFee": "170.54"}], "nextPageCursor": "more"},
+                {"list": [{"execFee": "49.38"}], "nextPageCursor": ""},
+            ]
+
+        async def get(self, url, headers=None, timeout=None):
+            if "/v5/execution/list" in url:
+                self.requests.append(url)
+                return FakeResponse({"retCode": 0, "result": self.pages.pop(0)})
+            return await super().get(url, headers, timeout)
+
+    http = Paged()
+
+    paid = asyncio.run(bybit_watch.accrued_fees(http, "BTCUSDT", reachable_ms(), "Trade"))
+
+    assert paid == pytest.approx(219.92)
+    assert "cursor=more" in [u for u in http.requests if "execution/list" in u][1]
+
+
+def test_an_empty_page_that_still_offers_a_cursor_does_not_spin(keyed):
+    class Forever(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            if "/v5/execution/list" in url:
+                return FakeResponse(
+                    {"retCode": 0, "result": {"list": [], "nextPageCursor": "always"}}
+                )
+            return await super().get(url, headers, timeout)
+
+    assert (
+        asyncio.run(bybit_watch.accrued_fees(Forever(), "BTCUSDT", reachable_ms(), "Trade")) == 0.0
+    )
+
+
 def test_accrued_funding_sums_the_charges(keyed):
     http = FakeHTTP()
     http.funding_rows = [{"execFee": "0.012"}, {"execFee": "-0.004"}]
 
-    assert asyncio.run(bybit_watch.accrued_funding(http, "BTCUSDT", 1_700_000_000_000)) == (
+    assert asyncio.run(bybit_watch.accrued_funding(http, "BTCUSDT", reachable_ms())) == (
         pytest.approx(0.008)
     )
 
@@ -2405,13 +2522,13 @@ def test_breakeven_uses_the_real_entry_fee_when_known():
 def test_entry_fee_per_unit_reads_the_trade_executions(keyed):
     http = FakeHTTP()
     http.trade_rows = [{"execFee": "0.3"}, {"execFee": "0.1"}]
-    pos = Position("long", 10.0, 100.0, 1000.0, created_ms=1_700_000_000_000)
+    pos = Position("long", 10.0, 100.0, 1000.0, created_ms=reachable_ms())
 
     assert asyncio.run(bybit_watch.entry_fee_per_unit(http, "CLUSDT", pos)) == pytest.approx(0.04)
 
 
 def test_entry_fee_per_unit_unknown_without_history(keyed):
-    pos = Position("long", 10.0, 100.0, 1000.0, created_ms=1_700_000_000_000)
+    pos = Position("long", 10.0, 100.0, 1000.0, created_ms=reachable_ms())
 
     assert asyncio.run(bybit_watch.entry_fee_per_unit(FakeHTTP(), "CLUSDT", pos)) is None
 
@@ -2419,14 +2536,14 @@ def test_entry_fee_per_unit_unknown_without_history(keyed):
 def test_entry_fee_per_unit_unknown_for_a_zero_size(keyed):
     http = FakeHTTP()
     http.trade_rows = [{"execFee": "0.3"}]
-    pos = Position("long", 0.0, 100.0, 0.0, created_ms=1_700_000_000_000)
+    pos = Position("long", 0.0, 100.0, 0.0, created_ms=reachable_ms())
 
     assert asyncio.run(bybit_watch.entry_fee_per_unit(http, "CLUSDT", pos)) is None
 
 
 def test_positions_pnl_line_uses_the_real_entry_fee(keyed):
     http = ClosingHTTP()
-    http.position_pages = [[dict(row(), unrealisedPnl="512.3", createdTime="1700000000000")]]
+    http.position_pages = [[dict(row(), unrealisedPnl="512.3", createdTime=str(reachable_ms()))]]
     # 3.75 really paid on the way in, plus the taker exit still to come
     # (0.055% of 18748.7 = 10.31) — not the 20.62 double-taker estimate.
     http.trade_rows = [{"execFee": "3.75"}]
@@ -2439,7 +2556,7 @@ def test_positions_pnl_line_uses_the_real_entry_fee(keyed):
 
 def test_positions_pnl_line_subtracts_funding(keyed):
     http = ClosingHTTP()
-    http.position_pages = [[dict(row(), unrealisedPnl="512.3", createdTime="1700000000000")]]
+    http.position_pages = [[dict(row(), unrealisedPnl="512.3", createdTime=str(reachable_ms()))]]
     http.funding_rows = [{"execFee": "0.4"}]
 
     report = asyncio.run(bybit_watch.positions_report(http))
@@ -2449,7 +2566,7 @@ def test_positions_pnl_line_subtracts_funding(keyed):
 
 def test_positions_pnl_line_adds_received_funding(keyed):
     http = ClosingHTTP()
-    http.position_pages = [[dict(row(), unrealisedPnl="512.3", createdTime="1700000000000")]]
+    http.position_pages = [[dict(row(), unrealisedPnl="512.3", createdTime=str(reachable_ms()))]]
     http.funding_rows = [{"execFee": "-0.4"}]
 
     report = asyncio.run(bybit_watch.positions_report(http))
@@ -2462,7 +2579,7 @@ def test_tick_close_subtracts_funding(keyed):
     http.position_pages = [[]]
     http.pnl_rows = [closed()]
     http.funding_rows = [{"execFee": "12.3"}]
-    aged = Position("long", 100.0, 0.16, 16.0, created_ms=1_700_000_000_000)
+    aged = Position("long", 100.0, 0.16, 16.0, created_ms=reachable_ms())
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": aged}, out.send, out.speak, out.send_photo))
 
@@ -3439,8 +3556,8 @@ def test_an_add_reports_what_the_add_cost(keyed):
     http = FakeHTTP()
     http.trade_rows = [{"execFee": "22.83"}]
     bybit_watch._entry_paid["CLUSDT"] = 0.05
-    was = Position("long", 1.0, 100.0, 90.0, created_ms=1_700_000_000_000)
-    now = Position("long", 460.0, 100.0, 41_505.0, created_ms=1_700_000_000_000)
+    was = Position("long", 1.0, 100.0, 90.0, created_ms=reachable_ms())
+    now = Position("long", 460.0, 100.0, 41_505.0, created_ms=reachable_ms())
 
     note = asyncio.run(bybit_watch._added_notice(http, "CLUSDT", was, now))
 
@@ -3452,15 +3569,15 @@ def test_an_add_that_cost_nothing_new_says_nothing(keyed):
     http = FakeHTTP()
     http.trade_rows = [{"execFee": "22.83"}]
     bybit_watch._entry_paid["CLUSDT"] = 22.83
-    was = Position("long", 1.0, 100.0, 90.0, created_ms=1_700_000_000_000)
-    now = Position("long", 2.0, 100.0, 200.0, created_ms=1_700_000_000_000)
+    was = Position("long", 1.0, 100.0, 90.0, created_ms=reachable_ms())
+    now = Position("long", 2.0, 100.0, 200.0, created_ms=reachable_ms())
 
     assert asyncio.run(bybit_watch._added_notice(http, "CLUSDT", was, now)) == ""
 
 
 def test_an_add_with_no_fee_on_record_says_nothing(keyed):
-    was = Position("long", 1.0, 100.0, 90.0, created_ms=1_700_000_000_000)
-    now = Position("long", 2.0, 100.0, 200.0, created_ms=1_700_000_000_000)
+    was = Position("long", 1.0, 100.0, 90.0, created_ms=reachable_ms())
+    now = Position("long", 2.0, 100.0, 200.0, created_ms=reachable_ms())
 
     assert asyncio.run(bybit_watch._added_notice(FakeHTTP(), "CLUSDT", was, now)) == ""
 
@@ -3752,7 +3869,7 @@ def test_tick_says_what_the_add_cost(keyed):
     """
     http, out = FakeHTTP(), Recorder()
     http.position_pages = [
-        [row(symbol="HYPEUSDT", size="633.13", value="56290.04", created="1700000000000")]
+        [row(symbol="HYPEUSDT", size="633.13", value="56290.04", created=str(reachable_ms()))]
     ]
     http.trade_rows = [{"execFee": "19.73"}]
     before = {"HYPEUSDT": Position("long", 229.02, 88.9076, 20414.84)}
@@ -4188,7 +4305,7 @@ HYPE_SHORT = Position("short", 106.19, 81.5537043, 8661.0, take_profit=80.105, s
 def test_entry_cost_reports_what_the_fill_really_charged(keyed):
     http = FakeHTTP()
     http.trade_rows = [{"execFee": "0.3"}, {"execFee": "0.1"}]
-    pos = Position("long", 10.0, 100.0, 1000.0, created_ms=1_700_000_000_000)
+    pos = Position("long", 10.0, 100.0, 1000.0, created_ms=reachable_ms())
 
     assert asyncio.run(bybit_watch._entry_cost(http, "CLUSDT", pos)) == pytest.approx(0.04)
 
@@ -4200,7 +4317,7 @@ def test_entry_cost_is_zero_when_the_exchange_will_not_say(keyed):
         async def get(self, url, headers=None, timeout=None):
             raise OSError("no answer")
 
-    pos = Position("long", 10.0, 100.0, 1000.0, created_ms=1_700_000_000_000)
+    pos = Position("long", 10.0, 100.0, 1000.0, created_ms=reachable_ms())
 
     assert asyncio.run(bybit_watch._entry_cost(Mute(), "CLUSDT", pos)) == 0.0
 

@@ -2001,34 +2001,75 @@ def breakeven_price(
     return (entry - paid - extra_cost_per_unit) / (1 + t)
 
 
+# How far back the execution log answers. Bybit returns at most this much
+# from `startTime`, and refuses a start older than two years outright.
+EXEC_LOG_MS = 7 * 24 * 60 * 60 * 1000
+
+
+async def _logged_fees(
+    http: httpx.AsyncClient, symbol: str, exec_type: str, since_ms: int, until_ms: int
+) -> float:
+    """Every execFee in the window, paged. Zero when the log will not answer.
+
+    Paged because one page is a hundred fills and a hundred fills is a week
+    of BTCUSDT: on 17.10.2026 that week's trading fees read 170.54 from a
+    single page where the whole window held 219.92. The sum was not an
+    estimate — it was a complete-looking answer that had quietly stopped
+    counting, which is the worst kind.
+    """
+    total, cursor = 0.0, ""
+    try:
+        while True:
+            params = {
+                "category": "linear",
+                "symbol": symbol,
+                "execType": exec_type,
+                "startTime": str(since_ms),
+                # Pinned, and not optional: given only a start, Bybit answers
+                # with the seven days that *follow* it. A position opened a
+                # fortnight ago would be billed for a window that ended a
+                # week ago, and everything since would be missing.
+                "endTime": str(until_ms),
+                "limit": "100",
+            }
+            if cursor:
+                params["cursor"] = cursor
+            result = await _get(http, "/v5/execution/list", params)
+            page = result.get("list") or []
+            total += sum(float(row.get("execFee") or 0) for row in page)
+            cursor = result.get("nextPageCursor") or ""
+            # An empty page with a cursor still set would otherwise spin.
+            if not cursor or not page:
+                return total
+    # Deliberately broad: a fee figure is worth a wrong answer never, and
+    # an outage sometimes. Zero is "unknown", and every caller estimates.
+    except Exception:  # noqa: BLE001
+        log.exception("no %s history for %s", exec_type, symbol)
+        return 0.0
+
+
 async def accrued_fees(
     http: httpx.AsyncClient, symbol: str, since_ms: int, exec_type: str
 ) -> float:
     """execFee actually charged since `since_ms`, best-effort; unknown is zero.
 
-    The execution log only reaches seven days back, so an older position's
-    entry fees can fall off the edge — the callers treat zero as "unknown"
-    and fall back to an estimate.
+    A start the log cannot reach is not asked about at all. Bybit's
+    `createdTime` for a position is when the symbol's slot was made on the
+    account, not when this trade opened — the BTCUSDT position open on
+    17.10.2026 reported 08.09.2020 — so the window built from it is both
+    refused (over two years) and meaningless.
+
+    Clamping it to the log's reach would be worse than refusing: the answer
+    would be every fill on that symbol this week, somebody else's trades
+    included, and a breakeven line drawn from another trade's fees is more
+    dangerous than one drawn from the taker estimate. So the callers get
+    zero, read it as "unknown", and estimate — which is what they already
+    did when the request failed, minus the error in the chat.
     """
-    if not since_ms:
+    now_ms = int(time.time() * 1000)
+    if not since_ms or since_ms < now_ms - EXEC_LOG_MS:
         return 0.0
-    try:
-        result = await _get(
-            http,
-            "/v5/execution/list",
-            {
-                "category": "linear",
-                "symbol": symbol,
-                "execType": exec_type,
-                "startTime": str(since_ms),
-                "limit": "100",
-            },
-        )
-        return sum(float(r.get("execFee") or 0) for r in result.get("list", []))
-    # Deliberately broad: the chart line is garnish, zero is a fine answer.
-    except Exception:  # noqa: BLE001
-        log.exception("no %s history for %s", exec_type, symbol)
-        return 0.0
+    return await _logged_fees(http, symbol, exec_type, since_ms, now_ms)
 
 
 async def accrued_funding(http: httpx.AsyncClient, symbol: str, since_ms: int) -> float:
@@ -2037,8 +2078,17 @@ async def accrued_funding(http: httpx.AsyncClient, symbol: str, since_ms: int) -
     Bybit settles funding on its own clock (every eight hours on most
     perpetuals); each charge is an execFee — positive paid, negative
     received.
+
+    Unlike a trading fee, funding is charged to whichever position is open
+    on the symbol — so whatever the log holds for a symbol that is open now
+    is this position's, and a start out of reach is clamped rather than
+    refused. The figure then means "since the log begins" instead of
+    nothing, which is the honest half of an answer rather than none of it.
     """
-    return await accrued_fees(http, symbol, since_ms, "Funding")
+    if not since_ms:
+        return 0.0
+    now_ms = int(time.time() * 1000)
+    return await _logged_fees(http, symbol, "Funding", max(since_ms, now_ms - EXEC_LOG_MS), now_ms)
 
 
 async def entry_fee_per_unit(
