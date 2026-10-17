@@ -133,6 +133,7 @@ def drive(handler, records, chat):
             handler.emit(rec)
         await asyncio.sleep(0)
         await asyncio.sleep(0)
+
     asyncio.run(go())
     return chat.sent
 
@@ -211,6 +212,7 @@ def test_the_held_count_rides_along(monkeypatch):
 def test_watch_attaches_to_the_root_so_every_module_is_covered():
     async def go():
         handler = errors.watch(asyncio.get_running_loop(), Chat().send)
+        assert handler is not None
         try:
             assert handler in logging.getLogger().handlers
         finally:

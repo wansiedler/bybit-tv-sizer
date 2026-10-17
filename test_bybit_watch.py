@@ -91,6 +91,7 @@ def row(
     sl="",
     leverage="",
     position_idx="",
+    created="",
 ):
     return {
         "symbol": symbol,
@@ -102,6 +103,7 @@ def row(
         "stopLoss": sl,
         "leverage": leverage,
         "positionIdx": position_idx,
+        "createdTime": created,
     }
 
 
@@ -1169,6 +1171,38 @@ def test_tick_appends_the_entry_fee_when_fills_are_fresh(keyed):
         "💰📈FARTCOIN 18,749$@0.1621 | RR8.26\n"
         "sl0.15:<b>-1,399.65</b>\ntp0.2621:<b>+11,565.98</b>\nfees0.073"
     ]
+
+
+def test_the_entry_notice_names_the_rate_that_was_billed(keyed):
+    """97% of entries on this account are taker — 2.75x what the ladder assumes.
+
+    Knowing it at the moment it is paid is the difference between a choice
+    and a fee report read three months later.
+    """
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[row(tp="0.2621", sl="0.15")]]
+    import time
+
+    now_ms = int(time.time() * 1000)
+    # 18,748.7$ at the taker rate.
+    http.exec_rows = [{"execFee": "10.31", "execTime": str(now_ms)}]
+
+    asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
+
+    assert "fees10.31 (taker 0.055%)" in out.sent[0]
+
+
+def test_the_entry_notice_says_maker_when_it_rested(keyed):
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[row(tp="0.2621", sl="0.15")]]
+    import time
+
+    now_ms = int(time.time() * 1000)
+    http.exec_rows = [{"execFee": "3.75", "execTime": str(now_ms)}]
+
+    asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
+
+    assert "fees3.75 (maker 0.020%)" in out.sent[0]
 
 
 def test_tick_reports_the_take_target_as_a_share_of_equity(keyed):
@@ -3270,6 +3304,58 @@ def test_trim_notice_reports_what_the_slice_realised(keyed):
     assert note == " · 💸<b>+6.16</b> (fees 3.10)"
 
 
+# --- what an entry cost, said when it is paid ------------------------------
+#
+# Three months on this account: 6,963$ of commission against a 11,855$
+# loss — 59% of it — and 97% of entries billed taker rather than the maker
+# rate the ladder budgets for. The moment it is paid went unmentioned.
+
+
+@pytest.mark.parametrize(
+    "paid,notional,expected",
+    [
+        (5.5, 10_000.0, "taker 0.055%"),
+        (2.0, 10_000.0, "maker 0.020%"),
+        (0.0, 10_000.0, ""),
+        (5.5, 0.0, ""),
+        (90.0, 10_000.0, ""),  # neither rate explains it, so name neither
+    ],
+)
+def test_fee_word_names_the_rate_that_was_billed(paid, notional, expected, keyed):
+    assert bybit_watch.fee_word(paid, notional) == expected
+
+
+def test_an_add_reports_what_the_add_cost(keyed):
+    """Not the position's whole history: 90$ → 41,505$ said nothing at all."""
+    http = FakeHTTP()
+    http.trade_rows = [{"execFee": "22.83"}]
+    bybit_watch._entry_paid["CLUSDT"] = 0.05
+    was = Position("long", 1.0, 100.0, 90.0, created_ms=1_700_000_000_000)
+    now = Position("long", 460.0, 100.0, 41_505.0, created_ms=1_700_000_000_000)
+
+    note = asyncio.run(bybit_watch._added_notice(http, "CLUSDT", was, now))
+
+    assert note == " · 💱22.78$ taker 0.055%"
+
+
+def test_an_add_that_cost_nothing_new_says_nothing(keyed):
+    """The same fee read twice is not a second payment."""
+    http = FakeHTTP()
+    http.trade_rows = [{"execFee": "22.83"}]
+    bybit_watch._entry_paid["CLUSDT"] = 22.83
+    was = Position("long", 1.0, 100.0, 90.0, created_ms=1_700_000_000_000)
+    now = Position("long", 2.0, 100.0, 200.0, created_ms=1_700_000_000_000)
+
+    assert asyncio.run(bybit_watch._added_notice(http, "CLUSDT", was, now)) == ""
+
+
+def test_an_add_with_no_fee_on_record_says_nothing(keyed):
+    was = Position("long", 1.0, 100.0, 90.0, created_ms=1_700_000_000_000)
+    now = Position("long", 2.0, 100.0, 200.0, created_ms=1_700_000_000_000)
+
+    assert asyncio.run(bybit_watch._added_notice(FakeHTTP(), "CLUSDT", was, now)) == ""
+
+
 def test_trim_notice_carries_the_reason_the_bot_cut(keyed):
     """One event, one message: why it cut, and what the cut actually cost.
 
@@ -3342,6 +3428,24 @@ def test_tick_says_nothing_of_pnl_when_a_position_grows(keyed):
     asyncio.run(bybit_watch.tick(http, before, out.send, out.speak, out.send_photo))
 
     assert out.sent == ["💰📈HYPE 20,415→56,290"]
+
+
+def test_tick_says_what_the_add_cost(keyed):
+    """A position that grew from 20,415$ to 56,290$ said only that.
+
+    Taker on the way in, every time: on this account 97% of entries are,
+    and over three months the commission came to 59% of the loss.
+    """
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [
+        [row(symbol="HYPEUSDT", size="633.13", value="56290.04", created="1700000000000")]
+    ]
+    http.trade_rows = [{"execFee": "19.73"}]
+    before = {"HYPEUSDT": Position("long", 229.02, 88.9076, 20414.84)}
+
+    asyncio.run(bybit_watch.tick(http, before, out.send, out.speak, out.send_photo))
+
+    assert out.sent == ["💰📈HYPE 20,415→56,290 · 💱19.73$ taker 0.055%"]
 
 
 def test_entry_levels_are_remembered_at_the_open_and_dropped_at_the_close(keyed):
