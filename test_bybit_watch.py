@@ -3,9 +3,11 @@
 import asyncio
 import base64
 from dataclasses import replace
+from io import BytesIO
 from typing import Any
 
 import pytest
+from PIL import Image
 
 import bybit_watch
 from bybit_watch import Position
@@ -960,6 +962,77 @@ def test_positions_report_sends_one_album(keyed):
     assert caption.startswith("📈FARTCOIN 18,749$@0.1621")
     assert "<b>" in caption
     assert "Σ" not in caption  # one position: no repeating total line
+
+
+# --- every chart through the layout, the drawings as the backup ----------
+#
+# "делай все через лейаут, чарты бота как бэкап", 17.10.2026. Until then
+# only the journal saw the user's own panes.
+
+
+def _pane(shade: int = 9) -> bytes:
+    """A real PNG standing in for a screenshot of the layout.
+
+    Real because market_report pastes its two pictures into one, and PIL
+    will not paste bytes that merely begin with the magic number.
+    """
+    out = BytesIO()
+    Image.new("RGB", (8, 8), (shade, shade, shade)).save(out, format="PNG")
+    return out.getvalue()
+
+
+def _layout(monkeypatch, *answers):
+    """Make the capture answer `answers` in turn. Returns what it was asked."""
+    asked = []
+    queue = list(answers)
+
+    async def _shot(_http, symbol):
+        asked.append(symbol)
+        return queue.pop(0) if queue else (None, "nothing left to give")
+
+    monkeypatch.setattr(bybit_watch.tv_shot, "enabled", lambda: True)
+    monkeypatch.setattr(bybit_watch.tv_shot, "shot", _shot)
+    return asked
+
+
+def test_positions_album_carries_the_layouts_own_panes(keyed, monkeypatch):
+    http = ClosingHTTP()
+    http.position_pages = [[row(), row(symbol="SOLUSDT")]]
+    http.kline_rows = KLINES
+    pane = _pane()
+    asked = _layout(monkeypatch, (pane, ""), (pane, ""))
+    albums = []
+
+    async def send_album(caption, pngs):
+        albums.append(pngs)
+        return True
+
+    asyncio.run(bybit_watch.positions_report(http, send_album))
+
+    assert asked == ["FARTCOINUSDT", "SOLUSDT"]
+    assert albums == [[pane, pane]]
+
+
+def test_positions_stops_asking_the_layout_after_a_refusal(keyed, monkeypatch):
+    """A sleeping Mac says no to the fourth symbol as slowly as to the first."""
+    http = ClosingHTTP()
+    http.position_pages = [[row(), row(symbol="SOLUSDT")]]
+    http.kline_rows = KLINES
+    asked = _layout(monkeypatch, (None, "the capture service did not answer"))
+    albums = []
+
+    async def send_album(caption, pngs):
+        albums.append((caption, pngs))
+        return True
+
+    asyncio.run(bybit_watch.positions_report(http, send_album))
+
+    assert asked == ["FARTCOINUSDT"]  # and not the second symbol
+    caption, pngs = albums[0]
+    # Both charts are there — the bot drew them — and the caption says why.
+    assert len(pngs) == 2
+    assert caption.count("📷") == 1
+    assert "the capture service did not answer" in caption
 
 
 def test_positions_report_falls_back_to_text_without_candles(keyed):
@@ -2055,6 +2128,42 @@ def test_market_report_sends_btc_and_eth_in_one_shot(keyed):
     caption, magic = shots[0]
     assert magic == b"\x89PNG\r\n\x1a\n"
     assert caption.startswith("BTC 0 · ETH 0")  # test candles close at 0.169
+
+
+def test_market_report_shows_the_layouts_btc_and_eth(keyed, monkeypatch):
+    http = FakeHTTP()
+    http.kline_rows = KLINES
+    btc, eth = _pane(1), _pane(2)
+    asked = _layout(monkeypatch, (btc, ""), (eth, ""))
+    shots = []
+
+    async def send_photo(caption, png):
+        shots.append((caption, png))
+        return True
+
+    asyncio.run(bybit_watch.market_report(http, send_photo))
+
+    assert asked == ["BTCUSDT", "ETHUSDT"]
+    caption, png = shots[0]
+    # The two panes pasted together, not the bot's drawings of them.
+    assert png == bybit_watch.chart.side_by_side([btc, eth])
+    assert "📷" not in caption
+
+
+def test_market_report_says_when_the_layout_would_not_answer(keyed, monkeypatch):
+    http = FakeHTTP()
+    http.kline_rows = KLINES
+    asked = _layout(monkeypatch, (None, "the TradingView profile is signed out"))
+    shots = []
+
+    async def send_photo(caption, png):
+        shots.append(caption)
+        return True
+
+    asyncio.run(bybit_watch.market_report(http, send_photo))
+
+    assert asked == ["BTCUSDT"]
+    assert "📷 the TradingView profile is signed out" in shots[0]
 
 
 def test_market_report_survives_a_dead_api(keyed, caplog):
@@ -4596,8 +4705,10 @@ def test_tick_close_journals_the_chart_the_trade_was_read_on(keyed, monkeypatch)
         journaled.append(entry)
         return {"ok": True, "row": 42, "gid": 7}
 
+    pane = _pane()
+
     async def _shot(_http, symbol):
-        return b"TVPNG", ""
+        return pane, ""
 
     monkeypatch.setattr(bybit_watch.sheets, "log_close", _journaled)
     monkeypatch.setattr(bybit_watch.tv_shot, "shot", _shot)
@@ -4605,10 +4716,10 @@ def test_tick_close_journals_the_chart_the_trade_was_read_on(keyed, monkeypatch)
 
     asyncio.run(bybit_watch.tick(http, {"FARTCOINUSDT": LONG}, out.send, out.speak, out.send_photo))
 
-    assert base64.b64decode(journaled[0]["png"]) == b"TVPNG"
+    assert base64.b64decode(journaled[0]["png"]) == pane
     assert "png_entry" not in journaled[0]
-    # Telegram still gets the drawn chart; only the journal changes.
-    assert out.photo_bytes and out.photo_bytes[0].startswith(b"\x89PNG")
+    # And the chat gets the same pane: the drawing is the backup everywhere.
+    assert out.photo_bytes == [pane]
 
 
 def test_tick_close_keeps_the_drawn_chart_and_says_why(keyed, monkeypatch):
@@ -4644,7 +4755,7 @@ def test_tick_close_attaches_the_frame_kept_since_the_entry(keyed, monkeypatch):
         return {"ok": True, "row": 42, "gid": 7}
 
     async def _shot(_http, symbol):
-        return b"TVPNG", ""
+        return _pane(), ""
 
     def _take(symbol):
         taken.append(symbol)
@@ -4660,33 +4771,83 @@ def test_tick_close_attaches_the_frame_kept_since_the_entry(keyed, monkeypatch):
     assert base64.b64decode(journaled[0]["png_entry"]) == b"ENTRYPNG"
 
 
-def test_tick_entry_shoots_the_chart_behind_the_notice(keyed, monkeypatch):
-    """The entry notice never waits on the picture; the picture follows it."""
+def test_tick_entry_notice_carries_the_layouts_own_pane(keyed, monkeypatch):
+    """The picture the trade was read on, not the bot's drawing of it."""
     http, out = FakeHTTP(), Recorder()
     http.position_pages = [[row()]]
-    shot_for = []
+    kept = []
+    pane = b"\x89PNG the layout"
 
-    async def _capture_entry(_http, symbol, say):
-        shot_for.append(symbol)
+    async def _shot(_http, symbol):
+        return pane, ""
+
+    def _keep(symbol, png):
+        kept.append((symbol, png))
+        return ""
 
     monkeypatch.setattr(bybit_watch.tv_shot, "enabled", lambda: True)
-    monkeypatch.setattr(bybit_watch.tv_shot, "capture_entry", _capture_entry)
+    monkeypatch.setattr(bybit_watch.tv_shot, "shot", _shot)
+    monkeypatch.setattr(bybit_watch.tv_shot, "keep", _keep)
 
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 
-    assert shot_for == ["FARTCOINUSDT"]
-    assert bybit_watch._shooting == set()  # and nothing is left dangling
+    assert out.photo_bytes == [pane]
+    # And the same frame waits for the close: one trip of the layout, not two.
+    assert kept == [("FARTCOINUSDT", pane)]
+
+
+def test_tick_entry_says_when_the_pane_could_not_be_kept(keyed, monkeypatch):
+    """The notice has its picture; the close will not. Say so now."""
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[row()]]
+
+    async def _shot(_http, symbol):
+        return _pane(), ""
+
+    monkeypatch.setattr(bybit_watch.tv_shot, "enabled", lambda: True)
+    monkeypatch.setattr(bybit_watch.tv_shot, "shot", _shot)
+    monkeypatch.setattr(
+        bybit_watch.tv_shot, "keep", lambda symbol, png: "the entry frame could not be saved"
+    )
+
+    asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
+
+    said = "\n".join(out.photos + out.sent)
+    assert "📷 the entry frame could not be saved" in said
+
+
+def test_tick_entry_says_why_the_layout_gave_nothing(keyed, monkeypatch):
+    """A downgrade to the bot's drawing is announced, never silent."""
+    http, out = FakeHTTP(), Recorder()
+    http.position_pages = [[row()]]
+
+    async def _shot(_http, symbol):
+        return None, "the TradingView profile is signed out"
+
+    monkeypatch.setattr(bybit_watch.tv_shot, "enabled", lambda: True)
+    monkeypatch.setattr(bybit_watch.tv_shot, "shot", _shot)
+    monkeypatch.setattr(
+        bybit_watch.tv_shot, "keep", lambda symbol, png: pytest.fail("nothing to keep")
+    )
+
+    asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
+
+    said = "\n".join(out.photos + out.sent)
+    assert "📷 the TradingView profile is signed out" in said
+    # And the notice itself went out regardless — a missing picture has
+    # never been worth a missing entry.
+    assert out.sent or out.photo_bytes
 
 
 def test_tick_entry_shoots_nothing_when_the_feature_is_off(keyed, monkeypatch):
     http, out = FakeHTTP(), Recorder()
     http.position_pages = [[row()]]
 
-    async def _never(_http, symbol, say):
+    async def _never(_http, symbol):
         raise AssertionError("the capture must not be asked for")
 
     monkeypatch.setattr(bybit_watch.tv_shot, "enabled", lambda: False)
-    monkeypatch.setattr(bybit_watch.tv_shot, "capture_entry", _never)
+    monkeypatch.setattr(bybit_watch.tv_shot, "shot", _never)
 
     asyncio.run(bybit_watch.tick(http, {}, out.send, out.speak, out.send_photo))
 

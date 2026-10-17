@@ -730,13 +730,26 @@ optional `png_entry` chipped into column Q), `{week: true}` appends the
 weekly total, `{headers: [...]}` rewrites row 1, `{totals: true}` builds the
 frozen running-total row 2.
 
-## Your own TradingView chart in the journal
+## Your own TradingView chart, everywhere
 
-The chart in column G is one the bot draws itself, from Bybit klines — it
-works in a slim container with no browser, and it always will. This adds the
-other one: the chart **you** were reading, with your layout, your levels and
-your annotations on it. Two frames per trade — the pane as the position
-opened (column Q) and as it closed (column G).
+Every picture the bot sends is the chart **you** were reading — your layout,
+your levels, your annotations — not a drawing of the same candles. That
+covers the entry notice, the close notice, both journal columns (the pane as
+the position opened in Q, as it closed in G), `/positions` and the BTC/ETH
+snapshot on `/status`.
+
+The bot still draws its own chart from Bybit klines, and always will: it
+works in a slim container with no browser, and it is what goes out when the
+layout cannot be reached. Backup, not first choice.
+
+The equity curve on `/statistics` stays the bot's own drawing — there is no
+pane of your account history to shoot.
+
+**What it costs:** a warm shot is 8-12 seconds and a symbol the layout has
+to be driven to about twenty, so a notice or a command waits that long for
+its picture. `/positions` asks one symbol at a time — there is one browser —
+and stops asking after the first refusal, because a sleeping Mac says no to
+the fourth symbol exactly as slowly as to the first.
 
 A container cannot take that picture: it needs a browser holding a real
 TradingView session. So a small service runs on the Mac instead
@@ -803,17 +816,18 @@ answers exactly one question — "a PNG of symbol X".
 
 Degradation is the feature, not an afterthought. A profile signed out, a Mac
 asleep, a service not running, a symbol TradingView will not show, a shot
-slower than `TV_SHOT_WAIT` — each ends the same way: **the row gets the
-chart the bot drew, exactly as before, and the close notice says which of
-those it was**, on a line of its own:
+slower than `TV_SHOT_WAIT` — each ends the same way: **the picture is the
+chart the bot drew, and the notice says which of those it was**, on a line
+of its own:
 
 ```text
 💸<b>+512.30</b>=<b>10,000.00$</b>(+5.12%)·📈FARTCOIN·manual
 📷 the TradingView profile is signed out
 ```
 
-An entry frame that cannot be taken says so under the entry notice instead.
-Nothing is ever attached blank, and nothing is ever attached silently wrong.
+The entry notice, `/positions` and `/status` carry the same line when the
+layout would not answer them. Nothing is ever attached blank, nothing is
+ever attached silently wrong, and nothing ever downgrades in silence.
 
 ### Things worth knowing
 

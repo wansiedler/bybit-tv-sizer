@@ -24,9 +24,11 @@ secret.
 Started by launchd beside the relay; see com.bybit.tv-capture.plist.
 """
 
+import hashlib
 import hmac
 import logging
 import os
+import pathlib
 import re
 import subprocess
 import threading
@@ -116,9 +118,31 @@ def enabled() -> bool:
     return bool(TV_SHOT_SECRET and TV_SHOT_LAYOUT)
 
 
+# What this process is running, fixed when it started. The file on disk can
+# change under it — a merge, a deploy — and nothing says so: 17.10.2026 this
+# service ran two-day-old code for two days while the fix sat unread beside
+# it, and three deploys reported success without touching it.
+RUNNING = hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()[:12]
+
+
+def on_disk() -> str:
+    """What the file beside this process says now; "" when unreadable."""
+    try:
+        return hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()[:12]
+    # Deliberately broad: not knowing is not the same as being stale, and a
+    # version check must never be the thing that breaks the service.
+    except OSError:
+        return ""
+
+
 def _on_secret_path(path: str) -> bool:
     """Whether the request path is exactly the secret one, in constant time."""
     return hmac.compare_digest(path.encode(), f"/shot/{TV_SHOT_SECRET}".encode())
+
+
+def _on_version_path(path: str) -> bool:
+    """The same secret, asking what is running rather than for a frame."""
+    return hmac.compare_digest(path.encode(), f"/version/{TV_SHOT_SECRET}".encode())
 
 
 def wanted(query: str) -> str:
@@ -372,6 +396,11 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's spelling
         split = urlsplit(self.path)
+        if _on_version_path(split.path):
+            disk = on_disk()
+            answer = f"{RUNNING} {disk} {'stale' if disk and disk != RUNNING else 'fresh'}"
+            self._answer(200, answer.encode(), "text/plain; charset=utf-8")
+            return
         if not _on_secret_path(split.path):
             self._refuse()
             return

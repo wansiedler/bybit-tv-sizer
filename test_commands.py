@@ -690,6 +690,74 @@ def test_status_survives_a_failed_deposit_lookup(owner):
     assert rec.sent[0].endswith("💰 deposit unavailable")
 
 
+def test_status_names_the_version_the_capture_is_running(owner):
+    """The service is not in the container; nothing else would say so."""
+    rec = Recorder()
+
+    async def capture():
+        return "ab12cd34ef56"  # pragma: allowlist secret
+
+    asyncio.run(
+        commands.dispatch(
+            "status",
+            "",
+            commands.Stats(),
+            rec.send,
+            rec.speak,
+            True,
+            commands.Handlers(capture=capture),
+        )
+    )
+
+    assert "📷 ab12cd34ef56" in rec.sent[0]
+
+
+def test_status_says_nothing_when_the_capture_is_switched_off(owner):
+    rec = Recorder()
+
+    async def capture():
+        return ""
+
+    asyncio.run(
+        commands.dispatch(
+            "status",
+            "",
+            commands.Stats(),
+            rec.send,
+            rec.speak,
+            True,
+            commands.Handlers(capture=capture),
+        )
+    )
+
+    assert "📷" not in rec.sent[0]
+
+
+def test_status_survives_a_capture_that_will_not_say(owner, caplog):
+    rec = Recorder()
+
+    async def capture():
+        raise OSError("down")
+
+    with caplog.at_level("ERROR", logger="relay.commands"):
+        asyncio.run(
+            commands.dispatch(
+                "status",
+                "",
+                commands.Stats(),
+                rec.send,
+                rec.speak,
+                True,
+                commands.Handlers(capture=capture),
+            )
+        )
+
+    # The rest of /status still goes out; only the line is missing.
+    assert rec.sent[0]
+    assert "📷" not in rec.sent[0]
+    assert "no capture version" in caplog.text
+
+
 def test_status_puts_the_deposit_above_the_ip(owner):
     rec = Recorder()
 

@@ -280,6 +280,47 @@ def test_the_real_path_lets_a_real_fault_through_untouched():
         shooter._take_through(Broken(), "BTCUSDT")
 
 
+# --- saying what it is running ---------------------------------------------
+#
+# 17.10.2026. The service ran two-day-old code for two days while the fix
+# sat unread beside it on disk, and three deploys reported success without
+# going near it. It lives on the Mac under launchd; `docker compose up`
+# does not touch it, and nothing said so.
+
+
+def test_it_knows_what_it_started_with():
+    """The hash is of the source as it was when the process came up."""
+    assert len(tv_capture.RUNNING) == 12
+    assert tv_capture.RUNNING == tv_capture.on_disk()
+
+
+def test_an_unreadable_file_is_not_called_stale(monkeypatch):
+    """Not knowing is not the same as being out of date."""
+
+    class Gone:
+        def read_bytes(self):
+            raise OSError("vanished")
+
+    monkeypatch.setattr(tv_capture.pathlib, "Path", lambda _p: Gone())
+
+    assert tv_capture.on_disk() == ""
+
+
+def test_the_version_path_needs_the_same_secret(monkeypatch):
+    monkeypatch.setattr(tv_capture, "TV_SHOT_SECRET", "s3cret")
+
+    assert tv_capture._on_version_path("/version/s3cret") is True
+    assert tv_capture._on_version_path("/version/wrong") is False
+    assert tv_capture._on_version_path("/version") is False
+
+
+def test_the_shot_path_and_the_version_path_are_not_each_other(monkeypatch):
+    monkeypatch.setattr(tv_capture, "TV_SHOT_SECRET", "s3cret")
+
+    assert tv_capture._on_secret_path("/version/s3cret") is False
+    assert tv_capture._on_version_path("/shot/s3cret") is False
+
+
 # --- TradingView's perpetual suffix ----------------------------------------
 #
 # 17.10.2026. Every shot answered "TradingView would not show FARTCOINUSDT"
@@ -567,6 +608,51 @@ def test_the_service_will_not_take_a_non_symbol():
     finally:
         httpd.shutdown()
     assert refusal.value.code == 400
+
+
+# Two source hashes, the running one and the one on disk. Hex, so the
+# secret scanner has an opinion about them.
+RUNNING = "ab12cd34ef56"  # pragma: allowlist secret
+ON_DISK = "ff99ff99ff99"  # pragma: allowlist secret
+
+
+def test_the_service_says_what_it_is_running(monkeypatch):
+    """Nothing else can: the service is on the Mac, the bot in a container."""
+    shooter = FakeShooter()
+    monkeypatch.setattr(tv_capture, "RUNNING", RUNNING)
+    monkeypatch.setattr(tv_capture, "on_disk", lambda: RUNNING)
+    httpd = tv_capture.serve(shooter=shooter)
+    try:
+        status, kind, body = get(httpd.server_address[1], "/version/s3cret")
+    finally:
+        httpd.shutdown()
+
+    assert status == 200
+    assert kind.startswith("text/plain")
+    assert body == f"{RUNNING} {RUNNING} fresh".encode()
+    # Asking what it runs never drives the browser.
+    assert shooter.asked == []
+
+
+def test_the_service_calls_itself_stale_when_the_file_moved_on(monkeypatch):
+    monkeypatch.setattr(tv_capture, "RUNNING", RUNNING)
+    monkeypatch.setattr(tv_capture, "on_disk", lambda: ON_DISK)
+    httpd = tv_capture.serve(shooter=FakeShooter())
+    try:
+        _, _, body = get(httpd.server_address[1], "/version/s3cret")
+    finally:
+        httpd.shutdown()
+
+    assert body == f"{RUNNING} {ON_DISK} stale".encode()
+
+
+def test_the_version_path_hangs_up_on_the_wrong_secret():
+    httpd = tv_capture.serve(shooter=FakeShooter())
+    try:
+        with pytest.raises((ConnectionError, urllib.error.URLError)):
+            get(httpd.server_address[1], "/version/wrong")
+    finally:
+        httpd.shutdown()
 
 
 def test_serve_without_a_shooter_builds_its_own():

@@ -1,9 +1,12 @@
 """Ask the Mac for a picture of the user's own TradingView chart.
 
-The bot draws its own chart from Bybit klines and always will — it works in
-a slim container with no browser. This is the other picture: the one the user
-was actually looking at, with their layout, their levels and their notes on
-it, fetched from the capture service running on the host (see tv_capture.py).
+This is the picture every notice wants: the chart the user was actually
+looking at, with their layout, their levels and their notes on it, fetched
+from the capture service running on the host (see tv_capture.py).
+
+The bot still draws its own chart from Bybit klines, and always will — it
+works in a slim container with no browser, and it is what goes out when the
+layout cannot be reached. Backup, not first choice: see best().
 
     TV_SHOT_SECRET=          # the same secret the host service was given
     TV_SHOT_URL=http://host.docker.internal:8424
@@ -16,6 +19,7 @@ which of those it was. It never costs a close notice, and it never attaches
 a frame of something else.
 """
 
+import asyncio
 import logging
 import os
 import re
@@ -66,6 +70,31 @@ def _file(symbol: str) -> Path:
     return Path(TV_SHOT_DIR) / f"{_SAFE.sub('', symbol.upper()).lstrip('.')}.png"
 
 
+async def version(http: httpx.AsyncClient) -> str:
+    """What the capture service is running, and whether it is stale.
+
+    The service lives on the Mac under launchd, not in this container, and
+    `docker compose up` does not touch it. On 17.10.2026 it ran two-day-old
+    code for two days while the fix sat unread beside it, and three deploys
+    reported success without going near it. Nothing said so, which is the
+    part worth fixing.
+    """
+    if not enabled():
+        return ""
+    try:
+        response = await http.get(f"{TV_SHOT_URL}/version/{TV_SHOT_SECRET}", timeout=5)
+        if response.status_code != 200:
+            return "не отвечает"
+        running, _, rest = response.text.strip().partition(" ")
+        disk, _, state = rest.partition(" ")
+        return f"{running} ⚠️ на диске {disk}" if state == "stale" else running
+    # Deliberately broad: a version line is garnish on /status, and a
+    # service that will not answer is already visible by its silence.
+    except Exception:  # noqa: BLE001
+        log.exception("no capture version")
+        return "не отвечает"
+
+
 async def shot(http: httpx.AsyncClient, symbol: str) -> tuple[bytes | None, str]:
     """One frame of `symbol`, or None and the reason there is not one."""
     if not enabled():
@@ -84,6 +113,30 @@ async def shot(http: httpx.AsyncClient, symbol: str) -> tuple[bytes | None, str]
     if response.status_code != 200:
         return None, response.text[:200] or f"the capture service said {response.status_code}"
     return response.content, ""
+
+
+async def best(http: httpx.AsyncClient, symbol: str, drawing) -> tuple[bytes | None, str]:
+    """The user's own TradingView pane for `symbol`, the bot's chart behind it.
+
+    `drawing` is the awaitable that draws the bot's own picture. Both are made
+    at once — the drawing costs a kline request, the pane costs the layout its
+    seconds — and the pane wins whenever there is one, because it carries the
+    levels and the notes the trade was actually read on.
+
+    The reason a pane is missing comes back with the picture rather than being
+    swallowed. A chart that silently downgrades is how two days went by on a
+    capture service nobody noticed had stopped.
+    """
+    if not enabled():
+        return await drawing, ""
+    shooting = asyncio.create_task(shot(http, symbol))
+    try:
+        drawn = await drawing
+    finally:
+        # Whatever the drawing did, the shot is already in flight and must
+        # be collected: an abandoned task would log "never retrieved".
+        png, why = await shooting
+    return (png if png is not None else drawn), why
 
 
 def keep(symbol: str, png: bytes) -> str:
@@ -110,16 +163,3 @@ def take(symbol: str) -> bytes | None:
     except OSError:
         return None
     return png
-
-
-async def capture_entry(http: httpx.AsyncClient, symbol: str, say) -> None:
-    """Shoot the entry and keep it for the close. Never raises.
-
-    Runs behind the entry notice rather than in front of it: a notice that
-    waits twelve seconds for a picture is a worse notice.
-    """
-    png, why = await shot(http, symbol)
-    if png is not None:
-        why = keep(symbol, png)
-    if why:
-        await say(f"📷 {symbol}: {why}")

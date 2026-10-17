@@ -163,17 +163,20 @@ TV_PORT=8423
 # needs 0.0.0.0.
 TV_BIND=127.0.0.1
 
-# Your own chart in the journal. A capture service on the Mac (tv_capture.py,
+# Your own chart everywhere. A capture service on the Mac (tv_capture.py,
 # started by com.bybit.tv-capture.plist) shoots the TradingView layout you
-# actually trade from and hands the relay one pane: on entry, and again on
-# close. The entry frame waits in TV_SHOT_DIR until the trade closes, then
-# both land in the row — the close in column G, the entry in Q.
+# actually trade from, and its pane is the picture on the entry notice, the
+# close notice, /positions and the /status snapshot. The entry frame also
+# waits in TV_SHOT_DIR until the trade closes, so the row carries both — the
+# close in column G, the entry in Q.
 #
-# Empty disables the whole thing and the journal keeps the chart the bot
+# Empty disables the whole thing and every picture is the chart the bot
 # draws itself, exactly as before. So does a Mac asleep, a signed-out
-# profile or a symbol TradingView will not show: the row gets the drawn
-# chart and Telegram says which of those it was. It never attaches a blank
-# or a frame of the wrong symbol.
+# profile or a symbol TradingView will not show: the drawn chart goes out
+# and Telegram says which of those it was. It never attaches a blank or a
+# frame of the wrong symbol.
+#
+# A shot costs seconds — see TV_SHOT_WAIT — and a notice waits for it.
 #
 # The same secret goes to both sides. It is the only thing guarding the
 # service, so make it long and random.

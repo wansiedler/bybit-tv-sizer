@@ -5,6 +5,7 @@ but the picture, and always says which way it failed.
 """
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -113,24 +114,122 @@ def test_keep_says_why_when_the_volume_will_not_take_it(monkeypatch):
     assert tv_shot.keep("SOLUSDT", b"PNG") == "the entry frame could not be saved"
 
 
-def test_capture_entry_keeps_the_frame_and_stays_quiet():
-    said = []
-
-    async def say(text):
-        said.append(text)
-
-    asyncio.run(tv_shot.capture_entry(FakeHTTP(), "SOLUSDT", say))
-    assert tv_shot.take("SOLUSDT") == b"PNG"
-    assert said == []
+# --- the layout first, the bot's own drawing behind it --------------------
+#
+# "почему я не вижу реальных графмков", 17.10.2026: every notice carried the
+# bot's drawing of the chart while the user's own pane went only to the
+# journal. best() is which picture a notice gets.
 
 
-def test_capture_entry_says_why_there_is_no_frame():
-    said = []
+async def _drew(png=b"DRAWN"):
+    return png
 
-    async def say(text):
-        said.append(text)
 
-    http = FakeHTTP(FakeResponse(503, b"", "TradingView would not show SOLUSDT.P"))
-    asyncio.run(tv_shot.capture_entry(http, "SOLUSDT", say))
-    assert said == ["📷 SOLUSDT: TradingView would not show SOLUSDT.P"]
-    assert tv_shot.take("SOLUSDT") is None
+def test_the_layouts_pane_wins_when_there_is_one():
+    png, why = asyncio.run(tv_shot.best(FakeHTTP(), "SOLUSDT", _drew()))
+
+    assert (png, why) == (b"PNG", "")
+
+
+def test_the_drawing_is_the_backup_and_the_reason_comes_with_it():
+    http = FakeHTTP(FakeResponse(503, b"", "the TradingView profile is signed out"))
+
+    png, why = asyncio.run(tv_shot.best(http, "SOLUSDT", _drew()))
+
+    assert png == b"DRAWN"
+    assert why == "the TradingView profile is signed out"
+
+
+def test_a_shot_and_a_drawing_are_made_at_once():
+    """Not one after the other: a notice pays for the slower, not for both."""
+    order = []
+
+    class SlowHTTP(FakeHTTP):
+        async def get(self, url, params=None, timeout=None):
+            order.append("shot started")
+            await asyncio.sleep(0)
+            order.append("shot done")
+            return self.response
+
+    async def drawing():
+        order.append("drawing started")
+        await asyncio.sleep(0)
+        order.append("drawing done")
+        return b"DRAWN"
+
+    asyncio.run(tv_shot.best(SlowHTTP(), "SOLUSDT", drawing()))
+
+    # Interleaved, not one after the other.
+    assert order == ["drawing started", "shot started", "drawing done", "shot done"]
+
+
+def test_nothing_is_shot_when_the_capture_is_off(monkeypatch):
+    monkeypatch.setattr(tv_shot, "TV_SHOT_SECRET", "")
+    http = FakeHTTP()
+
+    assert asyncio.run(tv_shot.best(http, "SOLUSDT", _drew())) == (b"DRAWN", "")
+    assert http.got == []
+
+
+def test_a_drawing_that_throws_still_collects_its_shot():
+    """An abandoned task would log "exception was never retrieved"."""
+
+    async def drawing():
+        raise ValueError("no candles")
+
+    with pytest.raises(ValueError, match="no candles"):
+        asyncio.run(tv_shot.best(FakeHTTP(), "SOLUSDT", drawing()))
+
+
+# --- the service says what it is running -----------------------------------
+#
+# It lives on the Mac under launchd; `docker compose up` does not touch it.
+# On 17.10.2026 it served two-day-old code for two days, and three deploys
+# reported success without going near it.
+
+
+def _answering(body: str, code: int = 200):
+    class HTTP:
+        async def get(self, url, timeout=None):
+            return SimpleNamespace(status_code=code, text=body)
+
+    return HTTP()
+
+
+# Two source hashes: what the service is running, and what is on the disk
+# beside it. Hex, so the secret scanner has an opinion about them.
+RUNNING = "ab12cd34ef56"  # pragma: allowlist secret
+ON_DISK = "ff99ff99ff99"  # pragma: allowlist secret
+
+
+def test_a_fresh_service_reports_just_its_version():
+    answered = _answering(f"{RUNNING} {RUNNING} fresh")
+
+    assert asyncio.run(tv_shot.version(answered)) == RUNNING
+
+
+def test_a_stale_service_says_so_and_names_the_newer_one():
+    seen = asyncio.run(tv_shot.version(_answering(f"{RUNNING} {ON_DISK} stale")))
+
+    assert seen == f"{RUNNING} ⚠️ на диске {ON_DISK}"
+
+
+def test_a_service_that_will_not_answer_is_named_as_such():
+    assert asyncio.run(tv_shot.version(_answering("", 503))) == "не отвечает"
+
+
+def test_a_service_that_is_not_there_at_all(caplog):
+    class Dead:
+        async def get(self, url, timeout=None):
+            raise OSError("connection refused")
+
+    with caplog.at_level("ERROR", logger="relay.tvshot"):
+        assert asyncio.run(tv_shot.version(Dead())) == "не отвечает"
+
+    assert "no capture version" in caplog.text
+
+
+def test_nothing_is_asked_when_the_capture_is_switched_off(monkeypatch):
+    monkeypatch.setattr(tv_shot, "TV_SHOT_SECRET", "")
+
+    assert asyncio.run(tv_shot.version(None)) == ""

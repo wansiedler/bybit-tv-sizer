@@ -1099,3 +1099,35 @@ def test_run_up_notice_skips_an_unanswerable_ip(config, monkeypatch):
     http, _ = _run_relay(monkeypatch, disconnect_immediately)
 
     assert "🌐" not in str(http.posted[0])
+
+
+def test_every_command_handler_reaches_a_real_function():
+    """A lambda's body does not run when the table is built.
+
+    So a name misspelled in one, or a module nobody imported, stays invisible
+    until the command is first used. 17.10.2026: `capture` called tv_shot,
+    which relay.py did not import, and because _status swallows its own
+    failures /status simply went on without the version line. Calling each
+    handler once — and never awaiting what comes back — runs exactly the
+    lambda body, which is the part no other test reaches.
+    """
+    import dataclasses
+    import inspect
+
+    handlers = relay._command_handlers(cast(httpx.AsyncClient, FakeHTTP()), "")
+    called = []
+    for field in dataclasses.fields(handlers):
+        made = getattr(handlers, field.name)
+        if not callable(made):
+            continue
+        # One empty string per argument: nothing is awaited, so no handler
+        # gets as far as looking at it.
+        count = len(inspect.signature(made).parameters)
+        answer = made(*[""] * count)
+        if inspect.iscoroutine(answer):
+            answer.close()
+        called.append(field.name)
+
+    # Every callable field, and the one that was broken among them.
+    assert "capture" in called
+    assert len(called) == sum(1 for f in dataclasses.fields(handlers) if f.name != "links")
