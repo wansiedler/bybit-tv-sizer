@@ -262,3 +262,8 @@ NOTIFY_ERRORS=1
 ERROR_REPEAT_SEC=900     # the same reason again, no sooner than this
 ERROR_BURST=4            # at most this many in a window
 ERROR_WINDOW_SEC=60      # the window the burst is counted over
+
+# The day in one message, local time. Trades, win rate, PnL, commission,
+# turnover and how much of it was taker — commission came to 59%% of three
+# months of losses here while being mentioned nowhere. Empty disables it.
+DAILY_REPORT_AT=23:30

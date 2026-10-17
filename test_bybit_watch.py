@@ -3356,6 +3356,211 @@ def test_an_add_with_no_fee_on_record_says_nothing(keyed):
     assert asyncio.run(bybit_watch._added_notice(FakeHTTP(), "CLUSDT", was, now)) == ""
 
 
+# --- the day in one message ------------------------------------------------
+#
+# Commission came to 6,963$ against an 11,855$ loss over three months —
+# 59% of it — while being mentioned nowhere. A figure nobody is shown is a
+# figure nobody weighs.
+
+
+def test_the_digest_puts_the_day_in_one_message(keyed):
+    text = bybit_watch.digest(
+        pnls=[+76.42, -390.34, -26.55, -1_278.29],
+        fees=410.26,
+        turnover=865_507.0,
+        taker_share=0.783,
+        depo=84_821.0,
+        opened=86_440.0,
+        worst=("HYPE", -1_668.63),
+        best=("XAU", +76.42),
+        day="17.10",
+    )
+
+    assert text.splitlines() == [
+        "📊 <b>Итог дня 17.10</b>",
+        "сделок 4 · выигрышей 1 (25%)",
+        "PnL <b>-1,618.76</b> (-1.91% депо)",
+        "комиссия 410.26$ (0.48% депо) · оборот 865,507$",
+        "тейкером 78% оборота",
+        "депозит 86,440 → 84,821 (-1,619)",
+        "лучшая  XAU +76.42",
+        "худшая  HYPE -1,668.63",
+    ]
+
+
+def test_a_quiet_day_says_so_rather_than_printing_zeros(keyed):
+    assert bybit_watch.digest([], 0, 0, 0, 1000.0, 1000.0, None, None, "18.10") == (
+        "📊 18.10: ни одной закрытой сделки"
+    )
+
+
+def test_the_digest_leaves_out_what_it_does_not_know(keyed):
+    """No deposit, no fills: the lines that would be empty are not printed."""
+    text = bybit_watch.digest([+5.0], 0, 0, 0, None, None, None, None, "18.10")
+
+    assert text.splitlines() == [
+        "📊 <b>Итог дня 18.10</b>",
+        "сделок 1 · выигрышей 1 (100%)",
+        "PnL <b>+5.00</b>",
+    ]
+
+
+@pytest.mark.parametrize(
+    "now,at,expected",
+    [
+        ("2026-10-17 10:00", "23:30", 13.5 * 3600),
+        ("2026-10-17 23:29", "23:30", 60.0),
+        ("2026-10-17 23:30", "23:30", 24 * 3600),  # just passed: tomorrow
+        ("2026-10-17 23:31", "23:30", 24 * 3600 - 60),
+        ("2026-10-17 10:00", "7", 21 * 3600),  # an hour with no minutes
+    ],
+)
+def test_the_summary_waits_for_its_hour(now, at, expected, keyed):
+    from datetime import datetime
+
+    moment = datetime.strptime(now, "%Y-%m-%d %H:%M")
+
+    assert bybit_watch.seconds_until(at, moment) == pytest.approx(expected)
+
+
+def test_the_summary_gathers_the_day_from_the_exchange(keyed):
+    import time as _time
+
+    http = FakeHTTP()
+    now_ms = int(_time.time() * 1000)
+    http.pnl_rows = [
+        {**piece("76.42", "4182.73", "4170.39"), "symbol": "XAUUSDT", "updatedTime": str(now_ms)},
+        {**piece("-390.34", "79.21", "78.69"), "symbol": "HYPEUSDT", "updatedTime": str(now_ms)},
+    ]
+    http.trade_rows = [
+        {"execFee": "22.83", "execValue": "41505", "isMaker": False},
+        {"execFee": "1.10", "execValue": "5500", "isMaker": True},
+    ]
+    http.equity_rows = [{"totalEquity": "84821", "totalWalletBalance": "84821"}]
+
+    text = asyncio.run(bybit_watch.daily_figures(http))
+
+    assert "сделок 2 · выигрышей 1 (50%)" in text
+    assert "PnL <b>-313.92</b>" in text
+    assert "комиссия 23.93$" in text
+    assert "оборот 47,005$" in text
+    assert "тейкером 88% оборота" in text
+    assert "лучшая  XAU +76.42" in text
+    assert "худшая  HYPE -390.34" in text
+
+
+def test_the_summary_ignores_yesterday(keyed):
+    """closed_history reaches back two days; only today belongs in today."""
+    import time as _time
+
+    http = FakeHTTP()
+    yesterday = int(_time.time() * 1000) - 36 * 3600 * 1000
+    http.pnl_rows = [
+        {**piece("999.0", "1", "2"), "symbol": "XAUUSDT", "updatedTime": str(yesterday)}
+    ]
+
+    assert "ни одной закрытой сделки" in asyncio.run(bybit_watch.daily_figures(http))
+
+
+def test_the_fills_are_paged_through(keyed):
+    class Paged(FakeHTTP):
+        def __init__(self):
+            super().__init__()
+            self.pages = [
+                {"list": [{"execFee": "1"}], "nextPageCursor": "more"},
+                {"list": [{"execFee": "2"}], "nextPageCursor": ""},
+            ]
+
+        async def get(self, url, headers=None, timeout=None):
+            if "/v5/execution/list" in url:
+                return FakeResponse({"retCode": 0, "result": self.pages.pop(0)})
+            return await super().get(url, headers, timeout)
+
+    fills = asyncio.run(bybit_watch._day_fills(Paged(), 0, 1))
+
+    assert [f["execFee"] for f in fills] == ["1", "2"]
+
+
+def test_a_log_that_will_not_answer_costs_only_the_fee_line(keyed, caplog):
+    class Mute(FakeHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise OSError("no answer")
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        assert asyncio.run(bybit_watch._day_fills(Mute(), 0, 1)) == []
+
+    assert "no fills for the daily summary" in caplog.text
+
+
+def test_the_summary_goes_out_at_its_hour(keyed, monkeypatch):
+    out = Recorder()
+    slept = []
+
+    async def once(seconds):
+        slept.append(seconds)
+        if len(slept) > 1:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(bybit_watch.asyncio, "sleep", once)
+    monkeypatch.setattr(bybit_watch, "seconds_until", lambda at, now=None: 42.0)
+    monkeypatch.setattr(bybit_watch, "daily_figures", lambda http: _said("📊 день"))
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(bybit_watch.daily_poll(FakeHTTP(), out.send))
+
+    assert out.sent == ["📊 день"]
+    assert slept[0] == 42.0
+
+
+async def _said(text):
+    return text
+
+
+def test_a_failed_summary_does_not_end_the_loop(keyed, monkeypatch, caplog):
+    out = Recorder()
+    rounds = {"n": 0}
+
+    async def twice(seconds):
+        rounds["n"] += 1
+        if rounds["n"] > 2:
+            raise asyncio.CancelledError
+
+    async def explode(http):
+        raise OSError("bybit is away")
+
+    monkeypatch.setattr(bybit_watch.asyncio, "sleep", twice)
+    monkeypatch.setattr(bybit_watch, "seconds_until", lambda at, now=None: 1.0)
+    monkeypatch.setattr(bybit_watch, "daily_figures", explode)
+
+    with caplog.at_level("ERROR", logger="relay.bybit"), pytest.raises(asyncio.CancelledError):
+        asyncio.run(bybit_watch.daily_poll(FakeHTTP(), out.send))
+
+    assert "daily summary failed" in caplog.text
+
+
+def test_a_cancelled_summary_stops_rather_than_being_swallowed(keyed, monkeypatch):
+    """Shutdown cancels the task mid-gather; a broad except would ignore it."""
+
+    async def no_wait(seconds):
+        return None
+
+    async def cancelled(http):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(bybit_watch.asyncio, "sleep", no_wait)
+    monkeypatch.setattr(bybit_watch, "seconds_until", lambda at, now=None: 0.0)
+    monkeypatch.setattr(bybit_watch, "daily_figures", cancelled)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(bybit_watch.daily_poll(FakeHTTP(), Recorder().send))
+
+
+def test_an_empty_hour_switches_the_summary_off(keyed, monkeypatch):
+    monkeypatch.setattr(bybit_watch, "DAILY_AT", "")
+
+    asyncio.run(bybit_watch.daily_poll(FakeHTTP(), Recorder().send))  # returns at once
+
+
 def test_trim_notice_carries_the_reason_the_bot_cut(keyed):
     """One event, one message: why it cut, and what the cut actually cost.
 

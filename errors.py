@@ -76,8 +76,9 @@ def describe(record: logging.LogRecord) -> str:
 class Gate:
     """Decides what gets through: one line per reason, a cap per window."""
 
-    def __init__(self, burst: int = BURST, window: float = WINDOW_SEC,
-                 repeat: float = REPEAT_SEC) -> None:
+    def __init__(
+        self, burst: int = BURST, window: float = WINDOW_SEC, repeat: float = REPEAT_SEC
+    ) -> None:
         self.burst, self.window, self.repeat = burst, window, repeat
         self._said: dict[str, float] = {}
         self._opened = 0.0

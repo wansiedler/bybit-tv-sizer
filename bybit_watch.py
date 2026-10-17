@@ -23,6 +23,7 @@ import math
 import os
 import time
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 import httpx
@@ -1622,6 +1623,138 @@ async def stats_report(http: httpx.AsyncClient, send_photo, arg: str = "") -> st
     if await send_photo(text, png):
         return ""
     return text
+
+
+# When the day's summary goes out, local time. Empty disables it.
+DAILY_AT = os.getenv("DAILY_REPORT_AT", "23:30")
+
+
+def seconds_until(at: str, now: datetime | None = None) -> float:
+    """Seconds to the next `HH:MM` in local time; a day when it just passed."""
+    hour, _, minute = at.partition(":")
+    now = now or datetime.now()
+    target = now.replace(hour=int(hour), minute=int(minute or 0), second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return (target - now).total_seconds()
+
+
+def digest(
+    pnls: list[float],
+    fees: float,
+    turnover: float,
+    taker_share: float,
+    depo: float | None,
+    opened: float | None,
+    worst: tuple[str, float] | None,
+    best: tuple[str, float] | None,
+    day: str,
+) -> str:
+    """The day in one message.
+
+    Commission has its own line because on this account it came to 59% of
+    three months of losses while never being mentioned anywhere — and a
+    figure nobody is shown is a figure nobody weighs.
+    """
+    if not pnls:
+        return f"📊 {day}: ни одной закрытой сделки"
+    wins = sum(1 for value in pnls if value > 0)
+    total = sum(pnls)
+    share = f" ({total / depo * 100:+.2f}% депо)" if depo else ""
+    lines = [
+        f"📊 <b>Итог дня {day}</b>",
+        f"сделок {len(pnls)} · выигрышей {wins} ({wins / len(pnls) * 100:.0f}%)",
+        f"PnL <b>{_usd(total)}</b>{share}",
+    ]
+    if fees:
+        cost = f" ({fees / depo * 100:.2f}% депо)" if depo else ""
+        lines.append(f"комиссия {_sig2(fees)}${cost} · оборот {turnover:,.0f}$")
+    if turnover and taker_share:
+        lines.append(f"тейкером {taker_share * 100:.0f}% оборота")
+    if opened and depo:
+        lines.append(f"депозит {opened:,.0f} → {depo:,.0f} ({depo - opened:+,.0f})")
+    if best:
+        lines.append(f"лучшая  {best[0]} {_usd(best[1])}")
+    if worst:
+        lines.append(f"худшая  {worst[0]} {_usd(worst[1])}")
+    return "\n".join(lines)
+
+
+async def daily_figures(http: httpx.AsyncClient) -> str:
+    """Gather the day and hand back the message."""
+    start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    since = int(start.timestamp() * 1000)
+    now_ms = int(time.time() * 1000)
+
+    rows = [r for r in await closed_history(http, days=2) if int(r["updatedTime"]) >= since]
+    pnls = [float(r.get("closedPnl") or 0) for r in rows]
+    by_symbol: dict[str, float] = {}
+    for r, value in zip(rows, pnls, strict=True):
+        name = base_symbol(r["symbol"])
+        by_symbol[name] = by_symbol.get(name, 0.0) + value
+
+    fills = await _day_fills(http, since, now_ms)
+    fees = sum(float(x.get("execFee") or 0) for x in fills)
+    turnover = sum(float(x.get("execValue") or 0) for x in fills)
+    taken = sum(float(x.get("execValue") or 0) for x in fills if not x.get("isMaker"))
+
+    depo = await wallet_balance(http)
+    opened = depo - sum(pnls) if depo else None
+    best = max(by_symbol.items(), key=lambda kv: kv[1]) if by_symbol else None
+    worst = min(by_symbol.items(), key=lambda kv: kv[1]) if by_symbol else None
+    return digest(
+        pnls,
+        fees,
+        turnover,
+        taken / turnover if turnover else 0.0,
+        depo,
+        opened,
+        worst,
+        best,
+        start.strftime("%d.%m"),
+    )
+
+
+async def _day_fills(http: httpx.AsyncClient, since: int, until: int) -> list[dict]:
+    """Every fill of the day, paged; empty when the log will not answer."""
+    out: list[dict] = []
+    cursor = ""
+    try:
+        while True:
+            params = {
+                "category": "linear",
+                "startTime": str(since),
+                "endTime": str(until),
+                "execType": "Trade",
+                "limit": "100",
+            }
+            if cursor:
+                params["cursor"] = cursor
+            result = await _get(http, "/v5/execution/list", params)
+            out += result.get("list") or []
+            cursor = result.get("nextPageCursor") or ""
+            if not cursor:
+                return out
+    # Deliberately broad: a summary without the fee line beats no summary.
+    except Exception:  # noqa: BLE001
+        log.exception("no fills for the daily summary")
+        return out
+
+
+async def daily_poll(http: httpx.AsyncClient, send) -> None:
+    """Send the day's summary at DAILY_REPORT_AT, every day."""
+    if not DAILY_AT:
+        return
+    log.info("daily summary at %s", DAILY_AT)
+    while True:
+        await asyncio.sleep(seconds_until(DAILY_AT))
+        try:
+            await send(await daily_figures(http))
+        except asyncio.CancelledError:
+            raise
+        # Deliberately broad: one failed summary must not end the loop.
+        except Exception:  # noqa: BLE001
+            log.exception("daily summary failed")
 
 
 async def market_report(http: httpx.AsyncClient, send_photo) -> None:
