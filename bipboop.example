@@ -18,17 +18,20 @@ TARGET_CHAT_ID=
 # user id. Defaults to TARGET_CHAT_ID, which is the same number in a private
 # chat. A group target must set it, or every command is refused.
 OWNER_ID=
-# Where the noise goes: the alerts relayed from SOURCE_CHAT and the TV
-# webhook, the WATCH_USERS messages, and every error. Empty keeps all of it
-# in TARGET_CHAT_ID, which is where it has always been. Pointed at a channel
-# (-100...), TARGET_CHAT_ID is left to the account: entries, exits, the risk
-# manager, the daily report and the answers to commands.
+# Where each stream goes when it is not to live with the trading. Empty
+# leaves that stream in TARGET_CHAT_ID, which is where all of it has always
+# been; an id (-100... for a group or channel) moves it there whole. What is
+# left in TARGET_CHAT_ID is the account itself: entries, exits, the risk
+# manager and the answers to commands.
 #
-# The bot has to be a member of that channel, and an admin to post in it. An
-# id it cannot post to costs nothing — the message is sent to TARGET_CHAT_ID
-# instead, because a channel that can go quiet without saying so is exactly
-# what the error reporting exists to prevent.
+# The bot has to be a member, and an admin to post in a channel. An id it
+# cannot post to costs nothing — the message goes to TARGET_CHAT_ID instead,
+# because a chat that can go quiet without saying so is exactly what the
+# error reporting exists to prevent.
 ALERTS_CHAT_ID=
+ERRORS_CHAT_ID=
+WATCHED_CHAT_ID=
+DAILY_CHAT_ID=
 
 # Telethon login store, without the .session suffix. Keep it inside session/
 # so a desktop run and a Docker run share one login instead of drifting into
