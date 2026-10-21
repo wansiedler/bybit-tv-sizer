@@ -40,12 +40,20 @@ It receives native TradingView alerts, announces them on the speaker and
 talks in Telegram: every entry and exit goes to the owner's chat with a
 chart screenshot and a fee-aware report.
 
-`ALERTS_CHAT_ID` splits the chat in two. Pointed at a channel it takes the
-noise — the relayed alerts, the watched users' messages and every error —
-and leaves `TARGET_CHAT_ID` to the account: entries, exits, the risk
-manager, the daily report, the answers to commands. The bot must be an
-admin of that channel; an id it cannot post to costs nothing, since the
-message falls back to `TARGET_CHAT_ID` rather than disappearing.
+Four streams can be given a chat of their own, so `TARGET_CHAT_ID` is left
+to the account — entries, exits, the risk manager, the answers to commands:
+
+| variable | what moves |
+| --- | --- |
+| `ALERTS_CHAT_ID` | the alerts from `SOURCE_CHAT` and the TV webhook |
+| `ERRORS_CHAT_ID` | everything logged at ERROR |
+| `WATCHED_CHAT_ID` | the `WATCH_USERS` relay |
+| `DAILY_CHAT_ID` | the end-of-day summary |
+
+Empty leaves that stream where it has always been. The bot must be a member
+of the chat, and an admin to post in a channel; an id it cannot post to
+costs nothing, since the message falls back to `TARGET_CHAT_ID` rather than
+disappearing.
 
 And it fills the Google Sheets trade journal automatically.
 
