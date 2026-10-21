@@ -8,6 +8,7 @@ be driven deterministically instead of by actually killing the test process.
 
 import asyncio
 import signal
+from collections.abc import Callable, Coroutine
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -1145,7 +1146,11 @@ def test_every_command_handler_reaches_a_real_function():
 
 @pytest.fixture
 def split(monkeypatch):
+    """One group per stream, the way the account is actually set up."""
     monkeypatch.setattr(relay, "ALERTS_CHAT_ID", "-1009999")
+    monkeypatch.setattr(relay, "ERRORS_CHAT_ID", "-1008888")
+    monkeypatch.setattr(relay, "WATCHED_CHAT_ID", "-1007777")
+    monkeypatch.setattr(relay, "DAILY_CHAT_ID", "-1006666")
 
 
 def _where(http, needle):
@@ -1166,13 +1171,60 @@ def test_an_alert_goes_to_the_alerts_chat(config, split, monkeypatch):
     assert _where(http, "OP 📈 0.10277") == ["-1009999"]
 
 
-def test_a_watched_message_goes_to_the_alerts_chat(config, split, monkeypatch):
+def test_a_watched_message_goes_to_its_own_chat(config, split, monkeypatch):
     async def feed(client):
         await client.handlers[1](FakeWatchedEvent("beware <b> & such"))
 
     http, _ = _run_relay(monkeypatch, feed)
 
-    assert _where(http, "some_trader") == ["-1009999"]
+    assert _where(http, "some_trader") == ["-1007777"]
+
+
+def test_an_error_goes_to_its_own_chat(config, split, monkeypatch):
+    """Taken from the sender the relay hands the error handler, and used."""
+    senders: list[Callable[[str], Coroutine[object, object, bool]]] = []
+
+    def fake_watch(loop, send):
+        senders.append(send)
+        return None
+
+    monkeypatch.setattr(relay.errors, "watch", fake_watch)
+
+    async def feed(client):
+        return None
+
+    http, _ = _run_relay(monkeypatch, feed)
+    assert senders, "the relay never started the error reporting"
+    asyncio.run(senders[0]("⛔️ relay.bybit: boom"))
+
+    assert _where(http, "boom") == ["-1008888"]
+
+
+def test_the_daily_summary_goes_to_its_own_chat(config, split, monkeypatch):
+    """Caught by taking the sender the relay hands daily_poll and using it."""
+    senders: list[Callable[[str], Coroutine[object, object, bool]]] = []
+
+    async def fake_daily(http, send):
+        senders.append(send)
+
+    async def idle(*a, **kw):
+        return None
+
+    # The watchers only start with Bybit keys; the rest are stubbed so the
+    # run tears down cleanly on the fake client.
+    monkeypatch.setattr(relay.bybit_watch, "enabled", lambda: True)
+    monkeypatch.setattr(relay.bybit_watch, "daily_poll", fake_daily)
+    monkeypatch.setattr(relay.bybit_watch, "poll", idle)
+    monkeypatch.setattr(relay.bybit_watch, "money_poll", idle)
+
+    async def feed(client):
+        return None
+
+    http, _ = _run_relay(monkeypatch, feed)
+    assert senders, "the relay never started the daily summary"
+    asyncio.run(senders[0]("📊 Итог дня"))
+
+    assert _where(http, "Итог дня") == ["-1006666"]
 
 
 def test_the_trading_stays_in_the_main_chat(config, split, monkeypatch):
@@ -1210,7 +1262,7 @@ def test_a_channel_that_refuses_does_not_swallow_the_message(config, split, monk
 
     http = Picky()
     monkeypatch.setattr(relay.httpx, "AsyncClient", lambda *a, **k: http)
-    assert asyncio.run(relay.send_noise(http, "⛔️ something broke")) is True
+    assert asyncio.run(relay.send_to(http, "-1009999", "⛔️ something broke")) is True
 
     # Asked the channel first, then the chat that is certainly watched.
     assert tried == ["-1009999", "777"]
