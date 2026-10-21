@@ -40,6 +40,13 @@ It receives native TradingView alerts, announces them on the speaker and
 talks in Telegram: every entry and exit goes to the owner's chat with a
 chart screenshot and a fee-aware report.
 
+`ALERTS_CHAT_ID` splits the chat in two. Pointed at a channel it takes the
+noise — the relayed alerts, the watched users' messages and every error —
+and leaves `TARGET_CHAT_ID` to the account: entries, exits, the risk
+manager, the daily report, the answers to commands. The bot must be an
+admin of that channel; an id it cannot post to costs nothing, since the
+message falls back to `TARGET_CHAT_ID` rather than disappearing.
+
 And it fills the Google Sheets trade journal automatically.
 
 With `GUARD_GRACE_SEC` above zero the guard warns first and gives the

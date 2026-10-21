@@ -41,6 +41,12 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 # People whose messages are relayed verbatim, wherever they post.
 WATCH_USERS = commands.parse_watch_users(os.getenv("WATCH_USERS", "some_trader"))
 TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID")
+# Where the noise goes: the alerts relayed from SOURCE_CHAT and the TV
+# webhook, the watched users' messages, and every error. Empty keeps all of
+# it in TARGET_CHAT_ID, which is where it has always been. Pointed at a
+# channel, TARGET_CHAT_ID is left to the trading: entries, exits, the guard,
+# the daily report and the answers to commands.
+ALERTS_CHAT_ID = os.getenv("ALERTS_CHAT_ID") or None
 # `or` rather than a getenv default: a SESSION_NAME left blank in bipboop is an
 # empty string, not a missing key, and an empty session path is nobody's
 # intent.
@@ -112,15 +118,17 @@ async def send_via_bot(
     quiet: bool = False,
     preview: bool = True,
     buttons: dict | None = None,
+    chat: str | None = None,
 ) -> bool:
     """Post one line through the bot. Returns True when Telegram accepted it.
 
     `html` turns on Telegram's HTML parse mode — only for text we compose
     ourselves (foreign text gets escaped first); `preview` off keeps a link
     in the text from unfurling under the message; `buttons` is an inline
-    keyboard, for an entry notice that had no chart to hang one on.
+    keyboard, for an entry notice that had no chart to hang one on; `chat`
+    sends somewhere other than TARGET_CHAT_ID.
     """
-    payload: dict[str, object] = {"chat_id": TARGET_CHAT_ID, "text": text}
+    payload: dict[str, object] = {"chat_id": chat or TARGET_CHAT_ID, "text": text}
     if html:
         payload["parse_mode"] = "HTML"
     if not preview:
@@ -354,6 +362,22 @@ def _message_link(chat, message_id: int) -> str:
     return ""
 
 
+async def send_noise(http: httpx.AsyncClient, text: str, html: bool = False, **kw) -> bool:
+    """Post to the alerts chat, falling back to the main one.
+
+    A mistyped channel id, a bot removed from the channel, a channel
+    deleted — any of those would otherwise silence the errors completely,
+    and an error channel that can go quiet without saying so is the thing
+    this whole error path exists to prevent. So a refusal is retried
+    against TARGET_CHAT_ID, where somebody is certainly looking.
+    """
+    if ALERTS_CHAT_ID is None:
+        return await send_via_bot(http, text, html, **kw)
+    if await send_via_bot(http, text, html, chat=ALERTS_CHAT_ID, **kw):
+        return True
+    return await send_via_bot(http, text, html, **kw)
+
+
 async def _relay_watched(http: httpx.AsyncClient, stats: commands.Stats, event) -> None:
     """Forward one watched user's message verbatim, with who and where — the
     chat name linking back to the original message when the chat allows it."""
@@ -371,7 +395,7 @@ async def _relay_watched(http: httpx.AsyncClient, stats: commands.Stats, event) 
     # 4096 is Telegram's hard cap on sendMessage; the cut lands on the raw
     # text so it can never split an HTML entity or the link tag.
     body = html_mod.escape(text[: 3800 - len(who) - len(where)])
-    await send_via_bot(
+    await send_noise(
         http, f"👤 @{html_mod.escape(who)} · {where_html}:\n{body}", True, preview=False
     )
     stats.watched += 1
@@ -387,7 +411,7 @@ def _register_listeners(client, http: httpx.AsyncClient, stats: commands.Stats) 
             stats.skipped += 1
             log.debug("skipped: %s", event.raw_text[:80].replace("\n", " "))
             return
-        await send_via_bot(http, compact)
+        await send_noise(http, compact)
         spoke = await speaker.announce(compact, stats.relayed + 1)
         stats.record(compact, spoke)
 
@@ -531,7 +555,7 @@ async def run() -> None:
             # watchers, which are what tends to fail later.
             errors.watch(
                 asyncio.get_running_loop(),
-                lambda text: send_via_bot(http, text, quiet=True, preview=False),
+                lambda text: send_noise(http, text, quiet=True, preview=False),
             )
 
             # The menu button beside the message box is Telegram's, built
@@ -555,7 +579,7 @@ async def run() -> None:
                     asyncio.create_task(
                         tv_alerts.pump(
                             alerts,
-                            lambda text: send_via_bot(http, text),
+                            lambda text: send_noise(http, text),
                             speaker.trade,
                             lambda symbol: bybit_watch.price_before(http, symbol),
                         )

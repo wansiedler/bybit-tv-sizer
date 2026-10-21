@@ -43,6 +43,8 @@ class FakeHTTP:
         )
         self.posted: list[object] = []
         self.called: list[str] = []
+        # (chat_id, text) for every message, so routing can be read off it.
+        self.sent_to: list[tuple[object, object]] = []
 
     async def __aenter__(self):
         return self
@@ -55,6 +57,7 @@ class FakeHTTP:
             raise self._post_error
         if json is not None and "text" in json:
             self.posted.append(json["text"])
+            self.sent_to.append((json.get("chat_id"), json["text"]))
         elif json is not None:
             # setMyCommands and friends: an API call, not a message.
             self.called.append(url.rsplit("/", 1)[-1])
@@ -1131,3 +1134,83 @@ def test_every_command_handler_reaches_a_real_function():
     # Every callable field, and the one that was broken among them.
     assert "capture" in called
     assert len(called) == sum(1 for f in dataclasses.fields(handlers) if f.name != "links")
+
+
+# --- the noise lives somewhere else --------------------------------------
+#
+# "Я хочу алармы в отдельный канал", 21.10.2026. TARGET_CHAT_ID had carried
+# everything: the alerts, the watched users, every error, and the trading
+# in among them.
+
+
+@pytest.fixture
+def split(monkeypatch):
+    monkeypatch.setattr(relay, "ALERTS_CHAT_ID", "-1009999")
+
+
+def _where(http, needle):
+    """Which chat the one message containing `needle` went to."""
+    return [chat for chat, text in http.sent_to if needle in str(text)]
+
+
+# One real alert, in the shape the source bot sends them.
+ALERT = "🔔 #OPUSDT OPUSDT, Crossing 0.10282 -  trend: 📈 -  price: 0.10277"
+
+
+def test_an_alert_goes_to_the_alerts_chat(config, split, monkeypatch):
+    async def feed(client):
+        await client.handlers[0](FakeWatchedEvent(ALERT))
+
+    http, _ = _run_relay(monkeypatch, feed)
+
+    assert _where(http, "OP 📈 0.10277") == ["-1009999"]
+
+
+def test_a_watched_message_goes_to_the_alerts_chat(config, split, monkeypatch):
+    async def feed(client):
+        await client.handlers[1](FakeWatchedEvent("beware <b> & such"))
+
+    http, _ = _run_relay(monkeypatch, feed)
+
+    assert _where(http, "some_trader") == ["-1009999"]
+
+
+def test_the_trading_stays_in_the_main_chat(config, split, monkeypatch):
+    """The whole point: what is left there is the account, not the noise."""
+
+    async def nothing(client):
+        return None
+
+    http, _ = _run_relay(monkeypatch, nothing)
+
+    # The lifecycle notices are the relay talking about itself, not an alert.
+    assert _where(http, "bybit-tv-sizer") == ["777", "777"]
+
+
+def test_without_a_channel_everything_stays_where_it_was(config, monkeypatch):
+    async def feed(client):
+        await client.handlers[0](FakeWatchedEvent(ALERT))
+
+    http, _ = _run_relay(monkeypatch, feed)
+
+    assert _where(http, "OP 📈 0.10277") == ["777"]
+
+
+def test_a_channel_that_refuses_does_not_swallow_the_message(config, split, monkeypatch):
+    """A mistyped id must not be able to silence the error channel."""
+    tried: list[object] = []
+
+    class Picky(FakeHTTP):
+        async def post(self, url, json=None, data=None, files=None, timeout=None):
+            if json is not None and "text" in json:
+                tried.append(json.get("chat_id"))
+                if json.get("chat_id") == "-1009999":
+                    return FakeResponse(payload={"ok": False, "description": "chat not found"})
+            return await super().post(url, json=json, data=data, files=files, timeout=timeout)
+
+    http = Picky()
+    monkeypatch.setattr(relay.httpx, "AsyncClient", lambda *a, **k: http)
+    assert asyncio.run(relay.send_noise(http, "⛔️ something broke")) is True
+
+    # Asked the channel first, then the chat that is certainly watched.
+    assert tried == ["-1009999", "777"]
