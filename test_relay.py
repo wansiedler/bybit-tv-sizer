@@ -1266,3 +1266,57 @@ def test_a_channel_that_refuses_does_not_swallow_the_message(config, split, monk
 
     # Asked the channel first, then the chat that is certainly watched.
     assert tried == ["-1009999", "777"]
+
+
+# --- the dead hand, from the relay's side ---------------------------------
+
+
+def test_the_down_notice_carries_what_was_left_unattended(config, monkeypatch):
+    async def parting(http):
+        return "🤚 стоп на выходе: BTC 80288.8"
+
+    monkeypatch.setattr(relay.bybit_watch, "dead_hand", parting)
+
+    async def nothing(client):
+        return None
+
+    http, _ = _run_relay(monkeypatch, nothing)
+
+    down = [t for t in http.posted if str(t).startswith("🔴")][0]
+    assert "🤚 стоп на выходе: BTC 80288.8" in down
+
+
+def test_a_dead_hand_that_hangs_does_not_hold_the_shutdown(config, monkeypatch, caplog):
+    """The stop grace is 30s; a hung exchange must not turn it into a kill."""
+
+    async def forever(http):
+        await asyncio.sleep(60)
+        return "never"
+
+    monkeypatch.setattr(relay, "DEAD_HAND_SEC", 0.05)
+    monkeypatch.setattr(relay.bybit_watch, "dead_hand", forever)
+
+    async def nothing(client):
+        return None
+
+    with caplog.at_level("ERROR", logger="relay"):
+        http, _ = _run_relay(monkeypatch, nothing)
+
+    down = [t for t in http.posted if str(t).startswith("🔴")][0]
+    assert "не успел проверить стопы" in down
+    assert "ran out of time" in caplog.text
+
+
+def test_a_dead_hand_that_throws_still_lets_the_relay_stop(config, monkeypatch):
+    async def boom(http):
+        raise OSError("exchange down")
+
+    monkeypatch.setattr(relay.bybit_watch, "dead_hand", boom)
+
+    async def nothing(client):
+        return None
+
+    http, _ = _run_relay(monkeypatch, nothing)
+
+    down = [t for t in http.posted if str(t).startswith("🔴")][0]
+    assert "не смог проверить стопы" in down

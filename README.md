@@ -82,6 +82,34 @@ When no such stop exists — the position is large enough that the fees
 alone spend the budget, or the market has already run past where the stop
 would sit — the budget is gone, and the guard closes as it always did.
 
+## The dead hand
+
+The guard is software: it dies with the relay. A stop sitting on the
+position belongs to the exchange and outlives it. So before stopping, the
+relay gives every bare position a `GUARD_STOP_PCT` stop and says what it
+found:
+
+```text
+🔴 bybit-tv-sizer down — SIGTERM, uptime 6h22m
+🤚 стоп на выходе: BTC 80288.8
+✅ уже со стопом: HYPE 77.16
+⏳ висит без присмотра: XAU @ 4128.96
+```
+
+A stop you set yourself is never moved, and resting entry orders are
+reported but never cancelled — they are instructions you gave, and
+withdrawing them on the way out would be a decision of its own.
+
+It is bounded by `DEAD_HAND_SEC`: a hung exchange must not turn a
+shutdown into a kill. Whatever it could not do is shouted about rather
+than swallowed, because silence here is the original failure repeating.
+
+On 21.10.2026 the relay was stopped at 20:14. At 20:17 a 241,002$
+position opened with no stop at all, and nineteen hours later it was
+closed by hand for 9,800$ — twelve times the budget the guard would have
+given it. Nothing was broken that day. The protection had been switched
+off, and the position was opened into the gap.
+
 ## Auto-trim: a market entry is cut back to the target risk
 
 The sizer shapes limit orders before they fill. But sometimes the entry is

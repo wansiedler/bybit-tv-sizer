@@ -432,6 +432,25 @@ def _register_listeners(client, http: httpx.AsyncClient, stats: commands.Stats) 
         await _relay_watched(http, stats, event)
 
 
+# How long the dead hand may take. The container's stop grace is 30s and
+# the notice still has to go out after it.
+DEAD_HAND_SEC = float(os.getenv("DEAD_HAND_SEC", "12"))
+
+
+async def _dead_hand(http: httpx.AsyncClient) -> str:
+    """What to add to the down notice about what was left unattended."""
+    try:
+        said = await asyncio.wait_for(bybit_watch.dead_hand(http), DEAD_HAND_SEC)
+    except TimeoutError:
+        log.error("the dead hand ran out of time")
+        said = "🤚 не успел проверить стопы на выходе — проверьте вручную"
+    # Deliberately broad: nothing here is worth failing the shutdown over.
+    except Exception:  # noqa: BLE001
+        log.exception("the dead hand failed")
+        said = "🤚 не смог проверить стопы на выходе — проверьте вручную"
+    return f"\n{said}" if said else ""
+
+
 def _links_pair() -> tuple[str, str]:
     """(full links for /links, masked links for the up notice).
 
@@ -608,9 +627,16 @@ async def run() -> None:
             await asyncio.gather(*pending, *done, return_exceptions=True)
 
             uptime = human(time.time() - started)
+            # The guard dies with this process; a stop on the position does
+            # not. Before saying goodbye, leave one on anything bare —
+            # bounded, because the stop grace is 30s and a hung exchange
+            # must not turn a shutdown into a kill.
+            parting = await _dead_hand(http)
             # Telegram first: it is quick, while a dead speaker can eat its
             # timeouts out of the 30s stop grace period.
-            await notify(http, f"🔴 {RELAY_NAME} down — {shutdown.reason}, uptime {uptime}")
+            await notify(
+                http, f"🔴 {RELAY_NAME} down — {shutdown.reason}, uptime {uptime}{parting}"
+            )
             if audio is not None:
                 await speaker.lifecycle("Relay down")
 

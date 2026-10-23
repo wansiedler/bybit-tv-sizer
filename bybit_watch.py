@@ -1155,6 +1155,22 @@ async def _cancel_naked(http: httpx.AsyncClient, naked: dict[str, dict], send, s
             await send(f"❌ {base_symbol(symbol)}: could not cancel the limit order ({exc})")
 
 
+async def _place_stop(
+    http: httpx.AsyncClient, symbol: str, position: Position, stop: float
+) -> None:
+    """Put `stop` on the position, where the exchange will honour it."""
+    await _post(
+        http,
+        "/v5/position/trading-stop",
+        {
+            "category": "linear",
+            "symbol": symbol,
+            "stopLoss": f"{stop:g}",
+            "positionIdx": position.position_idx,
+        },
+    )
+
+
 async def _auto_stop(http: httpx.AsyncClient, symbol: str, position: Position, send) -> bool:
     """Give a stopless position the budget stop. True when one is now on it.
 
@@ -1181,16 +1197,7 @@ async def _auto_stop(http: httpx.AsyncClient, symbol: str, position: Position, s
         )
         if stop is None:
             return False
-        await _post(
-            http,
-            "/v5/position/trading-stop",
-            {
-                "category": "linear",
-                "symbol": symbol,
-                "stopLoss": f"{stop:g}",
-                "positionIdx": position.position_idx,
-            },
-        )
+        await _place_stop(http, symbol, position, stop)
     # Deliberately broad: a refused stop is not a reason to leave the
     # position standing, and the caller's close is the fallback.
     except Exception:  # noqa: BLE001
@@ -1202,6 +1209,101 @@ async def _auto_stop(http: httpx.AsyncClient, symbol: str, position: Position, s
         f"({_usd(-risk)}, {GUARD_STOP_PCT * 100:g}% of the deposit)"
     )
     return True
+
+
+async def dead_hand(http: httpx.AsyncClient) -> str:
+    """Leave every open position a stop the exchange will honour. Never raises.
+
+    The risk guard is software and dies with the relay; a stop sitting on
+    the position belongs to Bybit and outlives it. On 21.10.2026 the relay
+    was stopped at 20:14, a 241,002$ position opened at 20:17 with no stop
+    at all, and nineteen hours later it was closed by hand for 9,800$ —
+    twelve times the budget the guard would have given it. Nothing was
+    broken that day: the protection had simply been switched off, and the
+    position was opened into the gap.
+
+    A position that already carries a stop is left exactly as it is, the
+    same promise the guard makes while it is running. Resting entry orders
+    are reported but never cancelled: they are instructions the owner gave,
+    and withdrawing them on the way out would be a decision of its own.
+
+    Returns the line for the shutdown notice, "" when there is nothing to
+    say. Every failure is reported rather than raised — a relay that cannot
+    stop because the exchange is down is worse than one that stops loudly.
+    """
+    if not enabled() or GUARD_STOP_PCT <= 0:
+        return ""
+    try:
+        open_now = await positions(http)
+        resting = await _entry_orders(http)
+    # Deliberately broad: shutting down must not fail on a flaky listing,
+    # and the one thing worse than no answer is no shutdown.
+    except Exception:  # noqa: BLE001
+        log.exception("dead hand could not read the account")
+        return "🤚 не смог проверить позиции на выходе — проверьте стопы вручную"
+    if not open_now and not resting:
+        return ""
+    covered, placed, failed = [], [], []
+    depo = await equity(http)
+    for symbol, position in sorted(open_now.items()):
+        name = base_symbol(symbol)
+        if position.stop_loss is not None:
+            covered.append(f"{name} {position.stop_loss:g}")
+            continue
+        stop = await _dying_stop(http, symbol, position, depo)
+        if stop is None:
+            failed.append(name)
+        else:
+            placed.append(f"{name} {stop:g}")
+    lines = []
+    if placed:
+        lines.append(f"🤚 стоп на выходе: {', '.join(placed)}")
+    if covered:
+        lines.append(f"✅ уже со стопом: {', '.join(covered)}")
+    if failed:
+        lines.append(f"‼️ БЕЗ СТОПА: {', '.join(failed)} — закройте или выставьте руками")
+    if resting:
+        lines.append(f"⏳ висит без присмотра: {', '.join(sorted(resting))}")
+    return "\n".join(lines)
+
+
+async def _dying_stop(
+    http: httpx.AsyncClient, symbol: str, position: Position, depo: float | None
+) -> float | None:
+    """The stop the dead hand manages to place, or None. Never raises."""
+    try:
+        if not depo:
+            return None
+        _, tick = await ladder_filters(http, symbol)
+        stop = auto_stop_price(
+            position.side,
+            position.price,
+            position.size,
+            depo,
+            mark_price(position),
+            await entry_fee_per_unit(http, symbol, position),
+            tick,
+        )
+        if stop is None:
+            return None
+        await _place_stop(http, symbol, position, stop)
+    # Deliberately broad: one refused stop must not cost the other
+    # positions theirs, and the notice names whatever was left bare.
+    except Exception:  # noqa: BLE001
+        log.exception("dead hand could not stop %s", symbol)
+        return None
+    return stop
+
+
+async def _entry_orders(http: httpx.AsyncClient) -> list[str]:
+    """Resting orders that would open or add to a position, as "SYM @ price"."""
+    result = await _get(http, _ORDERS, {"category": "linear", "settleCoin": "USDT"})
+    out = []
+    for row in result.get("list") or []:
+        if row.get("reduceOnly") or row.get("stopOrderType") or row.get("closeOnTrigger"):
+            continue
+        out.append(f"{base_symbol(row['symbol'])} @ {row.get('price') or 'market'}")
+    return out
 
 
 async def _enforce_rules(
