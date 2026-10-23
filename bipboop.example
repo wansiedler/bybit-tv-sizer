@@ -98,6 +98,12 @@ GUARD_GRACE_SEC=45
 # and cuts the size down to it. This one keeps the size you took and places
 # the stop that fits. A position with no stop has nothing to trim against.
 GUARD_STOP_PCT=1
+# Seconds the dead hand may take on the way out. Before the relay stops it
+# gives every bare position a stop, because the guard is software and dies
+# with the process while a stop on the position belongs to the exchange.
+# The container's stop grace is 30s and the goodbye notice still has to go
+# out after this, so keep it well under.
+DEAD_HAND_SEC=12
 
 # Auto-size the limit orders you draw on the TradingView chart so the
 # entry-to-stop distance always risks RISK_PCT of equity (ported from

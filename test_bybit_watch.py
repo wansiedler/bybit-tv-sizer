@@ -619,6 +619,125 @@ def test_the_auto_stop_needs_a_deposit_to_measure_against(guarding):
     assert asyncio.run(bybit_watch._auto_stop(http, "CLUSDT", NAKED, out.send)) is False
 
 
+# --- the dead hand ---------------------------------------------------------
+#
+# 21.10.2026: the relay stopped at 20:14, a 241,002$ position opened at
+# 20:17 with no stop, and nineteen hours later it cost 9,800$ — twelve
+# times the budget the guard would have given it. Nothing was broken; the
+# protection had been switched off and the position opened into the gap.
+
+
+def test_the_dead_hand_leaves_a_stop_behind(keyed, monkeypatch):
+    http = _budget_http()
+    http.position_pages = [[row()]]
+
+    said = asyncio.run(bybit_watch.dead_hand(http))
+
+    placed = [o for o in http.orders if "stopLoss" in o]
+    assert len(placed) == 1
+    stop = float(placed[0]["stopLoss"])
+    assert stop < float(row()["avgPrice"])
+    assert "🤚 стоп на выходе" in said and "FARTCOIN" in said
+
+
+def test_the_dead_hand_never_moves_a_stop_you_set(keyed):
+    """The same promise the guard makes while it is running."""
+    http = _budget_http()
+    http.position_pages = [[row(sl="0.15")]]
+
+    said = asyncio.run(bybit_watch.dead_hand(http))
+
+    assert not [o for o in http.orders if "stopLoss" in o]
+    assert "уже со стопом: FARTCOIN 0.15" in said
+
+
+def test_the_dead_hand_shouts_about_what_it_could_not_stop(keyed, monkeypatch):
+    """Silence here is the whole failure being repeated."""
+    http = _budget_http()
+    http.position_pages = [[row()]]
+    monkeypatch.setattr(bybit_watch, "auto_stop_price", lambda *a, **k: None)
+
+    said = asyncio.run(bybit_watch.dead_hand(http))
+
+    assert "‼️ БЕЗ СТОПА: FARTCOIN" in said
+
+
+def test_the_dead_hand_without_a_deposit_admits_it(keyed):
+    """No deposit, no budget, no honest stop — so say so rather than guess."""
+    http = ClosingHTTP()  # no equity rows at all
+    http.position_pages = [[row()]]
+
+    said = asyncio.run(bybit_watch.dead_hand(http))
+
+    assert "‼️ БЕЗ СТОПА: FARTCOIN" in said
+    assert not [o for o in http.orders if "stopLoss" in o]
+
+
+def test_a_refused_stop_does_not_cost_the_others_theirs(keyed, caplog):
+    """One symbol failing must not end the loop over the rest."""
+
+    class Picky(ClosingHTTP):
+        async def post(self, url, content=None, headers=None, timeout=None):
+            import json as _json
+
+            if "trading-stop" in url and "FARTCOIN" in _json.loads(content)["symbol"]:
+                raise OSError("stop rejected")
+            return await super().post(url, content=content, headers=headers, timeout=timeout)
+
+    http = Picky()
+    http.equity_rows = [{"totalEquity": "10000"}]
+    http.position_pages = [[row(), row(symbol="SOLUSDT")]]
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        said = asyncio.run(bybit_watch.dead_hand(http))
+
+    assert "‼️ БЕЗ СТОПА: FARTCOIN" in said
+    assert "стоп на выходе: SOL" in said  # the other one still got one
+    assert "could not stop FARTCOINUSDT" in caplog.text
+
+
+def test_an_exit_order_is_not_something_left_unattended(keyed):
+    """A reduce-only or conditional order is the exit, not a pending entry."""
+    http = _budget_http()
+    http.position_pages = [[]]
+    http.order_rows = [
+        {"symbol": "XAUUSDT", "price": "4128.96", "reduceOnly": True},
+        {"symbol": "BTCUSDT", "price": "80000", "stopOrderType": "StopLoss"},
+    ]
+
+    assert asyncio.run(bybit_watch.dead_hand(http)) == ""
+
+
+def test_the_dead_hand_names_what_is_left_resting(keyed):
+    """An entry limit fills while nobody is watching; it did, on 21.10."""
+    http = _budget_http()
+    http.position_pages = [[]]
+    http.order_rows = [{"symbol": "XAUUSDT", "price": "4128.96", "qty": "19.301"}]
+
+    said = asyncio.run(bybit_watch.dead_hand(http))
+
+    assert "⏳ висит без присмотра: XAU @ 4128.96" in said
+
+
+def test_the_dead_hand_says_nothing_on_an_empty_account(keyed):
+    http = _budget_http()
+    http.position_pages = [[]]
+
+    assert asyncio.run(bybit_watch.dead_hand(http)) == ""
+
+
+def test_the_dead_hand_survives_an_exchange_that_will_not_answer(keyed, caplog):
+    class Mute(ClosingHTTP):
+        async def get(self, url, headers=None, timeout=None):
+            raise OSError("no answer")
+
+    with caplog.at_level("ERROR", logger="relay.bybit"):
+        said = asyncio.run(bybit_watch.dead_hand(Mute()))
+
+    assert "проверьте стопы вручную" in said
+    assert "could not read the account" in caplog.text
+
+
 def test_guard_sets_the_stop_instead_of_closing(guarding, monkeypatch):
     http, out = _budget_http(), Recorder()
     monkeypatch.setattr(bybit_watch, "GUARD_GRACE", 0.0)
