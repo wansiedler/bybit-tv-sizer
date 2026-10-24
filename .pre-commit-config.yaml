@@ -57,7 +57,7 @@ repos:
         exclude: ^\.env\.example$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.7
+    rev: v0.17.1
     hooks:
       - id: ruff
         args: [--fix]
