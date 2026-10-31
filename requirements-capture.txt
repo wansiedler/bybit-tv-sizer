@@ -9,5 +9,5 @@
 # the Mac, through its DevTools port, so there is no bundled browser to
 # download. That is also what makes the logged-in TradingView session
 # possible — it lives in a real Chrome profile, not a throwaway one.
-playwright>=1.56.0
+playwright>=1.64.1
 python-dotenv>=1.2.3
