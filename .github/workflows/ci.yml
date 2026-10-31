@@ -43,7 +43,7 @@ jobs:
           fetch-depth: 0   # the diff gate needs the merge-base with the base ref
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97   # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0   # v7
         with:
           python-version: "3.13"
           cache: pip
@@ -348,7 +348,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97   # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0   # v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -683,7 +683,7 @@ jobs:
       #   gh variable set ENABLE_CODE_SCANNING --body true
       # The trivy-report artifact above carries the same SARIF either way.
       - name: Upload SARIF to GitHub Security
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee   # v4
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370   # v4
         if: ${{ always() && !env.ACT && vars.ENABLE_CODE_SCANNING == 'true' }}
         continue-on-error: true
         with:
@@ -841,7 +841,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97   # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0   # v7
         with:
           python-version: "3.13"
           cache: pip
@@ -979,7 +979,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97   # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0   # v7
         with:
           python-version: "3.13"
           cache: pip
@@ -1204,7 +1204,7 @@ jobs:
           fetch-depth: 0   # Sonar attributes findings to commits; shallow blinds it
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97   # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0   # v7
         if: ${{ env.SONAR_TOKEN != '' }}
         with:
           python-version: "3.13"
