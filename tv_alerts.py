@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from dotenv import load_dotenv
@@ -37,6 +38,11 @@ TV_PORT = int(os.getenv("TV_PORT", "8423"))
 JOURNAL_URL = os.getenv("JOURNAL_URL", "")
 # The public origin the tunnel exposes this webhook on, for the up notice.
 TV_PUBLIC_URL = os.getenv("TV_PUBLIC_URL", "")
+# The same alert text again within this many seconds is the same alert.
+# TradingView sent "Тень Binance спот вылезла за Bybit" twice forty seconds
+# apart on 02.11.2026, and both arrived in the chat stamped 13:02, looking
+# for all the world like the bot had hiccuped. 0 passes everything through.
+TV_REPEAT_SEC = float(os.getenv("TV_REPEAT_SEC", "60"))
 # TradingView alert messages are short; anything huge is not an alert.
 MAX_BODY = 4096
 
@@ -144,15 +150,54 @@ def format_alert(text: str, came_from: float | None = None) -> tuple[str, str]:
     return f"{symbol}{middle}{level}, TV", spoken
 
 
+def _already_said(said_at: dict[str, float], text: str, now: float) -> bool:
+    """Whether this exact text was already announced inside the window.
+
+    Exact, deliberately: "USDT.D Crossing 6.708%" and "6.730%" are two
+    different things happening, and only a character-for-character repeat
+    is the same alert arriving twice.
+
+    A pure question. Remembering is _mark_said's job and happens only once
+    the alert has actually gone out — marking first would mean a failed
+    send suppresses the retry, which is precisely the delivery this exists
+    to collapse.
+    """
+    if TV_REPEAT_SEC <= 0 or not text:
+        return False
+    before = said_at.get(text)
+    return before is not None and now - before < TV_REPEAT_SEC
+
+
+def _mark_said(said_at: dict[str, float], text: str, now: float) -> None:
+    """Remember an alert that reached the chat, so its echo does not."""
+    if TV_REPEAT_SEC <= 0 or not text:
+        return
+    # Texts older than the window can never suppress anything again, and a
+    # relay that runs for weeks should not remember every alert it ever saw.
+    if len(said_at) > 256:
+        stale = [k for k, v in said_at.items() if now - v >= TV_REPEAT_SEC]
+        for key in stale:
+            del said_at[key]
+    said_at[text] = now
+
+
 async def pump(queue: asyncio.Queue, send, speak, price_of=None) -> None:
     """Announce queued alerts until cancelled. One bad alert never ends it.
 
     `price_of` (async, bare ticker -> float | None) supplies the pre-cross
     price that orients the arrow when the alert itself names no direction.
     """
+    # The last text announced and when, so a repeat can be recognised. Kept
+    # here rather than in a module global: it is this pump's memory, and a
+    # restart should start deaf to whatever came before it.
+    said_at: dict[str, float] = {}
     while True:
         text = await queue.get()
         try:
+            seen = text.strip()
+            if _already_said(said_at, seen, time.monotonic()):
+                log.info("same alert within %gs, not repeating: %.60s", TV_REPEAT_SEC, text)
+                continue
             price = None
             match = _CROSSING.match(text.strip())
             if price_of is not None and match is not None and not match["dir"]:
@@ -163,6 +208,9 @@ async def pump(queue: asyncio.Queue, send, speak, price_of=None) -> None:
                     log.exception("price lookup failed")
             line, spoken = format_alert(text, price)
             await send(line)
+            # Only now: an alert that never reached the chat must not
+            # silence the retry that would have carried it there.
+            _mark_said(said_at, seen, time.monotonic())
             await speak(spoken)
         except asyncio.CancelledError:
             raise
