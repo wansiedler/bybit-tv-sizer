@@ -188,6 +188,12 @@ TITHE_PCT=10
 # the path is the only auth — make it long and random. Empty disables.
 TV_WEBHOOK_SECRET=
 TV_PORT=8423
+# The same alert text again within this many seconds is the same alert, not
+# news. TradingView sent one twice forty seconds apart on 02.11.2026 and
+# both landed in the chat stamped the same minute, looking like a bot
+# hiccup. Exact text only: "Crossing 6.708%" and "6.730%" are two things
+# happening. 0 passes everything through.
+TV_REPEAT_SEC=60
 # Host interface docker-compose publishes TV_PORT on. 127.0.0.1 suits a
 # tunnel running on the same machine (cloudflared); a router port-forward
 # needs 0.0.0.0.

@@ -265,3 +265,85 @@ def test_pump_survives_a_failing_price_lookup(caplog):
 
     assert out.sent == ["ETH 2,440.85, TV"]  # no arrow, alert still delivered
     assert "price lookup failed" in caplog.text
+
+
+# --- the same alert twice ---------------------------------------------------
+#
+# 02.11.2026: TradingView sent "Тень Binance спот вылезла за Bybit" twice,
+# forty seconds apart. Both landed in the chat stamped 13:02 and looked for
+# all the world like the bot had hiccuped.
+
+
+def test_the_same_alert_twice_is_announced_once(caplog):
+    out = Recorder()
+
+    with caplog.at_level("INFO", logger="relay.tv"):
+        drive(["Тень Binance спот вылезла за Bybit"] * 2, out)
+
+    assert out.sent == ["🔔 TV: Тень Binance спот вылезла за Bybit"]
+    assert out.spoken == ["Тень Binance спот вылезла за Bybit"]
+    assert "not repeating" in caplog.text
+
+
+def test_two_different_alerts_both_get_through():
+    """Crossing 6.708% and 6.730% are two things happening, not one twice."""
+    out = Recorder()
+
+    drive(["USDT.D Crossing 6.708%", "USDT.D Crossing 6.730%"], out)
+
+    assert len(out.sent) == 2
+
+
+def test_the_window_can_be_switched_off(monkeypatch):
+    monkeypatch.setattr(tv_alerts, "TV_REPEAT_SEC", 0.0)
+    out = Recorder()
+
+    drive(["CL broke 92"] * 3, out)
+
+    assert len(out.sent) == 3
+
+
+def test_a_repeat_after_the_window_is_news_again():
+    said: dict[str, float] = {}
+
+    assert tv_alerts._already_said(said, "same", 0.0) is False
+    tv_alerts._mark_said(said, "same", 0.0)
+    assert tv_alerts._already_said(said, "same", 10.0) is True
+    # TV_REPEAT_SEC later, the alert is a new event rather than an echo.
+    assert tv_alerts._already_said(said, "same", tv_alerts.TV_REPEAT_SEC + 1) is False
+
+
+def test_the_memory_does_not_grow_without_end():
+    """A relay runs for weeks; it must not remember every alert it saw."""
+    said = {f"alert {n}": 0.0 for n in range(300)}
+
+    tv_alerts._mark_said(said, "one more", tv_alerts.TV_REPEAT_SEC + 1)
+
+    assert len(said) == 1  # the stale ones went, the new one stayed
+
+
+def test_an_alert_that_never_reached_the_chat_is_not_suppressed():
+    """A failed send must not silence the retry that would have carried it.
+
+    Found by review: marking before delivery meant the one delivery this
+    whole thing exists to collapse — TradingView repeating itself — was
+    also the one it would swallow after a failure.
+    """
+
+    class Breaking(Recorder):
+        def __init__(self):
+            super().__init__()
+            self.tries = 0
+
+        async def send(self, text):
+            self.tries += 1
+            if self.tries == 1:
+                raise OSError("telegram refused")
+            self.sent.append(text)
+
+    out = Breaking()
+
+    drive(["CL broke 92"] * 2, out)
+
+    assert out.tries == 2  # the second attempt was made, not skipped
+    assert out.sent == ["🔔 TV: CL broke 92"]  # and it arrived
