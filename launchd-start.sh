@@ -22,8 +22,45 @@ if [[ -f "$VZ_PIDFILE" ]]; then
     fi
 fi
 
+# Where docker actually is, asked rather than assumed. /usr/local/bin/docker
+# is Docker Desktop's symlink and it outlives the app: uninstalling leaves it
+# dangling, and on 02.11.2026 it had been pointing at nothing for days. The
+# relay was still up from before, so the only sign would have been silence
+# after the next reboot.
+docker=""
+for candidate in \
+    /usr/local/bin/docker \
+    /opt/homebrew/bin/docker \
+    /opt/homebrew/opt/docker/bin/docker \
+    /usr/bin/docker
+do
+    if [[ -x "$candidate" ]] && "$candidate" version >/dev/null 2>&1; then
+        docker="$candidate"
+        break
+    fi
+done
+if [[ -z "$docker" ]]; then
+    echo "no working docker cli found — the relay cannot start" >&2
+    exit 1
+fi
+echo "docker: $docker"
+
+# Compose is a plugin in some builds and a separate binary in others; the
+# homebrew docker has no plugin at all.
+if "$docker" compose version >/dev/null 2>&1; then
+    compose=("$docker" compose)
+elif command -v docker-compose >/dev/null 2>&1; then
+    compose=("$(command -v docker-compose)")
+elif [[ -x /opt/homebrew/bin/docker-compose ]]; then
+    compose=(/opt/homebrew/bin/docker-compose)
+else
+    echo "docker is there but compose is not — the relay cannot start" >&2
+    exit 1
+fi
+echo "compose: ${compose[*]}"
+
 for _ in $(seq 1 60); do
-    /usr/local/bin/docker info >/dev/null 2>&1 && break
+    "$docker" info >/dev/null 2>&1 && break
     sleep 5
 done
 
@@ -34,4 +71,4 @@ done
 # it. Starting the bot now means starting both.
 launchctl kickstart -k "gui/$(id -u)/com.bybit.tv-capture" 2>/dev/null || true
 
-exec /usr/local/bin/docker compose up -d
+exec "${compose[@]}" up -d

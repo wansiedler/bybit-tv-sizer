@@ -192,10 +192,38 @@ def test_starting_the_bot_restarts_the_capture_service():
     kick = next(
         (n for n, line in enumerate(code) if "kickstart" in line and "tv-capture" in line), None
     )
-    compose = next(n for n, line in enumerate(code) if "docker compose up" in line)
+    # However compose is spelled — plugin, standalone, resolved at runtime —
+    # the line that brings the relay up is the one ending in "up -d".
+    compose = next(n for n, line in enumerate(code) if line.rstrip().endswith("up -d"))
 
     assert kick is not None, "launchd-start.sh starts the bot, not the capture"
     # Failing to kick it must not stop the bot from coming up.
     assert code[kick].rstrip().endswith("|| true")
     # And it must happen before the bot, not after it or never.
     assert kick < compose
+
+
+def test_the_startup_script_asks_where_docker_is():
+    """02.11.2026: /usr/local/bin/docker was a symlink to a deleted app.
+
+    Docker Desktop's symlink outlives the app. The relay was still up from
+    before, so the only sign would have been silence after the next reboot.
+    """
+    script = (REPO / "launchd-start.sh").read_text()
+
+    assert "/usr/local/bin/docker compose" not in script, "compose is hardcoded again"
+    # Still a candidate — Docker Desktop may come back — but only one of
+    # several, and only when it answers.
+    assert "/opt/homebrew/opt/docker/bin/docker" in script
+    assert "version >/dev/null 2>&1" in script, "a candidate is taken on trust"
+    # And it refuses to run rather than exec a path that is not there.
+    assert "the relay cannot start" in script
+
+
+def test_the_startup_script_finds_compose_either_way():
+    """A plugin in some builds, a separate binary in others, neither here."""
+    script = (REPO / "launchd-start.sh").read_text()
+
+    assert '"$docker" compose version' in script  # the plugin
+    assert "docker-compose" in script  # the standalone
+    assert 'exec "${compose[@]}" up -d' in script
