@@ -203,15 +203,41 @@ def test_pump_lets_cancellation_through():
 @pytest.mark.parametrize(
     ("text", "price", "line", "spoken"),
     [
-        ("ETHUSDT.P Crossing 2,440.85", 2500.0, "ETH 📉 2,440.85, TV", "Ethereum down, 2440, TV"),
-        ("ETHUSDT.P Crossing 2,440.85", 2400.0, "ETH 📈 2,440.85, TV", "Ethereum up, 2440, TV"),
-        ("ETHUSDT.P Crossing 2,440.85", None, "ETH 2,440.85, TV", "Ethereum, 2440, TV"),
-        ("BTCUSDT Crossing Up 76,893.7", None, "BTC 📈 76,893.7, TV", "Bitcoin up, 76900, TV"),
-        ("op Crossing down 0.1027", None, "OP 📉 0.1027, TV", "Optimism down, 0.103, TV"),
+        ("ETHUSDT.P Crossing 2,440.85", 2500.0, "ETH 📉 2,440", "Ethereum down, 2440"),
+        ("ETHUSDT.P Crossing 2,440.85", 2400.0, "ETH 📈 2,440", "Ethereum up, 2440"),
+        ("ETHUSDT.P Crossing 2,440.85", None, "ETH 2,440", "Ethereum, 2440"),
+        ("BTCUSDT Crossing Up 76,893.7", None, "BTC 📈 76,893", "Bitcoin up, 76900"),
+        ("op Crossing down 0.1027", None, "OP 📉 0.1027", "Optimism down, 0.103"),
     ],
 )
 def test_format_alert_compacts_crossings(text, price, line, spoken):
     assert tv_alerts.format_alert(text, price) == (line, spoken)
+
+
+# --- cents on a four-figure price ------------------------------------------
+#
+# 04.11.2026: "BTC 📈 78,787.0" — a tenth of a dollar on seventy-eight
+# thousand, two characters that say nothing and crowd the number that does.
+
+
+@pytest.mark.parametrize(
+    ("level", "shown"),
+    [
+        ("78,787.90", "78,787"),  # cents on BTC: gone
+        ("78,787.0", "78,787"),
+        ("1,000.5", "1,000"),  # exactly at the threshold
+        ("999.99", "999.99"),  # just below it: every digit kept
+        ("0.1027", "0.1027"),  # a cheap coin is all fraction
+        ("78,787", "78,787"),  # nothing to drop
+    ],
+)
+def test_a_big_price_loses_its_fraction(level, shown):
+    assert tv_alerts._whole(level) == shown
+
+
+def test_a_level_that_is_not_a_number_is_left_alone():
+    """The regex admits a lone comma; it must not become an int()."""
+    assert tv_alerts._whole(",.5") == ",.5"
 
 
 def test_format_alert_passes_unknown_shapes_through():
@@ -241,8 +267,8 @@ def test_pump_orients_the_arrow_by_market_price():
     asked, out = asyncio.run(run())
 
     assert asked == ["ETH"]
-    assert out.sent == ["ETH 📉 2,440.85, TV"]
-    assert out.spoken == ["Ethereum down, 2440, TV"]
+    assert out.sent == ["ETH 📉 2,440"]
+    assert out.spoken == ["Ethereum down, 2440"]
 
 
 def test_pump_survives_a_failing_price_lookup(caplog):
@@ -263,7 +289,7 @@ def test_pump_survives_a_failing_price_lookup(caplog):
     with caplog.at_level("ERROR", logger="relay.tv"):
         out = asyncio.run(run())
 
-    assert out.sent == ["ETH 2,440.85, TV"]  # no arrow, alert still delivered
+    assert out.sent == ["ETH 2,440"]  # no arrow, alert still delivered
     assert "price lookup failed" in caplog.text
 
 

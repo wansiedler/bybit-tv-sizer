@@ -45,6 +45,9 @@ TV_PUBLIC_URL = os.getenv("TV_PUBLIC_URL", "")
 TV_REPEAT_SEC = float(os.getenv("TV_REPEAT_SEC", "60"))
 # TradingView alert messages are short; anything huge is not an alert.
 MAX_BODY = 4096
+# At and above this the fraction of a price is noise, and the line reads
+# better without it. Below it every digit is kept.
+WHOLE_ABOVE = 1000
 
 
 def enabled() -> bool:
@@ -120,11 +123,26 @@ _CROSSING = re.compile(
 )
 
 
+def _whole(level: str) -> str:
+    """The level without its fraction, once the fraction stops being news.
+
+    BTC crossing "78,787.90" is BTC crossing 78,787: ninety cents on eighty
+    thousand is a thousandth of a percent, and the two digits only cost the
+    eye. Cheap coins keep every digit they came with — 0.1027 without its
+    fraction is 0.
+    """
+    whole, _, fraction = level.partition(".")
+    if not fraction:
+        return level
+    digits = whole.replace(",", "")
+    return whole if digits.isdigit() and int(digits) >= WHOLE_ABOVE else level
+
+
 def format_alert(text: str, came_from: float | None = None) -> tuple[str, str]:
     """The (sent, spoken) pair for one alert.
 
     A TradingView crossing becomes the relay's own compact shape —
-    "ETH 📉 2,440.85, TV". The direction comes from the alert when it names
+    "ETH 📉 2,440.85". The direction comes from the alert when it names
     one, else from `came_from` — where the market was just before the cross:
     arriving from above means it crossed downward. With neither the arrow is
     dropped. Anything unrecognised passes through raw.
@@ -142,12 +160,10 @@ def format_alert(text: str, came_from: float | None = None) -> tuple[str, str]:
     middle = f" {arrow} " if arrow else " "
     spoken_dir = {"📈": "up", "📉": "down"}.get(arrow, "")
     # Read the same way channel alerts are: coin name and a price for the ear,
-    # "Ethereum down, 2440, TV" rather than "ETH down, 2,440.85, TV".
+    # "Ethereum down, 2440" rather than "ETH down, 2,440.85".
     name = COIN_NAMES.get(symbol, symbol)
-    spoken = (
-        f"{name}{f' {spoken_dir}' if spoken_dir else ''}, {rounded(level.replace(',', ''))}, TV"
-    )
-    return f"{symbol}{middle}{level}, TV", spoken
+    spoken = f"{name}{f' {spoken_dir}' if spoken_dir else ''}, {rounded(level.replace(',', ''))}"
+    return f"{symbol}{middle}{_whole(level)}", spoken
 
 
 def _already_said(said_at: dict[str, float], text: str, now: float) -> bool:
