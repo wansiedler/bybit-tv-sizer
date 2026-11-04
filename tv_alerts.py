@@ -115,12 +115,20 @@ def serve(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue) -> ThreadingHTT
     return httpd
 
 
-# "ETHUSDT.P Crossing 2,440.85" and friends, with an optional direction word.
+# "ETHUSDT.P Crossing 2,440.85" and friends, with an optional direction
+# word. The suffix is the kind of ticker: .P a perpetual, .D a dominance
+# ("USDT.D Crossing 6.651%"), which is a percentage rather than a price.
 _CROSSING = re.compile(
-    r"^(?P<symbol>[A-Z0-9]+?)(?:USDT)?(?:\.P)?\s+Crossing(?:\s+(?P<dir>Up|Down))?"
-    r"\s+(?P<level>[\d,]+(?:\.\d+)?)\s*$",
+    r"^(?P<symbol>[A-Z0-9]+?)(?:USDT)?(?:\.(?P<suffix>[PD]))?"
+    r"\s+Crossing(?:\s+(?P<dir>Up|Down))?"
+    r"\s+(?P<level>[\d,]+(?:\.\d+)?)(?P<percent>%)?\s*$",
     re.IGNORECASE,
 )
+
+
+def _is_dominance(match: re.Match[str]) -> bool:
+    """Whether the alert is about a dominance ticker rather than a price."""
+    return (match["suffix"] or "").upper() == "D"
 
 
 def _whole(level: str) -> str:
@@ -145,13 +153,16 @@ def format_alert(text: str, came_from: float | None = None) -> tuple[str, str]:
     "ETH 📉 2,440.85". The direction comes from the alert when it names
     one, else from `came_from` — where the market was just before the cross:
     arriving from above means it crossed downward. With neither the arrow is
-    dropped. Anything unrecognised passes through raw.
+    dropped. Anything unrecognised passes through as it came, unlabelled:
+    the alert is the one you wrote in TradingView, and a prefix naming
+    the source says nothing the text does not.
     """
     match = _CROSSING.match(text.strip())
     if match is None:
-        return f"🔔 TV: {text[:1000]}", text[:200]
+        return text[:1000], text[:200]
     symbol = match["symbol"].upper()
     level = match["level"]
+    percent = match["percent"] or ""
     arrow = ""
     if match["dir"]:
         arrow = "📈" if match["dir"].lower() == "up" else "📉"
@@ -162,8 +173,12 @@ def format_alert(text: str, came_from: float | None = None) -> tuple[str, str]:
     # Read the same way channel alerts are: coin name and a price for the ear,
     # "Ethereum down, 2440" rather than "ETH down, 2,440.85".
     name = COIN_NAMES.get(symbol, symbol)
+    shown = symbol
+    if _is_dominance(match):
+        name = f"{name} dominance"
+        shown = f"{symbol}.D"
     spoken = f"{name}{f' {spoken_dir}' if spoken_dir else ''}, {rounded(level.replace(',', ''))}"
-    return f"{symbol}{middle}{_whole(level)}", spoken
+    return f"{shown}{middle}{_whole(level)}{percent}", spoken
 
 
 def _already_said(said_at: dict[str, float], text: str, now: float) -> bool:
@@ -216,7 +231,14 @@ async def pump(queue: asyncio.Queue, send, speak, price_of=None) -> None:
                 continue
             price = None
             match = _CROSSING.match(text.strip())
-            if price_of is not None and match is not None and not match["dir"]:
+            # A dominance is not traded, so there is no price to arrive
+            # from; asking would log a failure for every such alert.
+            if (
+                price_of is not None
+                and match is not None
+                and not match["dir"]
+                and not _is_dominance(match)
+            ):
                 try:
                     price = await price_of(match["symbol"].upper())
                 # Deliberately broad: no price just means no arrow.

@@ -164,7 +164,7 @@ def test_pump_announces_and_speaks():
 
     drive(["CL broke 92"], out)
 
-    assert out.sent == ["🔔 TV: CL broke 92"]
+    assert out.sent == ["CL broke 92"]
     assert out.spoken == ["CL broke 92"]
 
 
@@ -175,7 +175,7 @@ def test_pump_survives_a_failing_send(caplog):
     with caplog.at_level("ERROR", logger="relay.tv"):
         drive(["first", "second"], out)
 
-    assert out.sent == ["🔔 TV: second"]  # the first failed, the loop lived
+    assert out.sent == ["second"]  # the first failed, the loop lived
     assert "could not announce" in caplog.text
 
 
@@ -240,10 +240,56 @@ def test_a_level_that_is_not_a_number_is_left_alone():
     assert tv_alerts._whole(",.5") == ",.5"
 
 
+# --- dominance -------------------------------------------------------------
+#
+# "USDT.D Crossing 6.651%" used to fall through raw: the regex knew .P but
+# not .D, and the trailing percent ended the level where it expected digits.
+
+
+@pytest.mark.parametrize(
+    ("text", "price", "line", "spoken"),
+    [
+        ("USDT.D Crossing 6.651%", None, "USDT.D 6.651%", "Tether dominance, 6.65"),
+        ("BTC.D Crossing Up 58.2%", None, "BTC.D 📈 58.2%", "Bitcoin dominance up, 58.2"),
+        # The percent is stripped before the level is read as a number.
+        ("USDT.D Crossing 6.651%", 7.0, "USDT.D 📉 6.651%", "Tether dominance down, 6.65"),
+        # A dominance quoted without its percent sign is still a dominance.
+        ("btc.d Crossing Down 58.2", None, "BTC.D 📉 58.2", "Bitcoin dominance down, 58.2"),
+    ],
+)
+def test_format_alert_reads_a_dominance(text, price, line, spoken):
+    assert tv_alerts.format_alert(text, price) == (line, spoken)
+
+
+def test_pump_does_not_ask_the_price_of_a_dominance():
+    """Nothing trades USDT.D, so the lookup could only fail — loudly."""
+
+    async def run():
+        queue: asyncio.Queue = asyncio.Queue()
+        out = Recorder()
+        asked = []
+
+        async def price_of(symbol):
+            asked.append(symbol)  # pragma: no cover - the point is it is not called
+            return 1.0
+
+        task = asyncio.create_task(tv_alerts.pump(queue, out.send, out.speak, price_of))
+        await queue.put("USDT.D Crossing 6.651%")
+        while not out.sent:
+            await asyncio.sleep(0)
+        task.cancel()
+        return asked, out
+
+    asked, out = asyncio.run(run())
+
+    assert asked == []
+    assert out.sent == ["USDT.D 6.651%"]
+
+
 def test_format_alert_passes_unknown_shapes_through():
     line, spoken = tv_alerts.format_alert("strategy fired on something")
 
-    assert line == "🔔 TV: strategy fired on something"
+    assert line == "strategy fired on something"
     assert spoken == "strategy fired on something"
 
 
@@ -306,7 +352,7 @@ def test_the_same_alert_twice_is_announced_once(caplog):
     with caplog.at_level("INFO", logger="relay.tv"):
         drive(["Тень Binance спот вылезла за Bybit"] * 2, out)
 
-    assert out.sent == ["🔔 TV: Тень Binance спот вылезла за Bybit"]
+    assert out.sent == ["Тень Binance спот вылезла за Bybit"]
     assert out.spoken == ["Тень Binance спот вылезла за Bybit"]
     assert "not repeating" in caplog.text
 
@@ -372,4 +418,4 @@ def test_an_alert_that_never_reached_the_chat_is_not_suppressed():
     drive(["CL broke 92"] * 2, out)
 
     assert out.tries == 2  # the second attempt was made, not skipped
-    assert out.sent == ["🔔 TV: CL broke 92"]  # and it arrived
+    assert out.sent == ["CL broke 92"]  # and it arrived

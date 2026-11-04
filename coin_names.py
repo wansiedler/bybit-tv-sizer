@@ -116,6 +116,7 @@ COIN_NAMES = {
     "BSB": "Block Street",
     "BSV": "Bitcoin SV",
     "BTC": "Bitcoin",
+    "USDT": "Tether",
     "BTR": "Bitlayer",
     "BTW": "Bitway",
     "C": "Chainbase",
