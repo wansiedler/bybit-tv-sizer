@@ -326,9 +326,9 @@ pyasn1==0.6.4 \
     --hash=sha256:9c447d8431c947fe4c8febc4ed9e760bc29011a5b01e5c74b67025bd9fb8ce81 \
     --hash=sha256:deda9277cfd454080ec40b207fb6df82206a3a2688735233cdcd8d3d565f088b
     # via rsa
-pychromecast==14.0.10 \
-    --hash=sha256:f05a1c8d727d4f104c8c731688053033e05157f2ab81bc8eef50ec0c62f9373c \
-    --hash=sha256:f5ea52b1db0edc3019ec72c9f5354c7e77c2564ecd44f809a6d2f4f518a02e67
+pychromecast==14.1.1 \
+    --hash=sha256:9b75553770c8007bc146ca7b5ad30dd165c71bb1335a0ea6659a514087a63c67 \
+    --hash=sha256:c7a4f56790b3b4c3790baf7426a0ee9345a0bf082effe485b1f23eb049f1ca54
     # via -r requirements.txt
 python-dotenv==1.2.3 \
     --hash=sha256:904552145e8bfed22162c09dab1c2b9b54fefa7b23ba780f4f26ca0316b0f0d9 \
