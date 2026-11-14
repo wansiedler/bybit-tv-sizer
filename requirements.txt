@@ -7,6 +7,6 @@
 telethon>=1.45.0
 httpx>=0.28.1
 python-dotenv>=1.2.3
-PyChromecast>=14.0.10
+PyChromecast>=14.1.0
 gTTS>=2.5.4
 Pillow>=12.3.0
