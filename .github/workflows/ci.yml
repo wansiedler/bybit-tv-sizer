@@ -683,7 +683,7 @@ jobs:
       #   gh variable set ENABLE_CODE_SCANNING --body true
       # The trivy-report artifact above carries the same SARIF either way.
       - name: Upload SARIF to GitHub Security
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370   # v4
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066   # v4
         if: ${{ always() && !env.ACT && vars.ENABLE_CODE_SCANNING == 'true' }}
         continue-on-error: true
         with:
@@ -1221,7 +1221,7 @@ jobs:
 
       - name: SonarQube scan
         if: ${{ env.SONAR_TOKEN != '' && !env.ACT }}
-        uses: SonarSource/sonarqube-scan-action@4d1dc0c91ee400dcf8a6dddf2f705ac36542e304   # v8.4.0
+        uses: SonarSource/sonarqube-scan-action@e805d875275f728fac1885b413934be6d7c63f65   # v8.4.1
 
       # The scanner returns as soon as the upload lands; the verdict is computed
       # server-side afterwards. Without this step the job goes green while the
