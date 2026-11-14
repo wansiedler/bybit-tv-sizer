@@ -10,4 +10,4 @@
 # download. That is also what makes the logged-in TradingView session
 # possible — it lives in a real Chrome profile, not a throwaway one.
 playwright>=1.56.0
-python-dotenv>=1.2.3
+python-dotenv>=1.2.4
