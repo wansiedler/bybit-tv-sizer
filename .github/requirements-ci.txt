@@ -1,13 +1,13 @@
 # Pipeline toolchain, pinned so a hook bump is a reviewable PR (dependabot
 # watches this file: pip ecosystem, directory /.github).
 pre-commit==4.7.0
-ruff==0.17.1
-mypy==2.4.0
+ruff==0.17.4
+mypy==2.4.1
 bandit==1.9.4
-pytest==9.1.1
+pytest==9.2.0
 pytest-cov==7.1.0
 # Static analysis of the workflows themselves (unpinned actions, injection
 # sinks, over-broad permissions) — the CI equivalent of bandit.
-zizmor==1.31.1
+zizmor==1.32.0
 # Dependency CVEs across the pinned toolchain.
 pip-audit==2.10.1
